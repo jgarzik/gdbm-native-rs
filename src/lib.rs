@@ -1,4 +1,4 @@
-extern crate clap;
+
 use byteorder::{LittleEndian, ReadBytesExt}; // 1.2.7
 use std::collections::HashMap;
 use std::{
