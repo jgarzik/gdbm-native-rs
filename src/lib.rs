@@ -1,4 +1,3 @@
-
 use byteorder::{LittleEndian, ReadBytesExt}; // 1.2.7
 use std::collections::HashMap;
 use std::{
@@ -17,14 +16,15 @@ const GDBM_MAGIC64_SWAP: u32 = 0xcf9a5713; /* MAGIC64 swapped. */
 
 const GDBM_HASH_BITS: u32 = 31;
 
-const GDBM_HDR_SZ: u32 = 72;
+const GDBM_HDR_SZ: u32 = 72; // todo: all this varies on 32/64bit...
 const GDBM_HASH_BUCKET_SZ: u32 = 136;
 const GDBM_BUCKET_ELEM_SZ: u32 = 24;
 const GDBM_AVAIL_ELEM_SZ: u32 = 16;
 const BUCKET_AVAIL: u32 = 6;
 const KEY_SMALL: usize = 4;
+const IGNORE_SMALL: usize = 4;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct AvailElem {
     sz: u32,
     addr: u64,
@@ -58,6 +58,7 @@ pub struct AvailBlock {
 
 #[derive(Debug)]
 pub struct Header {
+    // on-disk gdbm database file header
     magic: u32,
     block_sz: u32,
     dir_ofs: u64,
@@ -69,7 +70,9 @@ pub struct Header {
 
     avail: AvailBlock,
 
+    // following fields are calculated, not stored
     is_64: bool,
+    dirty: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +86,7 @@ pub struct BucketElement {
 
 #[derive(Debug, Clone)]
 pub struct Bucket {
+    // on-disk gdbm database hash bucket
     av_count: u32,
     avail: Vec<AvailElem>,
     bits: u32,
@@ -93,13 +97,33 @@ pub struct Bucket {
 #[derive(Debug)]
 pub struct BucketCache {
     bucket_map: HashMap<u64, Bucket>,
+    dirty: HashMap<u64, bool>,
 }
 
 impl BucketCache {
     pub fn new() -> BucketCache {
         BucketCache {
             bucket_map: HashMap::new(),
+            dirty: HashMap::new(),
         }
+    }
+
+    pub fn dirty(&mut self, bucket_ofs: u64) {
+        self.dirty.insert(bucket_ofs, true);
+    }
+
+    pub fn dirty_list(&mut self) -> Vec<u64> {
+        let mut dl: Vec<u64> = Vec::new();
+        for (ofs, _dummy) in &self.dirty {
+            dl.push(*ofs);
+        }
+        dl.sort();
+
+        dl
+    }
+
+    pub fn clear_dirty(&mut self) {
+        self.dirty.clear();
     }
 
     pub fn contains(&self, bucket_ofs: u64) -> bool {
@@ -108,6 +132,11 @@ impl BucketCache {
 
     pub fn insert(&mut self, bucket_ofs: u64, bucket: Bucket) {
         self.bucket_map.insert(bucket_ofs, bucket);
+    }
+
+    pub fn update(&mut self, bucket_ofs: u64, bucket: Bucket) {
+        self.bucket_map.insert(bucket_ofs, bucket);
+        self.dirty(bucket_ofs);
     }
 }
 
@@ -208,7 +237,8 @@ impl Header {
             elems.push(av_elem);
         }
 
-        elems.sort_by(|a, b| b.addr.cmp(&a.addr));
+        // maintain intrinsic: avail is always sorted by size
+        elems.sort();
 
         // todo: check for overlapping segments
 
@@ -245,6 +275,7 @@ impl Header {
                 elems,
             },
             is_64,
+            dirty: false,
         })
     }
 }
@@ -587,6 +618,104 @@ impl Gdbm {
             None => Ok(None),
             Some(data) => Ok(Some(data.1)),
         }
+    }
+
+    fn push_avail_block(&mut self) -> io::Result<()> {
+        Err(Error::new(ErrorKind::Other, "not implemented"))
+    }
+
+    fn free_record(&mut self, addr: u64, sz: u32) -> io::Result<()> {
+        // simply forget elements too small to worry about
+        if (sz as usize) <= IGNORE_SMALL {
+            return Ok(());
+        }
+
+        // build element to be inserted into free-space list
+        let elem = AvailElem { sz, addr };
+
+        // smaller items go into bucket avail list
+        let mut bucket = self.get_current_bucket();
+        if sz < self.header.block_sz && bucket.av_count < BUCKET_AVAIL {
+            // insort into bucket avail vector, sorted by size
+            let pos = bucket.avail.binary_search(&elem).unwrap_or_else(|e| e);
+            bucket.avail.insert(pos, elem);
+            bucket.av_count += 1;
+
+            // store updated bucket in cache, and mark dirty
+            self.bucket_cache.update(self.cur_bucket_ofs, bucket);
+
+            // success (and no I/O performed)
+            return Ok(());
+        }
+
+        // larger items go into the header avail list
+        // (and also when bucket avail list is full)
+        if self.header.avail.count == self.header.avail.sz {
+            self.push_avail_block()?;
+        }
+
+        // insort into header avail vector, sorted by size
+        let pos = self
+            .header
+            .avail
+            .elems
+            .binary_search(&elem)
+            .unwrap_or_else(|e| e);
+        self.header.avail.elems.insert(pos, elem);
+        self.header.avail.count += 1;
+
+        // header needs to be written
+        self.header.dirty = true;
+
+        Ok(())
+    }
+
+    fn write_dirty(&mut self) -> io::Result<()> {
+        Err(Error::new(ErrorKind::Other, "not implemented"))
+    }
+
+    pub fn remove(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        let get_opt = self.int_get(key)?;
+        if get_opt == None {
+            return Ok(None);
+        }
+        let (mut elem_ofs, data) = get_opt.unwrap();
+
+        let bucket_elems = self.header.bucket_elems as usize;
+        let mut bucket = self.get_current_bucket();
+
+        // remember element to be removed
+        let elem = bucket.tab[elem_ofs].clone();
+
+        // remove element from table
+        bucket.tab[elem_ofs].hash = 0xffffffff;
+        bucket.count -= 1;
+
+        // move other elements to fill gap
+        let mut last_ofs = elem_ofs;
+        while elem_ofs != last_ofs && bucket.tab[elem_ofs].hash != 0xffffffff {
+            let home = (bucket.tab[elem_ofs].hash as usize) % bucket_elems;
+            if (last_ofs < elem_ofs && (home <= last_ofs || home > elem_ofs))
+                || (last_ofs > elem_ofs && home <= last_ofs && home > elem_ofs)
+            {
+                bucket.tab[last_ofs] = bucket.tab[elem_ofs].clone();
+                bucket.tab[elem_ofs].hash = 0xffffffff;
+                last_ofs = elem_ofs;
+            }
+
+            elem_ofs = (elem_ofs + 1) % bucket_elems;
+        }
+
+        // store updated bucket in cache, and mark dirty
+        self.bucket_cache.update(self.cur_bucket_ofs, bucket);
+
+        // release record bytes to available-space pool
+        self.free_record(elem.data_ofs, elem.key_size + elem.data_size)?;
+
+        // flush any dirty pages to OS
+        self.write_dirty()?;
+
+        Ok(Some(data))
     }
 
     pub fn print_dir(&self) {
