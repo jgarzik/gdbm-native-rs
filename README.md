@@ -9,6 +9,8 @@ Rust crate library for reading/writing GDBM key/value databases
 
 ## Status
 
+Pre-alpha:  Read-only access works.
+
 Major categories of tasks leading to 1.0.0.  View the
 [list of issues](https://github.com/jgarzik/gdbm-rs/issues) and
 [milestones](https://github.com/jgarzik/gdbm-rs/milestones) for more.
