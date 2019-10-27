@@ -9,7 +9,7 @@ Rust crate library for reading/writing GDBM key/value databases
 
 ## Status
 
-Pre-alpha:  Read-only access works.
+Alpha:  Read-only access works well.  Do not use in production.
 
 Major categories of tasks leading to 1.0.0.  View the
 [list of issues](https://github.com/jgarzik/gdbm-rs/issues) and
@@ -21,7 +21,7 @@ Major categories of tasks leading to 1.0.0.  View the
 - [x] Count: Iterate db and count all records
 - [x] Exists: Quick key-exists test
 - [ ] Insert: Store record
-- [ ] Remove: Delete record
+- [X] Remove: Delete record
 - [ ] Reorganize: Not a priority
 - [ ] Sync: Write dirty buffers, and fsync(2)
 - [ ] Import/Export:  GDBM ASCII and binary dump formats
