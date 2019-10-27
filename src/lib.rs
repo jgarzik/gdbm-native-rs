@@ -4,14 +4,17 @@ use std::{
     io::{self, Error, ErrorKind, Read, Seek, SeekFrom, Write},
 };
 
+mod avail;
 mod bucket;
 mod dir;
+mod hashutil;
 mod header;
 mod ser;
+use avail::{AvailBlock, AvailElem};
 use bucket::{Bucket, BucketCache, BucketElement, BUCKET_AVAIL};
 use dir::{dir_reader, Directory};
+use hashutil::{key_loc, partial_key_match};
 use header::Header;
-use ser::{w32, woff_t};
 
 // todo: convert to enum w/ value
 const GDBM_OMAGIC: u32 = 0x13579ace; /* Original magic number. */
@@ -32,131 +35,6 @@ const GDBM_AVAIL_ELEM_SZ: u32 = 16;
 const KEY_SMALL: usize = 4;
 const IGNORE_SMALL: usize = 4;
 const DEF_IS_LE: bool = true;
-
-#[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq)]
-pub struct AvailElem {
-    sz: u32,
-    addr: u64,
-}
-
-impl AvailElem {
-    fn from_reader(is_64: bool, rdr: &mut impl Read) -> io::Result<Self> {
-        let elem_sz = rdr.read_u32::<LittleEndian>()?;
-        let elem_ofs: u64;
-        if is_64 {
-            let _padding = rdr.read_u32::<LittleEndian>()?;
-            elem_ofs = rdr.read_u64::<LittleEndian>()?;
-        } else {
-            elem_ofs = rdr.read_u32::<LittleEndian>()? as u64;
-        }
-
-        Ok(AvailElem {
-            sz: elem_sz,
-            addr: elem_ofs,
-        })
-    }
-
-    fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.append(&mut w32(is_le, self.sz));
-        if is_64 {
-            let padding: u32 = 0;
-            buf.append(&mut w32(is_le, padding));
-        }
-        buf.append(&mut woff_t(is_64, is_le, self.addr));
-
-        buf
-    }
-}
-
-#[derive(Debug)]
-pub struct AvailBlock {
-    sz: u32,
-    count: u32,
-    next_block: u64,
-    elems: Vec<AvailElem>,
-}
-
-impl AvailBlock {
-    fn new(sz: u32) -> AvailBlock {
-        AvailBlock {
-            sz,
-            count: 0,
-            next_block: 0,
-            elems: Vec::new(),
-        }
-    }
-
-    fn find_elem(&self, sz: usize) -> Option<usize> {
-        for i in 0..self.elems.len() {
-            if (self.elems[i].sz as usize) >= sz {
-                return Some(i);
-            }
-        }
-
-        None
-    }
-
-    fn remove_elem(&mut self, sz: usize) -> Option<AvailElem> {
-        assert!((self.count as usize) == self.elems.len());
-        match self.find_elem(sz) {
-            None => None,
-            Some(idx) => {
-                self.count -= 1;
-                return Some(self.elems.remove(idx));
-            }
-        }
-    }
-
-    fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.append(&mut w32(is_le, self.sz));
-        buf.append(&mut w32(is_le, self.count));
-        buf.append(&mut woff_t(is_64, is_le, self.next_block));
-
-        for elem in &self.elems {
-            buf.append(&mut elem.serialize(is_64, is_le));
-        }
-
-        buf
-    }
-}
-
-// core gdbm hashing function
-fn hash_key(key: &[u8]) -> u32 {
-    let mut value: u32 = 0x238F13AF * (key.len() as u32);
-    let mut index: u32 = 0;
-    for ch in key.iter() {
-        value = (value + ((*ch as u32) << (index * 5 % 24))) & 0x7FFFFFFF;
-        index = index + 1;
-    }
-    value = (value.wrapping_mul(1103515243) + 12345) & 0x7FFFFFFF;
-
-    value
-}
-
-// hash-to-bucket lookup
-fn bucket_dir(header: &Header, hash: u32) -> usize {
-    (hash as usize) >> (GDBM_HASH_BITS - header.dir_bits)
-}
-
-// derives hash and bucket metadata from key
-fn key_loc(header: &Header, key: &[u8]) -> (u32, usize, u32) {
-    let hash = hash_key(key);
-    let bucket = bucket_dir(header, hash);
-    let ofs = hash % header.bucket_elems;
-
-    (hash, bucket, ofs)
-}
-
-// does key match the partial-key field?
-fn partial_key_match(key_a: &[u8], partial_b: &[u8; KEY_SMALL]) -> bool {
-    if key_a.len() <= KEY_SMALL {
-        key_a == &partial_b[0..key_a.len()]
-    } else {
-        &key_a[0..KEY_SMALL] == partial_b
-    }
-}
 
 // read and return file data stored at (ofs,total_size)
 // todo:  use Read+Seek traits rather than File
@@ -759,23 +637,5 @@ impl Gdbm {
         }
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_hash() {
-        assert_eq!(hash_key(b"hello"), 1730502474);
-        assert_eq!(hash_key(b"hello\0"), 72084335);
-        assert_eq!(hash_key(b""), 12345);
-    }
-
-    #[test]
-    fn test_partial_key_match() {
-        assert!(partial_key_match(b"123", b"123 "));
-        assert!(partial_key_match(b"123456", b"1234"));
     }
 }
