@@ -6,9 +6,11 @@ use std::{
 
 mod bucket;
 mod dir;
+mod header;
 mod ser;
 use bucket::{Bucket, BucketCache, BucketElement, BUCKET_AVAIL};
-use dir::{build_dir_size, dir_reader, Directory};
+use dir::{dir_reader, Directory};
+use header::Header;
 use ser::{w32, woff_t};
 
 // todo: convert to enum w/ value
@@ -115,158 +117,6 @@ impl AvailBlock {
         for elem in &self.elems {
             buf.append(&mut elem.serialize(is_64, is_le));
         }
-
-        buf
-    }
-}
-
-#[derive(Debug)]
-pub struct Header {
-    // on-disk gdbm database file header
-    magic: u32,
-    block_sz: u32,
-    dir_ofs: u64,
-    dir_sz: u32,
-    dir_bits: u32,
-    bucket_sz: u32,
-    bucket_elems: u32,
-    next_block: u64,
-
-    avail: AvailBlock,
-
-    // following fields are calculated, not stored
-    is_64: bool,
-    dirty: bool,
-}
-
-fn bucket_count(bucket_sz: u32) -> u32 {
-    (bucket_sz - GDBM_HASH_BUCKET_SZ) / GDBM_BUCKET_ELEM_SZ + 1
-}
-
-impl Header {
-    fn from_reader(metadata: &std::fs::Metadata, mut rdr: impl Read) -> io::Result<Self> {
-        let file_sz = metadata.len();
-
-        let magic = rdr.read_u32::<LittleEndian>()?;
-
-        let is_64 = match magic {
-            GDBM_MAGIC64 | GDBM_MAGIC64_SWAP => true,
-            _ => false,
-        };
-
-        // fixme: read u32, not u64, if is_64
-
-        let block_sz = rdr.read_u32::<LittleEndian>()?;
-        let dir_ofs = rdr.read_u64::<LittleEndian>()?;
-        let dir_sz = rdr.read_u32::<LittleEndian>()?;
-        let dir_bits = rdr.read_u32::<LittleEndian>()?;
-        let bucket_sz = rdr.read_u32::<LittleEndian>()?;
-        let bucket_elems = rdr.read_u32::<LittleEndian>()?;
-        let next_block = rdr.read_u64::<LittleEndian>()?;
-
-        let avail_sz = rdr.read_u32::<LittleEndian>()?;
-        let avail_count = rdr.read_u32::<LittleEndian>()?;
-        let avail_next_block = rdr.read_u64::<LittleEndian>()?;
-
-        if !(block_sz > 0 && block_sz > GDBM_HDR_SZ && block_sz - GDBM_HDR_SZ >= GDBM_AVAIL_ELEM_SZ)
-        {
-            return Err(Error::new(ErrorKind::Other, "bad header: blksz"));
-        }
-
-        if next_block < file_sz {
-            return Err(Error::new(ErrorKind::Other, "needs recovery"));
-        }
-
-        if !(dir_ofs > 0 && dir_ofs < file_sz && dir_sz > 0 && dir_ofs + (dir_sz as u64) < file_sz)
-        {
-            return Err(Error::new(ErrorKind::Other, "bad header: dir"));
-        }
-
-        let (ck_dir_sz, _ck_dir_bits) = build_dir_size(block_sz);
-        if !(dir_sz >= ck_dir_sz) {
-            return Err(Error::new(ErrorKind::Other, "bad header: dir sz"));
-        }
-
-        let (_ck_dir_sz, ck_dir_bits) = build_dir_size(dir_sz);
-        if dir_bits != ck_dir_bits {
-            return Err(Error::new(ErrorKind::Other, "bad header: dir bits"));
-        }
-
-        if !(bucket_sz > GDBM_HASH_BUCKET_SZ) {
-            return Err(Error::new(ErrorKind::Other, "bad header: bucket sz"));
-        }
-
-        if bucket_elems != bucket_count(bucket_sz) {
-            return Err(Error::new(ErrorKind::Other, "bad header: bucket elem"));
-        }
-
-        if ((block_sz - GDBM_HDR_SZ) / GDBM_AVAIL_ELEM_SZ + 1) != avail_sz {
-            return Err(Error::new(ErrorKind::Other, "bad header: avail sz"));
-        }
-
-        if !(avail_sz > 1 && avail_count <= avail_sz) {
-            return Err(Error::new(ErrorKind::Other, "bad header: avail sz/ct"));
-        }
-
-        let mut elems: Vec<AvailElem> = Vec::new();
-        for _idx in 0..avail_count {
-            let av_elem = AvailElem::from_reader(is_64, &mut rdr)?;
-            elems.push(av_elem);
-        }
-
-        // maintain intrinsic: avail is always sorted by size
-        elems.sort();
-
-        // todo: check for overlapping segments
-
-        for elem in elems.iter() {
-            if !(elem.addr >= bucket_sz.into() && elem.addr + (elem.sz as u64) <= next_block) {
-                return Err(Error::new(ErrorKind::Other, "bad header: avail el"));
-            }
-        }
-
-        let magname = match magic {
-            GDBM_OMAGIC => "GDBM_OMAGIC",
-            GDBM_MAGIC32 => "GDBM_MAGIC32",
-            GDBM_MAGIC64 => "GDBM_MAGIC64",
-            GDBM_OMAGIC_SWAP => "GDBM_OMAGIC_SWAP",
-            GDBM_MAGIC32_SWAP => "GDBM_MAGIC32_SWAP",
-            GDBM_MAGIC64_SWAP => "GDBM_MAGIC64_SWAP",
-            _ => "?",
-        };
-        println!("magname {}", magname);
-
-        Ok(Header {
-            magic,
-            block_sz,
-            dir_ofs,
-            dir_sz,
-            dir_bits,
-            bucket_sz,
-            bucket_elems,
-            next_block,
-            avail: AvailBlock {
-                sz: avail_sz,
-                count: avail_count,
-                next_block: avail_next_block,
-                elems,
-            },
-            is_64,
-            dirty: false,
-        })
-    }
-
-    fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.append(&mut w32(is_le, self.magic)); // fixme: check swap?
-        buf.append(&mut w32(is_le, self.block_sz));
-        buf.append(&mut woff_t(is_64, is_le, self.dir_ofs));
-        buf.append(&mut w32(is_le, self.dir_sz));
-        buf.append(&mut w32(is_le, self.dir_bits));
-        buf.append(&mut w32(is_le, self.bucket_sz));
-        buf.append(&mut w32(is_le, self.bucket_elems));
-        buf.append(&mut woff_t(is_64, is_le, self.next_block));
-        buf.append(&mut self.avail.serialize(is_64, is_le));
 
         buf
     }
