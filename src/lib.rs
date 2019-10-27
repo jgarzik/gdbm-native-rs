@@ -1,8 +1,8 @@
-use byteorder::{LittleEndian, ReadBytesExt}; // 1.2.7
+use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt};
 use std::collections::HashMap;
 use std::{
-    fs::File,
-    io::{self, Error, ErrorKind, Read, Seek, SeekFrom},
+    fs::OpenOptions,
+    io::{self, Error, ErrorKind, Read, Seek, SeekFrom, Write},
 };
 
 // todo: convert to enum w/ value
@@ -19,10 +19,45 @@ const GDBM_HASH_BITS: u32 = 31;
 const GDBM_HDR_SZ: u32 = 72; // todo: all this varies on 32/64bit...
 const GDBM_HASH_BUCKET_SZ: u32 = 136;
 const GDBM_BUCKET_ELEM_SZ: u32 = 24;
+const GDBM_AVAIL_HDR_SZ: u32 = 16;
 const GDBM_AVAIL_ELEM_SZ: u32 = 16;
 const BUCKET_AVAIL: u32 = 6;
 const KEY_SMALL: usize = 4;
 const IGNORE_SMALL: usize = 4;
+const DEF_IS_LE: bool = true;
+
+// serialize u32, with runtime endian selection
+fn w32(is_le: bool, val: u32) -> Vec<u8> {
+    let mut buf: Vec<u8> = Vec::with_capacity(4);
+    buf.resize(4, 0);
+
+    match is_le {
+        true => LittleEndian::write_u32(&mut buf, val),
+        false => BigEndian::write_u32(&mut buf, val),
+    }
+
+    buf
+}
+
+// serialize u64, with runtime endian selection
+fn w64(is_le: bool, val: u64) -> Vec<u8> {
+    let mut buf: Vec<u8> = Vec::with_capacity(4);
+    buf.resize(4, 0);
+
+    match is_le {
+        true => LittleEndian::write_u64(&mut buf, val),
+        false => BigEndian::write_u64(&mut buf, val),
+    }
+
+    buf
+}
+
+fn woff_t(is_64: bool, is_le: bool, val: u64) -> Vec<u8> {
+    match is_64 {
+        true => w64(is_le, val),
+        false => w32(is_le, val as u32),
+    }
+}
 
 #[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct AvailElem {
@@ -46,6 +81,18 @@ impl AvailElem {
             addr: elem_ofs,
         })
     }
+
+    fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.append(&mut w32(is_le, self.sz));
+        if is_64 {
+            let padding: u32 = 0;
+            buf.append(&mut w32(is_le, padding));
+        }
+        buf.append(&mut woff_t(is_64, is_le, self.addr));
+
+        buf
+    }
 }
 
 #[derive(Debug)]
@@ -54,6 +101,51 @@ pub struct AvailBlock {
     count: u32,
     next_block: u64,
     elems: Vec<AvailElem>,
+}
+
+impl AvailBlock {
+    fn new(sz: u32) -> AvailBlock {
+        AvailBlock {
+            sz,
+            count: 0,
+            next_block: 0,
+            elems: Vec::new(),
+        }
+    }
+
+    fn find_elem(&self, sz: usize) -> Option<usize> {
+        for i in 0..self.elems.len() {
+            if (self.elems[i].sz as usize) >= sz {
+                return Some(i);
+            }
+        }
+
+        None
+    }
+
+    fn remove_elem(&mut self, sz: usize) -> Option<AvailElem> {
+        assert!((self.count as usize) == self.elems.len());
+        match self.find_elem(sz) {
+            None => None,
+            Some(idx) => {
+                self.count -= 1;
+                return Some(self.elems.remove(idx));
+            }
+        }
+    }
+
+    fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.append(&mut w32(is_le, self.sz));
+        buf.append(&mut w32(is_le, self.count));
+        buf.append(&mut woff_t(is_64, is_le, self.next_block));
+
+        for elem in &self.elems {
+            buf.append(&mut elem.serialize(is_64, is_le));
+        }
+
+        buf
+    }
 }
 
 #[derive(Debug)]
@@ -84,6 +176,19 @@ pub struct BucketElement {
     data_size: u32,
 }
 
+impl BucketElement {
+    fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.append(&mut w32(is_le, self.hash));
+        buf.append(&mut self.key_start.to_vec());
+        buf.append(&mut woff_t(is_64, is_le, self.data_ofs));
+        buf.append(&mut w32(is_le, self.key_size));
+        buf.append(&mut w32(is_le, self.data_size));
+
+        buf
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Bucket {
     // on-disk gdbm database hash bucket
@@ -92,6 +197,42 @@ pub struct Bucket {
     bits: u32,
     count: u32,
     tab: Vec<BucketElement>,
+}
+
+impl Bucket {
+    fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
+        let mut buf = Vec::new();
+
+        //
+        // avail section
+        //
+
+        buf.append(&mut w32(is_le, self.av_count));
+        if is_64 {
+            let padding: u32 = 0;
+            buf.append(&mut w32(is_le, padding));
+        }
+
+        assert_eq!(self.avail.len(), BUCKET_AVAIL as usize);
+        for avail_elem in &self.avail {
+            buf.append(&mut avail_elem.serialize(is_64, is_le));
+        }
+
+        //
+        // misc section
+        //
+        buf.append(&mut w32(is_le, self.bits));
+        buf.append(&mut w32(is_le, self.count));
+
+        //
+        // bucket elements section
+        //
+        for bucket_elem in &self.tab {
+            buf.append(&mut bucket_elem.serialize(is_64, is_le));
+        }
+
+        buf
+    }
 }
 
 #[derive(Debug)]
@@ -141,10 +282,32 @@ impl BucketCache {
 }
 
 #[derive(Debug)]
+pub struct Directory {
+    dir: Vec<u64>,
+}
+
+impl Directory {
+    fn len(&self) -> usize {
+        self.dir.len()
+    }
+
+    fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
+        let mut buf = Vec::new();
+
+        for ofs in &self.dir {
+            buf.append(&mut woff_t(is_64, is_le, *ofs));
+        }
+
+        buf
+    }
+}
+
+#[derive(Debug)]
 pub struct Gdbm {
     f: std::fs::File,
     header: Header,
-    dir: Vec<u64>,
+    dir: Directory,
+    dir_dirty: bool,
     bucket_cache: BucketCache,
     cur_bucket_ofs: u64,
     cur_bucket_dir: usize,
@@ -278,8 +441,24 @@ impl Header {
             dirty: false,
         })
     }
+
+    fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.append(&mut w32(is_le, self.magic)); // fixme: check swap?
+        buf.append(&mut w32(is_le, self.block_sz));
+        buf.append(&mut woff_t(is_64, is_le, self.dir_ofs));
+        buf.append(&mut w32(is_le, self.dir_sz));
+        buf.append(&mut w32(is_le, self.dir_bits));
+        buf.append(&mut w32(is_le, self.bucket_sz));
+        buf.append(&mut w32(is_le, self.bucket_elems));
+        buf.append(&mut woff_t(is_64, is_le, self.next_block));
+        buf.append(&mut self.avail.serialize(is_64, is_le));
+
+        buf
+    }
 }
 
+// Read C-struct-based bucket directory (a vector of storage offsets)
 fn dir_reader(f: &mut std::fs::File, header: &Header) -> io::Result<Vec<u64>> {
     let is_64 = header.is_64;
     let dirent_sz = match is_64 {
@@ -306,6 +485,7 @@ fn dir_reader(f: &mut std::fs::File, header: &Header) -> io::Result<Vec<u64>> {
     Ok(dir)
 }
 
+// core gdbm hashing function
 fn hash_key(key: &[u8]) -> u32 {
     let mut value: u32 = 0x238F13AF * (key.len() as u32);
     let mut index: u32 = 0;
@@ -318,10 +498,12 @@ fn hash_key(key: &[u8]) -> u32 {
     value
 }
 
+// hash-to-bucket lookup
 fn bucket_dir(header: &Header, hash: u32) -> usize {
     (hash as usize) >> (GDBM_HASH_BITS - header.dir_bits)
 }
 
+// derives hash and bucket metadata from key
 fn key_loc(header: &Header, key: &[u8]) -> (u32, usize, u32) {
     let hash = hash_key(key);
     let bucket = bucket_dir(header, hash);
@@ -330,6 +512,7 @@ fn key_loc(header: &Header, key: &[u8]) -> (u32, usize, u32) {
     (hash, bucket, ofs)
 }
 
+// does key match the partial-key field?
 fn partial_key_match(key_a: &[u8], partial_b: &[u8; KEY_SMALL]) -> bool {
     if key_a.len() <= KEY_SMALL {
         key_a == &partial_b[0..key_a.len()]
@@ -338,6 +521,8 @@ fn partial_key_match(key_a: &[u8], partial_b: &[u8; KEY_SMALL]) -> bool {
     }
 }
 
+// read and return file data stored at (ofs,total_size)
+// todo:  use Read+Seek traits rather than File
 fn read_ofs(f: &mut std::fs::File, ofs: u64, total_size: usize) -> io::Result<Vec<u8>> {
     let mut data: Vec<u8> = Vec::with_capacity(total_size);
     data.resize(total_size, 0);
@@ -348,9 +533,23 @@ fn read_ofs(f: &mut std::fs::File, ofs: u64, total_size: usize) -> io::Result<Ve
     Ok(data)
 }
 
+// write data to storage at (ofs,total_size)
+// todo:  use Write+Seek traits rather than File
+fn write_ofs(f: &mut std::fs::File, ofs: u64, data: &[u8]) -> io::Result<()> {
+    f.seek(SeekFrom::Start(ofs))?;
+    f.write_all(data)?;
+
+    Ok(())
+}
+
 impl Gdbm {
+    // API: open database file, read and validate header
     pub fn open(pathname: &str) -> io::Result<Gdbm> {
-        let mut f = File::open(pathname)?;
+        let mut f = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(pathname)?;
         let metadata = f.metadata()?;
 
         let header = Header::from_reader(&metadata, f.try_clone()?)?;
@@ -363,23 +562,26 @@ impl Gdbm {
         Ok(Gdbm {
             f,
             header,
-            dir,
+            dir: Directory { dir },
+            dir_dirty: false,
             bucket_cache: BucketCache::new(),
             cur_bucket_ofs,
             cur_bucket_dir,
         })
     }
 
+    // validate directory entry index.  currently just a bounds check.
     fn dirent_valid(&self, idx: usize) -> bool {
-        idx < self.dir.len() // && self.dir[idx] >= (self.header.block_sz as u64)
+        idx < self.dir.len() // && self.dir.dir[idx] >= (self.header.block_sz as u64)
     }
 
+    // read bucket into bucket cache.
     fn get_bucket(&mut self, bucket_dir: usize) -> io::Result<bool> {
         if !self.dirent_valid(bucket_dir) {
             return Err(Error::new(ErrorKind::Other, "invalid bucket idx"));
         }
 
-        let bucket_ofs = self.dir[bucket_dir];
+        let bucket_ofs = self.dir.dir[bucket_dir];
         println!("bucket ofs = {}", bucket_ofs);
 
         // already in cache
@@ -405,7 +607,7 @@ impl Gdbm {
             avail.push(av_elem);
         }
 
-        // todo: validate avail[]
+        // todo: validate and assure-sorted avail[]
 
         // read misc. section
         let bits = self.f.read_u32::<LittleEndian>()?;
@@ -455,12 +657,15 @@ impl Gdbm {
         Ok(true)
     }
 
+    // return a clone of the current bucket
     fn get_current_bucket(&self) -> Bucket {
         // note: assumes will be called following get_bucket() to cache
         // assignment of dir[0] to cur_bucket at Gdbm{} creation not sufficient.
         self.bucket_cache.bucket_map[&self.cur_bucket_ofs].clone()
     }
 
+    // since one bucket dir entry may duplicate another,
+    // this function returns the next non-dup bucket dir
     fn next_bucket_dir(&self, bucket_dir_in: usize) -> usize {
         let dir_sz = self.header.dir_sz as usize;
         if bucket_dir_in >= dir_sz {
@@ -469,14 +674,15 @@ impl Gdbm {
 
         let mut bucket_dir = bucket_dir_in;
 
-        let cur_ofs = self.dir[bucket_dir];
-        while bucket_dir < dir_sz && cur_ofs == self.dir[bucket_dir] {
+        let cur_ofs = self.dir.dir[bucket_dir];
+        while bucket_dir < dir_sz && cur_ofs == self.dir.dir[bucket_dir] {
             bucket_dir = bucket_dir + 1;
         }
 
         bucket_dir
     }
 
+    // API: count entries in database
     pub fn len(&mut self) -> io::Result<usize> {
         let mut len: usize = 0;
         let mut cur_dir: usize = 0;
@@ -491,6 +697,7 @@ impl Gdbm {
         Ok(len)
     }
 
+    // given a bucket ptr, return the next key
     fn int_next_key(&mut self, elem_opt: Option<usize>) -> io::Result<Option<Vec<u8>>> {
         let mut init_elem_ofs = false;
         let mut elem_ofs: usize = 0;
@@ -539,6 +746,7 @@ impl Gdbm {
         Ok(Some(data))
     }
 
+    // API: return first key in database, for sequential iteration start.
     pub fn first_key(&mut self) -> io::Result<Option<Vec<u8>>> {
         // get first bucket
         self.get_bucket(0)?;
@@ -547,6 +755,7 @@ impl Gdbm {
         self.int_next_key(None)
     }
 
+    // API: return next key, for given key, in db-wide sequential order.
     pub fn next_key(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         let get_opt = self.int_get(key)?;
         if get_opt == None {
@@ -558,6 +767,7 @@ impl Gdbm {
         self.int_next_key(Some(elem_ofs))
     }
 
+    // API: does key exist?
     pub fn contains_key(&mut self, key: &[u8]) -> io::Result<bool> {
         let get_opt = self.int_get(key)?;
         match get_opt {
@@ -566,6 +776,7 @@ impl Gdbm {
         }
     }
 
+    // retrieve record data, and element offset in bucket, for given key
     fn int_get(&mut self, key: &[u8]) -> io::Result<Option<(usize, Vec<u8>)>> {
         let (key_hash, bucket_dir, elem_ofs_32) = key_loc(&self.header, key);
         let mut elem_ofs = elem_ofs_32 as usize;
@@ -612,6 +823,7 @@ impl Gdbm {
         Ok(None)
     }
 
+    // API: Fetch record value, given a key
     pub fn get(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         let get_opt = self.int_get(key)?;
         match get_opt {
@@ -620,10 +832,90 @@ impl Gdbm {
         }
     }
 
-    fn push_avail_block(&mut self) -> io::Result<()> {
-        Err(Error::new(ErrorKind::Other, "not implemented"))
+    // virtually allocate N blocks of data, at end of db file (no I/O)
+    fn new_block(&mut self, new_sz: usize) -> AvailElem {
+        let mut elem = AvailElem {
+            sz: self.header.block_sz,
+            addr: self.header.next_block,
+        };
+
+        while (elem.sz as usize) < new_sz {
+            elem.sz += self.header.block_sz;
+        }
+
+        self.header.next_block += elem.sz as u64;
+
+        self.header.dirty = true;
+
+        elem
     }
 
+    // Free list is full.  Split in half, and store 1/2 in new list block.
+    fn push_avail_block(&mut self) -> io::Result<()> {
+        let new_blk_sz =
+            (((self.header.avail.sz * GDBM_AVAIL_ELEM_SZ) / 2) + GDBM_AVAIL_HDR_SZ) as usize;
+
+        // having calculated size of 1st extension block (new_blk_sz),
+        // - look in free list for that amount of space
+        // - if not, get new space from end of file
+        let mut ext_elem = self
+            .header
+            .avail
+            .remove_elem(new_blk_sz)
+            .unwrap_or(self.new_block(new_blk_sz));
+        let new_blk_ofs = ext_elem.addr;
+
+        let mut hdr_blk = AvailBlock::new(self.header.avail.sz);
+        let mut ext_blk = AvailBlock::new(self.header.avail.sz);
+
+        // divide avail into 2 vectors.  elements are sorted by size,
+        // so we perform A/B push, rather than simply slice first 1/2 of vec
+        let mut index = 0;
+        for elem in &self.header.avail.elems {
+            if index & 0x1 == 0 {
+                hdr_blk.elems.push(elem.clone());
+            } else {
+                ext_blk.elems.push(elem.clone());
+            }
+            index += 1;
+        }
+
+        // finalize new header avail block.  equates to
+        //     head.next = second
+        hdr_blk.count = hdr_blk.elems.len() as u32;
+        hdr_blk.next_block = new_blk_ofs;
+
+        // finalize new extension avail block, linked-to by header block
+        // as with any linked list insertion at-head, our 'next' equates to
+        //     second.next = head.next
+        ext_blk.count = ext_blk.elems.len() as u32;
+        ext_blk.next_block = self.header.avail.next_block;
+
+        // size allocation may have allocated more space than we needed.
+        // gdbm calls self.free_record(), which may call
+        // self.push_avail_block() recurively.  We choose the alternative,
+        // adding the space to the header block as a simplfication.
+        ext_elem.sz -= new_blk_sz as u32;
+        ext_elem.addr += new_blk_sz as u64;
+        if ext_elem.sz > IGNORE_SMALL as u32 {
+            // insert, sorted by size
+            let pos = hdr_blk.elems.binary_search(&ext_elem).unwrap_or_else(|e| e);
+            hdr_blk.elems.insert(pos, ext_elem);
+            hdr_blk.count += 1;
+        }
+
+        // update avail block in header (deferred write)
+        self.header.avail = hdr_blk;
+        self.header.dirty = true;
+
+        // write extension block to storage (immediately)
+        let ext_bytes = ext_blk.serialize(self.header.is_64, DEF_IS_LE);
+        write_ofs(&mut self.f, new_blk_ofs, &ext_bytes)?;
+
+        Ok(())
+    }
+
+    // Add (addr,sz) to db-wide free list
     fn free_record(&mut self, addr: u64, sz: u32) -> io::Result<()> {
         // simply forget elements too small to worry about
         if (sz as usize) <= IGNORE_SMALL {
@@ -653,6 +945,7 @@ impl Gdbm {
         if self.header.avail.count == self.header.avail.sz {
             self.push_avail_block()?;
         }
+        assert!(self.header.avail.count < self.header.avail.sz);
 
         // insort into header avail vector, sorted by size
         let pos = self
@@ -670,10 +963,69 @@ impl Gdbm {
         Ok(())
     }
 
-    fn write_dirty(&mut self) -> io::Result<()> {
-        Err(Error::new(ErrorKind::Other, "not implemented"))
+    fn write_bucket(&mut self, bucket_ofs: u64, bucket: &Bucket) -> io::Result<()> {
+        let bytes = bucket.serialize(self.header.is_64, DEF_IS_LE);
+        write_ofs(&mut self.f, bucket_ofs, &bytes)?;
+
+        Ok(())
     }
 
+    // write out any cached, not-yet-written metadata and data to storage
+    fn write_buckets(&mut self) -> io::Result<()> {
+        let dirty_list = self.bucket_cache.dirty_list();
+
+        // write out each dirty bucket
+        for bucket_ofs in dirty_list {
+            assert_eq!(self.bucket_cache.contains(bucket_ofs), true);
+            let bucket = self.bucket_cache.bucket_map[&bucket_ofs].clone();
+
+            self.write_bucket(bucket_ofs, &bucket)?;
+        }
+
+        // nothing in cache remains dirty
+        self.bucket_cache.clear_dirty();
+
+        Ok(())
+    }
+
+    // write out any cached, not-yet-written metadata and data to storage
+    fn write_dir(&mut self) -> io::Result<()> {
+        if !self.dir_dirty {
+            return Ok(());
+        }
+
+        let bytes = self.dir.serialize(self.header.is_64, DEF_IS_LE);
+        write_ofs(&mut self.f, self.header.dir_ofs, &bytes)?;
+
+        self.dir_dirty = false;
+
+        Ok(())
+    }
+
+    // write out any cached, not-yet-written metadata and data to storage
+    fn write_header(&mut self) -> io::Result<()> {
+        if !self.header.dirty {
+            return Ok(());
+        }
+
+        let bytes = self.header.serialize(self.header.is_64, DEF_IS_LE);
+        write_ofs(&mut self.f, 0, &bytes)?;
+
+        self.header.dirty = false;
+
+        Ok(())
+    }
+
+    // write out any cached, not-yet-written metadata and data to storage
+    fn write_dirty(&mut self) -> io::Result<()> {
+        self.write_buckets()?;
+        self.write_dir()?;
+        self.write_header()?;
+
+        Ok(())
+    }
+
+    // API: remove a key/value pair from db, given a key
     pub fn remove(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         let get_opt = self.int_get(key)?;
         if get_opt == None {
@@ -718,6 +1070,7 @@ impl Gdbm {
         Ok(Some(data))
     }
 
+    // API: print bucket directory
     pub fn print_dir(&self) {
         println!(
             "size = {}, bits = {}, buckets = ?",
@@ -725,13 +1078,14 @@ impl Gdbm {
         );
 
         for idx in 0..self.dir.len() {
-            println!("{}: {}", idx, self.dir[idx]);
+            println!("{}: {}", idx, self.dir.dir[idx]);
         }
     }
 
+    // API: print bucket
     pub fn print_bucket(&mut self, bucket_dir: usize) -> io::Result<()> {
         self.get_bucket(bucket_dir)?;
-        let bucket_ofs = self.dir[bucket_dir];
+        let bucket_ofs = self.dir.dir[bucket_dir];
         let bucket = self.bucket_cache.bucket_map[&bucket_ofs].clone();
 
         println!("bits = {}", bucket.bits);
