@@ -1,9 +1,13 @@
-use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt};
-use std::collections::HashMap;
+use byteorder::{LittleEndian, ReadBytesExt};
 use std::{
     fs::OpenOptions,
     io::{self, Error, ErrorKind, Read, Seek, SeekFrom, Write},
 };
+
+mod bucket;
+mod ser;
+use bucket::{Bucket, BucketCache, BucketElement, BUCKET_AVAIL};
+use ser::{w32, woff_t};
 
 // todo: convert to enum w/ value
 const GDBM_OMAGIC: u32 = 0x13579ace; /* Original magic number. */
@@ -21,43 +25,9 @@ const GDBM_HASH_BUCKET_SZ: u32 = 136;
 const GDBM_BUCKET_ELEM_SZ: u32 = 24;
 const GDBM_AVAIL_HDR_SZ: u32 = 16;
 const GDBM_AVAIL_ELEM_SZ: u32 = 16;
-const BUCKET_AVAIL: u32 = 6;
 const KEY_SMALL: usize = 4;
 const IGNORE_SMALL: usize = 4;
 const DEF_IS_LE: bool = true;
-
-// serialize u32, with runtime endian selection
-fn w32(is_le: bool, val: u32) -> Vec<u8> {
-    let mut buf: Vec<u8> = Vec::with_capacity(4);
-    buf.resize(4, 0);
-
-    match is_le {
-        true => LittleEndian::write_u32(&mut buf, val),
-        false => BigEndian::write_u32(&mut buf, val),
-    }
-
-    buf
-}
-
-// serialize u64, with runtime endian selection
-fn w64(is_le: bool, val: u64) -> Vec<u8> {
-    let mut buf: Vec<u8> = Vec::with_capacity(4);
-    buf.resize(4, 0);
-
-    match is_le {
-        true => LittleEndian::write_u64(&mut buf, val),
-        false => BigEndian::write_u64(&mut buf, val),
-    }
-
-    buf
-}
-
-fn woff_t(is_64: bool, is_le: bool, val: u64) -> Vec<u8> {
-    match is_64 {
-        true => w64(is_le, val),
-        false => w32(is_le, val as u32),
-    }
-}
 
 #[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct AvailElem {
@@ -309,120 +279,6 @@ impl Header {
         buf.append(&mut self.avail.serialize(is_64, is_le));
 
         buf
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct BucketElement {
-    hash: u32,
-    key_start: [u8; 4],
-    data_ofs: u64,
-    key_size: u32,
-    data_size: u32,
-}
-
-impl BucketElement {
-    fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.append(&mut w32(is_le, self.hash));
-        buf.append(&mut self.key_start.to_vec());
-        buf.append(&mut woff_t(is_64, is_le, self.data_ofs));
-        buf.append(&mut w32(is_le, self.key_size));
-        buf.append(&mut w32(is_le, self.data_size));
-
-        buf
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Bucket {
-    // on-disk gdbm database hash bucket
-    av_count: u32,
-    avail: Vec<AvailElem>,
-    bits: u32,
-    count: u32,
-    tab: Vec<BucketElement>,
-}
-
-impl Bucket {
-    fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
-        let mut buf = Vec::new();
-
-        //
-        // avail section
-        //
-
-        buf.append(&mut w32(is_le, self.av_count));
-        if is_64 {
-            let padding: u32 = 0;
-            buf.append(&mut w32(is_le, padding));
-        }
-
-        assert_eq!(self.avail.len(), BUCKET_AVAIL as usize);
-        for avail_elem in &self.avail {
-            buf.append(&mut avail_elem.serialize(is_64, is_le));
-        }
-
-        //
-        // misc section
-        //
-        buf.append(&mut w32(is_le, self.bits));
-        buf.append(&mut w32(is_le, self.count));
-
-        //
-        // bucket elements section
-        //
-        for bucket_elem in &self.tab {
-            buf.append(&mut bucket_elem.serialize(is_64, is_le));
-        }
-
-        buf
-    }
-}
-
-#[derive(Debug)]
-pub struct BucketCache {
-    bucket_map: HashMap<u64, Bucket>,
-    dirty: HashMap<u64, bool>,
-}
-
-impl BucketCache {
-    pub fn new() -> BucketCache {
-        BucketCache {
-            bucket_map: HashMap::new(),
-            dirty: HashMap::new(),
-        }
-    }
-
-    pub fn dirty(&mut self, bucket_ofs: u64) {
-        self.dirty.insert(bucket_ofs, true);
-    }
-
-    pub fn dirty_list(&mut self) -> Vec<u64> {
-        let mut dl: Vec<u64> = Vec::new();
-        for (ofs, _dummy) in &self.dirty {
-            dl.push(*ofs);
-        }
-        dl.sort();
-
-        dl
-    }
-
-    pub fn clear_dirty(&mut self) {
-        self.dirty.clear();
-    }
-
-    pub fn contains(&self, bucket_ofs: u64) -> bool {
-        self.bucket_map.contains_key(&bucket_ofs)
-    }
-
-    pub fn insert(&mut self, bucket_ofs: u64, bucket: Bucket) {
-        self.bucket_map.insert(bucket_ofs, bucket);
-    }
-
-    pub fn update(&mut self, bucket_ofs: u64, bucket: Bucket) {
-        self.bucket_map.insert(bucket_ofs, bucket);
-        self.dirty(bucket_ofs);
     }
 }
 
