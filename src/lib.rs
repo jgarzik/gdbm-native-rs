@@ -167,152 +167,6 @@ pub struct Header {
     dirty: bool,
 }
 
-#[derive(Debug, Clone)]
-pub struct BucketElement {
-    hash: u32,
-    key_start: [u8; 4],
-    data_ofs: u64,
-    key_size: u32,
-    data_size: u32,
-}
-
-impl BucketElement {
-    fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.append(&mut w32(is_le, self.hash));
-        buf.append(&mut self.key_start.to_vec());
-        buf.append(&mut woff_t(is_64, is_le, self.data_ofs));
-        buf.append(&mut w32(is_le, self.key_size));
-        buf.append(&mut w32(is_le, self.data_size));
-
-        buf
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Bucket {
-    // on-disk gdbm database hash bucket
-    av_count: u32,
-    avail: Vec<AvailElem>,
-    bits: u32,
-    count: u32,
-    tab: Vec<BucketElement>,
-}
-
-impl Bucket {
-    fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
-        let mut buf = Vec::new();
-
-        //
-        // avail section
-        //
-
-        buf.append(&mut w32(is_le, self.av_count));
-        if is_64 {
-            let padding: u32 = 0;
-            buf.append(&mut w32(is_le, padding));
-        }
-
-        assert_eq!(self.avail.len(), BUCKET_AVAIL as usize);
-        for avail_elem in &self.avail {
-            buf.append(&mut avail_elem.serialize(is_64, is_le));
-        }
-
-        //
-        // misc section
-        //
-        buf.append(&mut w32(is_le, self.bits));
-        buf.append(&mut w32(is_le, self.count));
-
-        //
-        // bucket elements section
-        //
-        for bucket_elem in &self.tab {
-            buf.append(&mut bucket_elem.serialize(is_64, is_le));
-        }
-
-        buf
-    }
-}
-
-#[derive(Debug)]
-pub struct BucketCache {
-    bucket_map: HashMap<u64, Bucket>,
-    dirty: HashMap<u64, bool>,
-}
-
-impl BucketCache {
-    pub fn new() -> BucketCache {
-        BucketCache {
-            bucket_map: HashMap::new(),
-            dirty: HashMap::new(),
-        }
-    }
-
-    pub fn dirty(&mut self, bucket_ofs: u64) {
-        self.dirty.insert(bucket_ofs, true);
-    }
-
-    pub fn dirty_list(&mut self) -> Vec<u64> {
-        let mut dl: Vec<u64> = Vec::new();
-        for (ofs, _dummy) in &self.dirty {
-            dl.push(*ofs);
-        }
-        dl.sort();
-
-        dl
-    }
-
-    pub fn clear_dirty(&mut self) {
-        self.dirty.clear();
-    }
-
-    pub fn contains(&self, bucket_ofs: u64) -> bool {
-        self.bucket_map.contains_key(&bucket_ofs)
-    }
-
-    pub fn insert(&mut self, bucket_ofs: u64, bucket: Bucket) {
-        self.bucket_map.insert(bucket_ofs, bucket);
-    }
-
-    pub fn update(&mut self, bucket_ofs: u64, bucket: Bucket) {
-        self.bucket_map.insert(bucket_ofs, bucket);
-        self.dirty(bucket_ofs);
-    }
-}
-
-#[derive(Debug)]
-pub struct Directory {
-    dir: Vec<u64>,
-}
-
-impl Directory {
-    fn len(&self) -> usize {
-        self.dir.len()
-    }
-
-    fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
-        let mut buf = Vec::new();
-
-        for ofs in &self.dir {
-            buf.append(&mut woff_t(is_64, is_le, *ofs));
-        }
-
-        buf
-    }
-}
-
-#[derive(Debug)]
-pub struct Gdbm {
-    f: std::fs::File,
-    header: Header,
-    dir: Directory,
-    dir_dirty: bool,
-    bucket_cache: BucketCache,
-    cur_bucket_ofs: u64,
-    cur_bucket_dir: usize,
-}
-
 fn build_dir_size(block_sz: u32) -> (u32, u32) {
     let mut dir_size = 8 * 8; // fixme: 8==off_t==vary on is_64
     let mut dir_bits = 3;
@@ -458,6 +312,141 @@ impl Header {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct BucketElement {
+    hash: u32,
+    key_start: [u8; 4],
+    data_ofs: u64,
+    key_size: u32,
+    data_size: u32,
+}
+
+impl BucketElement {
+    fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.append(&mut w32(is_le, self.hash));
+        buf.append(&mut self.key_start.to_vec());
+        buf.append(&mut woff_t(is_64, is_le, self.data_ofs));
+        buf.append(&mut w32(is_le, self.key_size));
+        buf.append(&mut w32(is_le, self.data_size));
+
+        buf
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Bucket {
+    // on-disk gdbm database hash bucket
+    av_count: u32,
+    avail: Vec<AvailElem>,
+    bits: u32,
+    count: u32,
+    tab: Vec<BucketElement>,
+}
+
+impl Bucket {
+    fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
+        let mut buf = Vec::new();
+
+        //
+        // avail section
+        //
+
+        buf.append(&mut w32(is_le, self.av_count));
+        if is_64 {
+            let padding: u32 = 0;
+            buf.append(&mut w32(is_le, padding));
+        }
+
+        assert_eq!(self.avail.len(), BUCKET_AVAIL as usize);
+        for avail_elem in &self.avail {
+            buf.append(&mut avail_elem.serialize(is_64, is_le));
+        }
+
+        //
+        // misc section
+        //
+        buf.append(&mut w32(is_le, self.bits));
+        buf.append(&mut w32(is_le, self.count));
+
+        //
+        // bucket elements section
+        //
+        for bucket_elem in &self.tab {
+            buf.append(&mut bucket_elem.serialize(is_64, is_le));
+        }
+
+        buf
+    }
+}
+
+#[derive(Debug)]
+pub struct BucketCache {
+    bucket_map: HashMap<u64, Bucket>,
+    dirty: HashMap<u64, bool>,
+}
+
+impl BucketCache {
+    pub fn new() -> BucketCache {
+        BucketCache {
+            bucket_map: HashMap::new(),
+            dirty: HashMap::new(),
+        }
+    }
+
+    pub fn dirty(&mut self, bucket_ofs: u64) {
+        self.dirty.insert(bucket_ofs, true);
+    }
+
+    pub fn dirty_list(&mut self) -> Vec<u64> {
+        let mut dl: Vec<u64> = Vec::new();
+        for (ofs, _dummy) in &self.dirty {
+            dl.push(*ofs);
+        }
+        dl.sort();
+
+        dl
+    }
+
+    pub fn clear_dirty(&mut self) {
+        self.dirty.clear();
+    }
+
+    pub fn contains(&self, bucket_ofs: u64) -> bool {
+        self.bucket_map.contains_key(&bucket_ofs)
+    }
+
+    pub fn insert(&mut self, bucket_ofs: u64, bucket: Bucket) {
+        self.bucket_map.insert(bucket_ofs, bucket);
+    }
+
+    pub fn update(&mut self, bucket_ofs: u64, bucket: Bucket) {
+        self.bucket_map.insert(bucket_ofs, bucket);
+        self.dirty(bucket_ofs);
+    }
+}
+
+#[derive(Debug)]
+pub struct Directory {
+    dir: Vec<u64>,
+}
+
+impl Directory {
+    fn len(&self) -> usize {
+        self.dir.len()
+    }
+
+    fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
+        let mut buf = Vec::new();
+
+        for ofs in &self.dir {
+            buf.append(&mut woff_t(is_64, is_le, *ofs));
+        }
+
+        buf
+    }
+}
+
 // Read C-struct-based bucket directory (a vector of storage offsets)
 fn dir_reader(f: &mut std::fs::File, header: &Header) -> io::Result<Vec<u64>> {
     let is_64 = header.is_64;
@@ -540,6 +529,17 @@ fn write_ofs(f: &mut std::fs::File, ofs: u64, data: &[u8]) -> io::Result<()> {
     f.write_all(data)?;
 
     Ok(())
+}
+
+#[derive(Debug)]
+pub struct Gdbm {
+    f: std::fs::File,
+    header: Header,
+    dir: Directory,
+    dir_dirty: bool,
+    bucket_cache: BucketCache,
+    cur_bucket_ofs: u64,
+    cur_bucket_dir: usize,
 }
 
 impl Gdbm {
