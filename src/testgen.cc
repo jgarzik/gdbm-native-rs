@@ -1,0 +1,134 @@
+
+/*
+   testgen -- Generate test data for gdbm-rs
+  
+   Build with:
+   $ g++ -Wall -O2 -o testgen testgen.cc -lgdbm
+
+ */
+
+#include <string>
+#include <vector>
+#include <stdio.h>
+#include <unistd.h>
+#include <time.h>
+#include <ctype.h>
+#include <gdbm.h>
+
+using namespace std;
+
+static const unsigned int N_REC = 10001;
+
+class kv_pair {
+public:
+	string key;
+	string value;
+};
+
+static int gen_test_data(string db_fn, string json_fn)
+{
+	vector<kv_pair> data;
+
+	char s[128];
+	for (unsigned int i = 0; i < N_REC; i++) {
+		kv_pair p;
+
+		snprintf(s, sizeof(s), "key %u", i);
+		p.key = s;
+
+		snprintf(s, sizeof(s), "value %u", i);
+		p.value = s;
+
+		data.push_back(p);
+	}
+
+	GDBM_FILE dbf = gdbm_open(db_fn.c_str(), 512, GDBM_WRCREAT, 0666, NULL);
+	if (!dbf) {
+		fprintf(stderr, "gdbm_open failed\n");
+		return 1;
+	}
+
+	for (auto & p : data) {
+		datum db_key = { (char *) p.key.c_str(), (int) p.key.size() };
+		datum db_value = { (char *) p.value.c_str(), (int) p.value.size() };
+		int rc = gdbm_store(dbf, db_key, db_value, GDBM_REPLACE);
+		if (rc != 0) {
+			fprintf(stderr, "gdbm_store failed, rc %d, key %s\n",
+				rc, p.key.c_str());
+			return 1;
+		}
+	}
+
+	gdbm_close(dbf);
+
+	FILE *f = fopen(json_fn.c_str(), "w");
+	if (!f) {
+		fprintf(stderr, "fopen failed\n");
+		return 1;
+	}
+
+	time_t t = time(NULL);
+
+	fprintf(f, "{"
+	"  \"generated_by\":\"testgen\","
+	"  \"generated_time\":\"%lu\","
+	"  \"data_records\": %zu,"
+	"  \"data\": [",
+		t,
+		data.size());
+
+	bool first = true;
+	for (auto & p : data) {
+		fprintf(f, "%s[\"%s\",\"%s\"]",
+			first ? "" : ",",
+			p.key.c_str(),
+			p.value.c_str());
+
+		if (first)
+			first = false;
+	}
+
+	fprintf(f, "]}\n");
+	fclose(f);
+
+	return 0;
+}
+
+static void usage(const char *progname)
+{
+	fprintf(stderr, "Usage: %s -o output-db -j output-json\n", progname);
+	fprintf(stderr,
+"\n"
+"Options:\n"
+"\t-o\tOutput db\n"
+"\t-j\tOutput JSON metadata to file\n"
+	);
+}
+
+int main (int argc, char *argv[])
+{
+	int opt;
+	char *out_fn = NULL;
+	char *out_json = NULL;
+
+	while ((opt = getopt(argc, argv, "o:j:")) != -1) {
+		switch (opt) {
+		case 'o':
+			out_fn = optarg;
+			break;
+		case 'j':
+			out_json = optarg;
+			break;
+		default:
+			usage(argv[0]);
+			return 1;
+		}
+	}
+
+	if (!out_fn || !out_json) {
+		usage(argv[0]);
+		return 1;
+	}
+
+	return gen_test_data(out_fn, out_json);
+}
