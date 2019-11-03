@@ -4,7 +4,7 @@ Rust crate library for reading/writing GDBM key/value databases
 ## Goals
 
 * Read and Write GDBM databases
-* Written in safe Rust
+* Written in pure, safe Rust (no FFI shim to libgdbm).
 * Better-than-C:  Support all 32-/64-bit and big/little endian variants
 
 ## Status
