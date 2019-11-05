@@ -639,3 +639,23 @@ impl Gdbm {
         Ok(())
     }
 }
+
+#[cfg(test)]
+use std::path::PathBuf;
+
+#[cfg(test)]
+mod test_gdbm {
+    const EMPTY_DB_FN: &'static str = "empty.db";
+
+    use super::*;
+
+    #[test]
+    fn open_close() {
+        let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        d.push("src/data");
+        d.push(EMPTY_DB_FN);
+        let db_fn = d.to_str().unwrap();
+
+        let _res = Gdbm::open(db_fn).unwrap();
+    }
+}
