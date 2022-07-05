@@ -646,12 +646,12 @@ use std::path::PathBuf;
 #[cfg(test)]
 mod test_gdbm {
     const EMPTY_DB_FN: &'static str = "empty.db";
+    const BASIC_DB: usize = 1;
     const BASIC_DB_FN: &'static str = "basic.db";
 
     use super::*;
 
     struct TestInfo {
-        pub name: String,
         pub path: String,
     }
 
@@ -672,7 +672,6 @@ mod test_gdbm {
         d.push("src/data");
         d.push(EMPTY_DB_FN);
         cfg.tests.push(TestInfo {
-            name: EMPTY_DB_FN.to_string(),
             path: d.to_str().unwrap().to_string(),
         });
 
@@ -680,7 +679,6 @@ mod test_gdbm {
         d.push("src/data");
         d.push(BASIC_DB_FN);
         cfg.tests.push(TestInfo {
-            name: BASIC_DB_FN.to_string(),
             path: d.to_str().unwrap().to_string(),
         });
 
@@ -691,9 +689,37 @@ mod test_gdbm {
     fn api_open_close() {
         let testcfg = init_tests();
 
-        for test in &testcfg.tests {
-            let _res = Gdbm::open(&test.path).unwrap();
+        for testdb in &testcfg.tests {
+            let _res = Gdbm::open(&testdb.path).unwrap();
             // implicit close when scope closes
         }
+    }
+
+    #[test]
+    fn api_exists_not() {
+        let testcfg = init_tests();
+
+        for testdb in &testcfg.tests {
+            let mut db = Gdbm::open(&testdb.path).unwrap();
+            let res = db.contains_key(b"dummy").unwrap();
+            assert_eq!(res, false);
+        }
+
+        if true {
+            let testdb = &testcfg.tests[BASIC_DB];
+            let mut db = Gdbm::open(&testdb.path).unwrap();
+            let res = db.contains_key(b"key -111").unwrap();
+            assert_eq!(res, false);
+        }
+    }
+
+    #[test]
+    fn api_exists() {
+        let testcfg = init_tests();
+
+        let testdb = &testcfg.tests[BASIC_DB];
+        let mut db = Gdbm::open(&testdb.path).unwrap();
+        let res = db.contains_key(b"key 11").unwrap();
+        assert_eq!(res, true);
     }
 }
