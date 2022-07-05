@@ -3,8 +3,10 @@ use crate::{GDBM_HASH_BITS, KEY_SMALL};
 
 // core gdbm hashing function
 pub fn hash_key(key: &[u8]) -> u32 {
-    let mut value: u32 = 0x238F13AF * (key.len() as u32);
     let mut index: u32 = 0;
+    let mut value: u32 = key.len() as u32;
+    value = value.wrapping_mul(0x238F13AF);
+
     for ch in key.iter() {
         value = (value + ((*ch as u32) << (index * 5 % 24))) & 0x7FFFFFFF;
         index = index + 1;
