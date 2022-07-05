@@ -646,16 +646,37 @@ use std::path::PathBuf;
 #[cfg(test)]
 mod test_gdbm {
     const EMPTY_DB_FN: &'static str = "empty.db";
+    const BASIC_DB_FN: &'static str = "basic.db";
 
     use super::*;
 
-    #[test]
-    fn open_close() {
+    fn get_empty_db_fn() -> String {
         let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         d.push("src/data");
         d.push(EMPTY_DB_FN);
-        let db_fn = d.to_str().unwrap();
+        d.to_str().unwrap().to_string()
+    }
 
-        let _res = Gdbm::open(db_fn).unwrap();
+    fn get_basic_db_fn() -> String {
+        let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        d.push("src/data");
+        d.push(BASIC_DB_FN);
+        d.to_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn api_open_close() {
+        let empty_db_fn = get_empty_db_fn();
+        let basic_db_fn = get_basic_db_fn();
+
+        if true {
+            let _res = Gdbm::open(&empty_db_fn).unwrap();
+            // implicit close when scope closes
+        }
+
+        if true {
+            let _res = Gdbm::open(&basic_db_fn).unwrap();
+            // implicit close when scope closes
+        }
     }
 }
