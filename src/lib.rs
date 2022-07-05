@@ -722,4 +722,26 @@ mod test_gdbm {
         let res = db.contains_key(b"key 11").unwrap();
         assert_eq!(res, true);
     }
+
+    #[test]
+    fn api_get() {
+        let testcfg = init_tests();
+
+        let testdb = &testcfg.tests[BASIC_DB];
+        let mut db = Gdbm::open(&testdb.path).unwrap();
+        let res = db.get(b"key 11");
+        match res {
+            Ok(opt) => match opt {
+                None => {
+                    assert!(false);
+                }
+                Some(val) => {
+                    assert_eq!(val, b"value 11");
+                }
+            },
+            Err(_e) => {
+                assert!(false);
+            }
+        }
+    }
 }
