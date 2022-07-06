@@ -28,3 +28,9 @@ Major categories of tasks leading to 1.0.0.  View the
 - [ ] Tests:  Healthy test coverage
 - [ ] Code Cleanup:  Review by rust experts
 
+## Documentation
+
+The best documentation is the original GDBM source code from the GNU project: https://www.gnu.org.ua/software/gdbm/
+
+A sister project also provides [additional technical documentation](https://github.com/jgarzik/gdbm-docs), including file format information.
+
