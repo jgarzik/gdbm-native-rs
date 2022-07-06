@@ -748,6 +748,18 @@ mod test_gdbm {
     }
 
     #[test]
+    fn api_get_not() {
+        let testcfg = init_tests();
+
+        for testdb in &testcfg.tests {
+            let keystr = String::from("This key does not exist.");
+            let mut db = Gdbm::open(&testdb.path).unwrap();
+            let res = db.get(keystr.as_bytes()).unwrap();
+            assert_eq!(res, None);
+        }
+    }
+
+    #[test]
     fn api_get() {
         let testcfg = init_tests();
 
