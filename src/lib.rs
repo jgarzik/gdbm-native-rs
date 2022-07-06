@@ -110,8 +110,9 @@ impl Gdbm {
         let bucket_ofs = self.dir.dir[bucket_dir];
         println!("bucket ofs = {}", bucket_ofs);
 
+        // FIXME: causes failures for unknown reasons
         // already in cache
-        if self.bucket_cache.contains(bucket_ofs) {
+        if false && self.bucket_cache.contains(bucket_ofs) {
             return Ok(true);
         }
 
@@ -719,8 +720,12 @@ mod test_gdbm {
 
         let testdb = &testcfg.tests[BASIC_DB];
         let mut db = Gdbm::open(&testdb.path).unwrap();
-        let res = db.contains_key(b"key 11").unwrap();
-        assert_eq!(res, true);
+
+        for n in 0..10001 {
+            let keystr = format!("key {}", n);
+            let res = db.contains_key(keystr.as_bytes()).unwrap();
+            assert_eq!(res, true);
+        }
     }
 
     #[test]
@@ -729,18 +734,23 @@ mod test_gdbm {
 
         let testdb = &testcfg.tests[BASIC_DB];
         let mut db = Gdbm::open(&testdb.path).unwrap();
-        let res = db.get(b"key 11");
-        match res {
-            Ok(opt) => match opt {
-                None => {
+
+        for n in 0..10001 {
+            let keystr = format!("key {}", n);
+            let res = db.get(keystr.as_bytes());
+            match res {
+                Ok(opt) => match opt {
+                    None => {
+                        assert!(false);
+                    }
+                    Some(val) => {
+                        let valstr = format!("value {}", n);
+                        assert_eq!(val, valstr.as_bytes());
+                    }
+                },
+                Err(_e) => {
                     assert!(false);
                 }
-                Some(val) => {
-                    assert_eq!(val, b"value 11");
-                }
-            },
-            Err(_e) => {
-                assert!(false);
             }
         }
     }
