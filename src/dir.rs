@@ -37,14 +37,17 @@ impl Directory {
     }
 }
 
+pub fn dirent_elem_size(is_64: bool) -> usize {
+    match is_64 {
+        true => 8,
+        false => 4,
+    }
+}
+
 // Read C-struct-based bucket directory (a vector of storage offsets)
 pub fn dir_reader(f: &mut std::fs::File, header: &Header) -> io::Result<Vec<u64>> {
     let is_64 = header.is_64;
-    let dirent_sz = match is_64 {
-        true => 8,
-        false => 4,
-    };
-    let dirent_count = header.dir_sz / dirent_sz;
+    let dirent_count = header.dir_sz as usize / dirent_elem_size(is_64);
 
     let mut dir = Vec::new();
     dir.reserve_exact(dirent_count as usize);
