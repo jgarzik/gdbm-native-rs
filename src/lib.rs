@@ -12,7 +12,7 @@ mod header;
 mod ser;
 use avail::{AvailBlock, AvailElem};
 use bucket::{Bucket, BucketCache, BucketElement, BUCKET_AVAIL};
-use dir::{dir_reader, Directory};
+use dir::{dir_reader, dirent_elem_size, Directory};
 use hashutil::{key_loc, partial_key_match};
 use header::Header;
 
@@ -191,18 +191,22 @@ impl Gdbm {
         self.bucket_cache.bucket_map[&self.cur_bucket_ofs].clone()
     }
 
+    fn dir_max_elem(&self) -> usize {
+        self.header.dir_sz as usize / dirent_elem_size(self.header.is_64)
+    }
+
     // since one bucket dir entry may duplicate another,
     // this function returns the next non-dup bucket dir
     fn next_bucket_dir(&self, bucket_dir_in: usize) -> usize {
-        let dir_sz = self.header.dir_sz as usize;
-        if bucket_dir_in >= dir_sz {
-            return dir_sz;
+        let dir_max_elem = self.dir_max_elem();
+        if bucket_dir_in >= dir_max_elem {
+            return dir_max_elem;
         }
 
         let mut bucket_dir = bucket_dir_in;
 
         let cur_ofs = self.dir.dir[bucket_dir];
-        while bucket_dir < dir_sz && cur_ofs == self.dir.dir[bucket_dir] {
+        while bucket_dir < dir_max_elem && cur_ofs == self.dir.dir[bucket_dir] {
             bucket_dir = bucket_dir + 1;
         }
 
@@ -213,7 +217,8 @@ impl Gdbm {
     pub fn len(&mut self) -> io::Result<usize> {
         let mut len: usize = 0;
         let mut cur_dir: usize = 0;
-        while cur_dir < (self.header.dir_sz as usize) {
+        let dir_max_elem = self.dir_max_elem();
+        while cur_dir < dir_max_elem {
             self.get_bucket(cur_dir)?;
             let bucket = self.get_current_bucket();
             len = len + (bucket.count as usize);
