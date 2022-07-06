@@ -659,6 +659,7 @@ mod test_gdbm {
 
     struct TestInfo {
         pub path: String,
+        pub n_records: usize,
     }
 
     struct TestConfig {
@@ -679,6 +680,7 @@ mod test_gdbm {
         d.push(EMPTY_DB_FN);
         cfg.tests.push(TestInfo {
             path: d.to_str().unwrap().to_string(),
+            n_records: 0,
         });
 
         let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -686,6 +688,7 @@ mod test_gdbm {
         d.push(BASIC_DB_FN);
         cfg.tests.push(TestInfo {
             path: d.to_str().unwrap().to_string(),
+            n_records: 10001,
         });
 
         cfg
@@ -730,6 +733,17 @@ mod test_gdbm {
             let keystr = format!("key {}", n);
             let res = db.contains_key(keystr.as_bytes()).unwrap();
             assert_eq!(res, true);
+        }
+    }
+
+    #[test]
+    fn api_len() {
+        let testcfg = init_tests();
+
+        for testdb in &testcfg.tests {
+            let mut db = Gdbm::open(&testdb.path).unwrap();
+            let res = db.len().unwrap();
+            assert_eq!(res, testdb.n_records);
         }
     }
 
