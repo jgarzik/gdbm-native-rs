@@ -557,6 +557,14 @@ impl Gdbm {
         Ok(())
     }
 
+    // API: ensure database is flushed to stable storage
+    pub fn sync(&mut self) -> io::Result<()> {
+        self.write_dirty()?;
+        self.f.sync_data()?;
+
+        Ok(())
+    }
+
     // API: remove a key/value pair from db, given a key
     pub fn remove(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         let get_opt = self.int_get(key)?;
