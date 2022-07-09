@@ -100,7 +100,7 @@ impl Gdbm {
         })
     }
 
-    pub fn export_ascii_header(&self, outf: &mut std::fs::File) -> io::Result<()> {
+    fn export_ascii_header(&self, outf: &mut std::fs::File) -> io::Result<()> {
         write!(outf, "# GDBM dump file\n")?;
         write!(outf, "#:version=1.1\n")?;
         write!(outf, "#:file={}\n", self.pathname)?;
@@ -109,7 +109,7 @@ impl Gdbm {
         Ok(())
     }
 
-    pub fn export_ascii_datum(&self, outf: &mut std::fs::File, bindata: &[u8]) -> io::Result<()> {
+    fn export_ascii_datum(&self, outf: &mut std::fs::File, bindata: &[u8]) -> io::Result<()> {
         const MAX_DUMP_LINE_LEN: usize = 76;
 
         write!(outf, "#:len={}\n", bindata.len())?;
@@ -129,7 +129,7 @@ impl Gdbm {
         Ok(())
     }
 
-    pub fn export_ascii_records(&mut self, outf: &mut std::fs::File) -> io::Result<usize> {
+    fn export_ascii_records(&mut self, outf: &mut std::fs::File) -> io::Result<usize> {
         let mut n_written: usize = 0;
         let mut key_res = self.first_key()?;
         while key_res != None {
@@ -146,16 +146,13 @@ impl Gdbm {
         Ok(n_written)
     }
 
-    pub fn export_ascii_footer(
-        &self,
-        outf: &mut std::fs::File,
-        n_written: usize,
-    ) -> io::Result<()> {
+    fn export_ascii_footer(&self, outf: &mut std::fs::File, n_written: usize) -> io::Result<()> {
         write!(outf, "#:count={}\n", n_written)?;
         write!(outf, "# End of data\n")?;
         Ok(())
     }
 
+    // API: export database to ASCII dump file
     pub fn export_ascii(&mut self, outf: &mut std::fs::File) -> io::Result<()> {
         self.export_ascii_header(outf)?;
         let n_written = self.export_ascii_records(outf)?;
@@ -629,6 +626,8 @@ impl Gdbm {
 
     // API: ensure database is flushed to stable storage
     pub fn sync(&mut self) -> io::Result<()> {
+        // TODO: read-only check
+
         self.write_dirty()?;
         self.f.sync_data()?;
 
