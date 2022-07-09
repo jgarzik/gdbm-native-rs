@@ -734,6 +734,7 @@ mod test_gdbm {
     const BASIC_DB_FN: &'static str = "basic.db";
 
     use super::*;
+    use std::collections::HashMap;
     use std::fs;
 
     struct TestInfo {
@@ -813,6 +814,39 @@ mod test_gdbm {
             let res = db.contains_key(keystr.as_bytes()).unwrap();
             assert_eq!(res, true);
         }
+    }
+
+    #[test]
+    fn api_first_next_key() {
+        let testcfg = init_tests();
+
+        // build internal map of keys expected to be present in basic.db
+        let mut keys_remaining: HashMap<Vec<u8>, bool> = HashMap::new();
+        for n in 0..10001 {
+            let keystr = format!("key {}", n);
+            keys_remaining.insert(keystr.as_bytes().to_vec(), true);
+        }
+
+        // simple verf of correct map construction
+        let testdb = &testcfg.tests[BASIC_DB];
+        assert_eq!(keys_remaining.len(), testdb.n_records);
+
+        // open basic.db
+        let mut db = Gdbm::open(&testdb.path).unwrap();
+
+        // iterate through each key in db
+        let mut key_res = db.first_key().unwrap();
+        while key_res != None {
+            let key = key_res.unwrap();
+
+            // remove iteration key from internal map
+            assert_ne!(keys_remaining.remove(&key), None);
+
+            key_res = db.next_key(&key).unwrap();
+        }
+
+        // if internal map is empty, success
+        assert_eq!(keys_remaining.len(), 0);
     }
 
     #[test]
