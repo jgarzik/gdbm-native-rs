@@ -15,8 +15,8 @@ pub fn w32(is_le: bool, val: u32) -> Vec<u8> {
 
 // serialize u64, with runtime endian selection
 pub fn w64(is_le: bool, val: u64) -> Vec<u8> {
-    let mut buf: Vec<u8> = Vec::with_capacity(4);
-    buf.resize(4, 0);
+    let mut buf: Vec<u8> = Vec::with_capacity(8);
+    buf.resize(8, 0);
 
     match is_le {
         true => LittleEndian::write_u64(&mut buf, val),
