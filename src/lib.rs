@@ -110,14 +110,17 @@ impl Gdbm {
         let bucket_ofs = self.dir.dir[bucket_dir];
         println!("bucket ofs = {}", bucket_ofs);
 
-        // FIXME: causes failures for unknown reasons
         // already in cache
-        if false && self.bucket_cache.contains(bucket_ofs) {
+        if self.bucket_cache.contains(bucket_ofs) {
+            self.cur_bucket_ofs = bucket_ofs;
+            self.cur_bucket_dir = bucket_dir;
             return Ok(true);
         }
 
         // empty bucket
         if bucket_ofs < (self.header.block_sz as u64) {
+            self.cur_bucket_ofs = bucket_ofs;
+            self.cur_bucket_dir = bucket_dir;
             return Ok(false);
         }
 
