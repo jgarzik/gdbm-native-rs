@@ -27,9 +27,12 @@ const GDBM_OMAGIC_SWAP: u32 = 0xce9a5713; /* OMAGIC swapped. */
 const GDBM_MAGIC32_SWAP: u32 = 0xcd9a5713; /* MAGIC32 swapped. */
 const GDBM_MAGIC64_SWAP: u32 = 0xcf9a5713; /* MAGIC64 swapped. */
 
+// Our claimed GDBM lib version compatibility.  Appears in dump files.
+const COMPAT_GDBM_VERSION: &'static str = "1.23";
+
 const GDBM_HASH_BITS: u32 = 31;
 
-const GDBM_HDR_SZ: u32 = 72; // todo: all this varies on 32/64bit...
+const GDBM_HDR_SZ: u32 = 72; // todo: all this varies on 32/64bit, LE/BE...
 const GDBM_HASH_BUCKET_SZ: u32 = 136;
 const GDBM_BUCKET_ELEM_SZ: u32 = 24;
 const GDBM_AVAIL_HDR_SZ: u32 = 16;
@@ -37,6 +40,12 @@ const GDBM_AVAIL_ELEM_SZ: u32 = 16;
 const KEY_SMALL: usize = 4;
 const IGNORE_SMALL: usize = 4;
 const DEF_IS_LE: bool = true;
+
+pub enum ExportBinMode {
+    ExpNative,
+    Exp32,
+    Exp64,
+}
 
 // read and return file data stored at (ofs,total_size)
 // todo:  use Read+Seek traits rather than File
@@ -101,7 +110,12 @@ impl Gdbm {
     }
 
     fn export_ascii_header(&self, outf: &mut std::fs::File) -> io::Result<()> {
-        write!(outf, "# GDBM dump file\n")?;
+        // TODO: add ctime() to "created by" output line
+        write!(
+            outf,
+            "# GDBM dump file created by {}\n",
+            COMPAT_GDBM_VERSION
+        )?;
         write!(outf, "#:version=1.1\n")?;
         write!(outf, "#:file={}\n", self.pathname)?;
         write!(outf, "#:format={}\n", "standard")?;
@@ -157,6 +171,60 @@ impl Gdbm {
         self.export_ascii_header(outf)?;
         let n_written = self.export_ascii_records(outf)?;
         self.export_ascii_footer(outf, n_written)?;
+        Ok(())
+    }
+
+    fn export_bin_header(&self, outf: &mut std::fs::File) -> io::Result<()> {
+        write!(
+            outf,
+            "!\r\n! GDBM FLAT FILE DUMP -- THIS IS NOT A TEXT FILE\r\n"
+        )?;
+        write!(outf, "! {}\r\n!\r\n", COMPAT_GDBM_VERSION)?;
+        Ok(())
+    }
+
+    fn export_bin_datum(
+        &self,
+        outf: &mut std::fs::File,
+        is_64: bool,
+        bindata: &[u8],
+    ) -> io::Result<()> {
+        // write metadata:  big-endian datum size, 32b or 64b
+        let size_bytes = ser::woff_t(is_64, false, bindata.len() as u64);
+        outf.write_all(&size_bytes)?;
+
+        // write datum
+        outf.write_all(bindata)?;
+
+        Ok(())
+    }
+
+    fn export_bin_records(&mut self, outf: &mut std::fs::File, is_64: bool) -> io::Result<()> {
+        let mut key_res = self.first_key()?;
+        while key_res != None {
+            let key = key_res.unwrap();
+            let val_res = self.get(&key)?;
+            let val = val_res.unwrap();
+
+            self.export_bin_datum(outf, is_64, &key)?;
+            self.export_bin_datum(outf, is_64, &val)?;
+
+            key_res = self.next_key(&key)?;
+        }
+        Ok(())
+    }
+
+    // API: export database to binary dump file
+    pub fn export_bin(&mut self, outf: &mut std::fs::File, mode: ExportBinMode) -> io::Result<()> {
+        let is_64;
+        match mode {
+            ExportBinMode::ExpNative => is_64 = self.header.is_64,
+            ExportBinMode::Exp32 => is_64 = false,
+            ExportBinMode::Exp64 => is_64 = true,
+        }
+
+        self.export_bin_header(outf)?;
+        self.export_bin_records(outf, is_64)?;
         Ok(())
     }
 
@@ -857,6 +925,28 @@ mod test_gdbm {
             let res = db.len().unwrap();
             assert_eq!(res, testdb.n_records);
         }
+    }
+
+    #[test]
+    fn api_export_bin() {
+        const EXPORT_FN: &'static str = "./export.bin";
+
+        let testcfg = init_tests();
+
+        let testdb = &testcfg.tests[BASIC_DB];
+        let mut db = Gdbm::open(&testdb.path).unwrap();
+        let mut outf = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(EXPORT_FN)
+            .unwrap();
+
+        let _iores = db.export_bin(&mut outf, ExportBinMode::ExpNative).unwrap();
+        fs::remove_file(EXPORT_FN).unwrap();
+
+        // TODO: once Store is implemented, import the exported data
+        // into a new db, and verify that old & new dbs match.
     }
 
     #[test]
