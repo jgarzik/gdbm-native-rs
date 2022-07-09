@@ -1,3 +1,5 @@
+extern crate base64;
+
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::{
     fs::OpenOptions,
@@ -59,6 +61,7 @@ fn write_ofs(f: &mut std::fs::File, ofs: u64, data: &[u8]) -> io::Result<()> {
 
 #[derive(Debug)]
 pub struct Gdbm {
+    pathname: String,
     f: std::fs::File,
     header: Header,
     dir: Directory,
@@ -86,6 +89,7 @@ impl Gdbm {
         let cur_bucket_ofs = dir[cur_bucket_dir];
 
         Ok(Gdbm {
+            pathname: pathname.to_string(),
             f,
             header,
             dir: Directory { dir },
@@ -94,6 +98,69 @@ impl Gdbm {
             cur_bucket_ofs,
             cur_bucket_dir,
         })
+    }
+
+    pub fn export_ascii_header(&self, outf: &mut std::fs::File) -> io::Result<()> {
+        write!(outf, "# GDBM dump file\n")?;
+        write!(outf, "#:version=1.1\n")?;
+        write!(outf, "#:file={}\n", self.pathname)?;
+        write!(outf, "#:format={}\n", "standard")?;
+        write!(outf, "# End of header\n")?;
+        Ok(())
+    }
+
+    pub fn export_ascii_datum(&self, outf: &mut std::fs::File, bindata: &[u8]) -> io::Result<()> {
+        const MAX_DUMP_LINE_LEN: usize = 76;
+
+        write!(outf, "#:len={}\n", bindata.len())?;
+
+        let mut b64 = base64::encode(bindata);
+
+        while b64.len() > MAX_DUMP_LINE_LEN {
+            let line = &b64[..MAX_DUMP_LINE_LEN];
+            let rem = &b64[MAX_DUMP_LINE_LEN..];
+
+            write!(outf, "{}\n", line)?;
+
+            b64 = rem.to_string();
+        }
+        write!(outf, "{}\n", b64)?;
+
+        Ok(())
+    }
+
+    pub fn export_ascii_records(&mut self, outf: &mut std::fs::File) -> io::Result<usize> {
+        let mut n_written: usize = 0;
+        let mut key_res = self.first_key()?;
+        while key_res != None {
+            let key = key_res.unwrap();
+            let val_res = self.get(&key)?;
+            let val = val_res.unwrap();
+
+            self.export_ascii_datum(outf, &key)?;
+            self.export_ascii_datum(outf, &val)?;
+
+            key_res = self.next_key(&key)?;
+            n_written += 1;
+        }
+        Ok(n_written)
+    }
+
+    pub fn export_ascii_footer(
+        &self,
+        outf: &mut std::fs::File,
+        n_written: usize,
+    ) -> io::Result<()> {
+        write!(outf, "#:count={}\n", n_written)?;
+        write!(outf, "# End of data\n")?;
+        Ok(())
+    }
+
+    pub fn export_ascii(&mut self, outf: &mut std::fs::File) -> io::Result<()> {
+        self.export_ascii_header(outf)?;
+        let n_written = self.export_ascii_records(outf)?;
+        self.export_ascii_footer(outf, n_written)?;
+        Ok(())
     }
 
     // validate directory entry index.  currently just a bounds check.
@@ -667,6 +734,7 @@ mod test_gdbm {
     const BASIC_DB_FN: &'static str = "basic.db";
 
     use super::*;
+    use std::fs;
 
     struct TestInfo {
         pub path: String,
@@ -756,6 +824,28 @@ mod test_gdbm {
             let res = db.len().unwrap();
             assert_eq!(res, testdb.n_records);
         }
+    }
+
+    #[test]
+    fn api_export_ascii() {
+        const EXPORT_FN: &'static str = "./export.txt";
+
+        let testcfg = init_tests();
+
+        let testdb = &testcfg.tests[BASIC_DB];
+        let mut db = Gdbm::open(&testdb.path).unwrap();
+        let mut outf = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(EXPORT_FN)
+            .unwrap();
+
+        let _iores = db.export_ascii(&mut outf).unwrap();
+        fs::remove_file(EXPORT_FN).unwrap();
+
+        // TODO: once Store is implemented, import the exported data
+        // into a new db, and verify that old & new dbs match.
     }
 
     #[test]
