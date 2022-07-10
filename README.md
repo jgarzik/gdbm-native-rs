@@ -18,13 +18,16 @@ Major categories of tasks leading to 1.0.0.  View the
 - [x] Open/Close
 - [x] Fetch: Get record data by key
 - [x] Iterate: First-key/Next-key operations
+- [ ] Iterate v2: Rust Iterator
 - [x] Count: Iterate db and count all records
 - [x] Exists: Quick key-exists test
 - [ ] Insert: Store record
-- [X] Remove: Delete record
+- [x] Remove: Delete record
 - [ ] Reorganize: Not a priority
-- [ ] Sync: Write dirty buffers, and fsync(2)
-- [ ] Import/Export:  GDBM ASCII and binary dump formats
+- [x] Sync: Write dirty buffers, and fsync(2)
+- [ ] Import:  GDBM ASCII and binary dump formats
+- [x] Export:  GDBM ASCII and binary dump formats
+- [ ] Numsync: New, 3rd generation GDBM file format
 - [ ] Tests:  Healthy test coverage
 - [ ] Code Cleanup:  Review by rust experts
 
