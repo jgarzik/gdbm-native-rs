@@ -721,15 +721,8 @@ impl Gdbm {
     }
 
     // API: print bucket directory
-    pub fn print_dir(&self) {
-        println!(
-            "size = {}, bits = {}, buckets = ?",
-            self.header.dir_sz, self.header.dir_bits
-        );
-
-        for idx in 0..self.dir.len() {
-            println!("{}: {}", idx, self.dir.dir[idx]);
-        }
+    pub fn dump_dir(&self) -> (u32, Vec<u64>) {
+        (self.header.dir_bits, self.dir.dir.clone())
     }
 
     // API: print bucket
