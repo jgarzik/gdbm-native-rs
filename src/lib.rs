@@ -581,6 +581,51 @@ impl Gdbm {
         Ok(())
     }
 
+    fn alloc_bucket_avail(&mut self, size: u32) -> io::Result<Option<AvailElem>> {
+        let mut bucket = self.get_current_bucket();
+
+        for idx in 0..bucket.avail.len() {
+            if bucket.avail[idx].sz >= size {
+                let elem = bucket.avail.remove(idx);
+                self.bucket_cache.update(self.cur_bucket_ofs, bucket);
+                return Ok(Some(elem));
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn alloc_header_avail(&mut self, _size: u32) -> io::Result<Option<AvailElem>> {
+        // TODO
+        Ok(None)
+    }
+
+    fn alloc_new(&mut self, size: u32) -> AvailElem {
+        let mut elem = AvailElem {
+            sz: self.header.block_sz,
+            addr: self.header.next_block,
+        };
+
+        while elem.sz < size {
+            elem.sz += self.header.block_sz;
+        }
+
+        self.header.next_block += elem.sz as u64;
+        self.header.dirty = true;
+
+        elem
+    }
+
+    fn alloc(&mut self, size: u32) -> io::Result<AvailElem> {
+        match self.alloc_bucket_avail(size)? {
+            None => match self.alloc_header_avail(size)? {
+                None => Ok(self.alloc_new(size)),
+                Some(el) => Ok(el),
+            },
+            Some(el) => Ok(el),
+        }
+    }
+
     fn write_bucket(&mut self, bucket_ofs: u64, bucket: &Bucket) -> io::Result<()> {
         let bytes = bucket.serialize(self.header.is_64, DEF_IS_LE);
         write_ofs(&mut self.f, bucket_ofs, &bytes)?;
@@ -699,6 +744,7 @@ impl Gdbm {
     }
 
     fn int_insert(&mut self, key: &[u8], _val: &[u8], ok_overwrite: bool) -> io::Result<bool> {
+        let key_sz = key.len() as u32;
         let (_key_hash, _bucket_dir, _elem_ofs_32) = key_loc(&self.header, key);
 
         // Test for an existing record with provided key.
@@ -707,6 +753,8 @@ impl Gdbm {
         if have_record && !ok_overwrite {
             return Ok(false);
         }
+
+        let _storage_elem = self.alloc(key_sz)?;
 
         Ok(false)
     }
