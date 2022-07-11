@@ -743,8 +743,10 @@ impl Gdbm {
         Ok(Some(data))
     }
 
-    fn int_insert(&mut self, key: &[u8], _val: &[u8], ok_overwrite: bool) -> io::Result<bool> {
+    fn int_insert(&mut self, key: &[u8], val: &[u8], ok_overwrite: bool) -> io::Result<bool> {
         let key_sz = key.len() as u32;
+        let val_sz = val.len() as u32;
+        let datum_sz = key_sz + val_sz;
         let (_key_hash, _bucket_dir, _elem_ofs_32) = key_loc(&self.header, key);
 
         // Test for an existing record with provided key.
@@ -754,7 +756,7 @@ impl Gdbm {
             return Ok(false);
         }
 
-        let _storage_elem = self.alloc(key_sz)?;
+        let _storage_elem = self.alloc(datum_sz)?;
 
         Ok(false)
     }
