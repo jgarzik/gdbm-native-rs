@@ -758,7 +758,11 @@ impl Gdbm {
         // Test for an existing record with provided key.
         // As a side effect, caches the necessary bucket.
         let old_record_opt = self.int_get(key)?;
+        let mut bucket = self.get_current_bucket();
+
         let have_oldrec = old_record_opt != None;
+        let mut old_data_ofs: u64 = 0;
+        let mut old_data_sz: u32 = 0;
         if have_oldrec {
             let (_oldrec_key_hash, oldrec_elem_ofs, oldrec_data) = old_record_opt.unwrap();
             if !ok_overwrite {
@@ -766,11 +770,14 @@ impl Gdbm {
             }
 
             elem_ofs = oldrec_elem_ofs;
+            old_data_ofs = bucket.tab[elem_ofs].data_ofs;
+            old_data_sz = bucket.tab[elem_ofs].key_size + bucket.tab[elem_ofs].data_size;
         }
 
-        let mut bucket = self.get_current_bucket();
+        // allocate storage space for our new record
         let storage_elem = self.alloc(datum_sz)?;
 
+        // add record to bucket, if not already within (have_oldrec)
         if !have_oldrec {
             // TODO split-bucket, a major operation, not implemented yet
             assert_ne!(bucket.count, self.header.bucket_elems);
@@ -778,8 +785,11 @@ impl Gdbm {
             elem_ofs = key_hash as usize % self.header.bucket_elems as usize;
             let start_ofs = elem_ofs;
 
+            // search for available slot
             while bucket.tab[elem_ofs].hash != 0xffffffff {
                 elem_ofs = (elem_ofs + 1) % self.header.bucket_elems as usize;
+
+                // only occurs if bucket.count is corrupted, vs bucket data
                 if elem_ofs == start_ofs {
                     return Err(Error::new(ErrorKind::Other, "invalid bucket htab"));
                 }
@@ -788,7 +798,6 @@ impl Gdbm {
             bucket.count += 1;
 
             bucket.tab[elem_ofs].hash = key_hash;
-            bucket.tab[elem_ofs].key_size = key_sz;
 
             for n in 0..KEY_SMALL {
                 // todo: surely a better way?
@@ -797,14 +806,21 @@ impl Gdbm {
         }
 
         bucket.tab[elem_ofs].data_ofs = storage_elem.addr;
+        bucket.tab[elem_ofs].key_size = key_sz;
         bucket.tab[elem_ofs].data_size = val_sz;
 
-        // TODO: write key, val to storage
+        // store datum
+        self.f.seek(SeekFrom::Start(storage_elem.addr))?;
+        self.f.write_all(key)?;
+        self.f.write_all(val)?;
 
         // store updated bucket in cache, and mark dirty
         self.bucket_cache.update(self.cur_bucket_ofs, bucket);
 
-        // TODO: free old record storage
+        // if overwriting, release space back to free list
+        if have_oldrec {
+            self.free_record(old_data_ofs, old_data_sz)?;
+        }
 
         Ok((false, None))
     }
