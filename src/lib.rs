@@ -234,7 +234,7 @@ impl Gdbm {
     }
 
     // read bucket into bucket cache.
-    fn get_bucket(&mut self, bucket_dir: usize) -> io::Result<bool> {
+    fn cache_load_bucket(&mut self, bucket_dir: usize) -> io::Result<bool> {
         if !self.dirent_valid(bucket_dir) {
             return Err(Error::new(ErrorKind::Other, "invalid bucket idx"));
         }
@@ -321,7 +321,7 @@ impl Gdbm {
 
     // return a clone of the current bucket
     fn get_current_bucket(&self) -> Bucket {
-        // note: assumes will be called following get_bucket() to cache
+        // note: assumes will be called following cache_load_bucket() to cache
         // assignment of dir[0] to cur_bucket at Gdbm{} creation not sufficient.
         self.bucket_cache.bucket_map[&self.cur_bucket_ofs].clone()
     }
@@ -354,7 +354,7 @@ impl Gdbm {
         let mut cur_dir: usize = 0;
         let dir_max_elem = self.dir_max_elem();
         while cur_dir < dir_max_elem {
-            self.get_bucket(cur_dir)?;
+            self.cache_load_bucket(cur_dir)?;
             let bucket = self.get_current_bucket();
             len = len + (bucket.count as usize);
 
@@ -398,7 +398,7 @@ impl Gdbm {
                 }
 
                 // load new bucket
-                self.get_bucket(cur_dir)?;
+                self.cache_load_bucket(cur_dir)?;
                 bucket = self.get_current_bucket();
             }
 
@@ -416,7 +416,7 @@ impl Gdbm {
     // API: return first key in database, for sequential iteration start.
     pub fn first_key(&mut self) -> io::Result<Option<Vec<u8>>> {
         // get first bucket
-        self.get_bucket(0)?;
+        self.cache_load_bucket(0)?;
 
         // start iteration - return next key
         self.int_next_key(None)
@@ -448,7 +448,7 @@ impl Gdbm {
         let (key_hash, bucket_dir, elem_ofs_32) = key_loc(&self.header, key);
         let mut elem_ofs = elem_ofs_32 as usize;
 
-        let cached = self.get_bucket(bucket_dir)?;
+        let cached = self.cache_load_bucket(bucket_dir)?;
         if !cached {
             return Ok(None);
         } // bucket not found -> key not found
@@ -761,7 +761,7 @@ impl Gdbm {
 
     // API: print bucket
     pub fn print_bucket(&mut self, bucket_dir: usize) -> io::Result<()> {
-        self.get_bucket(bucket_dir)?;
+        self.cache_load_bucket(bucket_dir)?;
         let bucket_ofs = self.dir.dir[bucket_dir];
         let bucket = self.bucket_cache.bucket_map[&bucket_ofs].clone();
 
