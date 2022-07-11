@@ -1,6 +1,5 @@
 extern crate base64;
 
-use byteorder::{LittleEndian, ReadBytesExt};
 use std::{
     fs::OpenOptions,
     io::{self, Error, ErrorKind, Read, Seek, SeekFrom, Write},
@@ -13,7 +12,7 @@ mod hashutil;
 mod header;
 mod ser;
 use avail::{AvailBlock, AvailElem};
-use bucket::{Bucket, BucketCache, BucketElement, BUCKET_AVAIL};
+use bucket::{Bucket, BucketCache, BUCKET_AVAIL};
 use dir::{dir_reader, dirent_elem_size, Directory};
 use hashutil::{key_loc, partial_key_match};
 use header::Header;
@@ -260,55 +259,7 @@ impl Gdbm {
         let pos = self.f.seek(SeekFrom::Start(bucket_ofs))?;
         println!("seek'd to {}", pos);
 
-        // read avail section
-        let av_count = self.f.read_u32::<LittleEndian>()?;
-        let _padding = self.f.read_u32::<LittleEndian>()?;
-        let mut avail = Vec::new();
-        for _idx in 0..BUCKET_AVAIL {
-            let av_elem = AvailElem::from_reader(self.header.is_64, &mut self.f)?;
-            avail.push(av_elem);
-        }
-
-        // todo: validate and assure-sorted avail[]
-
-        // read misc. section
-        let bits = self.f.read_u32::<LittleEndian>()?;
-        let count = self.f.read_u32::<LittleEndian>()?;
-
-        if !(count <= self.header.bucket_elems && bits <= self.header.dir_bits) {
-            return Err(Error::new(ErrorKind::Other, "invalid bucket c/b"));
-        }
-
-        // read bucket elements section
-        let mut tab = Vec::new();
-        for _idx in 0..self.header.bucket_elems {
-            let hash = self.f.read_u32::<LittleEndian>()?;
-            let mut key_start = [0; KEY_SMALL];
-            self.f.read(&mut key_start)?;
-            let data_ofs: u64;
-            if self.header.is_64 {
-                data_ofs = self.f.read_u64::<LittleEndian>()?;
-            } else {
-                data_ofs = self.f.read_u32::<LittleEndian>()? as u64;
-            }
-            let key_size = self.f.read_u32::<LittleEndian>()?;
-            let data_size = self.f.read_u32::<LittleEndian>()?;
-            tab.push(BucketElement {
-                hash,
-                key_start,
-                data_ofs,
-                key_size,
-                data_size,
-            });
-        }
-
-        let new_bucket = Bucket {
-            av_count,
-            avail,
-            bits,
-            count,
-            tab,
-        };
+        let new_bucket = Bucket::from_reader(&self.header, &mut self.f)?;
         // println!("new_bucket={:?}", new_bucket);
 
         // add to bucket cache
