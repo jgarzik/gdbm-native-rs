@@ -380,7 +380,7 @@ impl Gdbm {
             return Ok(None);
         }
 
-        let (elem_ofs, _data) = get_opt.unwrap();
+        let (_key_hash, elem_ofs, _data) = get_opt.unwrap();
 
         self.int_next_key(Some(elem_ofs))
     }
@@ -395,7 +395,7 @@ impl Gdbm {
     }
 
     // retrieve record data, and element offset in bucket, for given key
-    fn int_get(&mut self, key: &[u8]) -> io::Result<Option<(usize, Vec<u8>)>> {
+    fn int_get(&mut self, key: &[u8]) -> io::Result<Option<(u32, usize, Vec<u8>)>> {
         let (key_hash, bucket_dir, elem_ofs_32) = key_loc(&self.header, key);
         let mut elem_ofs = elem_ofs_32 as usize;
 
@@ -425,7 +425,7 @@ impl Gdbm {
                     (elem.key_size + elem.data_size) as usize,
                 )?;
                 if &data[0..key.len()] == key {
-                    return Ok(Some((elem_ofs, (&data[key.len()..]).to_vec())));
+                    return Ok(Some((key_hash, elem_ofs, (&data[key.len()..]).to_vec())));
                 }
             }
 
@@ -446,7 +446,7 @@ impl Gdbm {
         let get_opt = self.int_get(key)?;
         match get_opt {
             None => Ok(None),
-            Some(data) => Ok(Some(data.1)),
+            Some(data) => Ok(Some(data.2)),
         }
     }
 
@@ -546,7 +546,7 @@ impl Gdbm {
         // smaller items go into bucket avail list
         let mut bucket = self.get_current_bucket();
         if sz < self.header.block_sz && bucket.av_count < BUCKET_AVAIL {
-            // insort into bucket avail vector, sorted by size
+            // insert into bucket avail vector, sorted by size
             let pos = bucket.avail.binary_search(&elem).unwrap_or_else(|e| e);
             bucket.avail.insert(pos, elem);
             bucket.av_count += 1;
@@ -565,7 +565,7 @@ impl Gdbm {
         }
         assert!(self.header.avail.count < self.header.avail.sz);
 
-        // insort into header avail vector, sorted by size
+        // insert into header avail vector, sorted by size
         let pos = self
             .header
             .avail
@@ -659,7 +659,7 @@ impl Gdbm {
         if get_opt == None {
             return Ok(None);
         }
-        let (mut elem_ofs, data) = get_opt.unwrap();
+        let (_key_hash, mut elem_ofs, data) = get_opt.unwrap();
 
         let bucket_elems = self.header.bucket_elems as usize;
         let mut bucket = self.get_current_bucket();
@@ -696,6 +696,28 @@ impl Gdbm {
         self.write_dirty()?;
 
         Ok(Some(data))
+    }
+
+    fn int_insert(&mut self, key: &[u8], _val: &[u8], ok_overwrite: bool) -> io::Result<bool> {
+        let (_key_hash, _bucket_dir, _elem_ofs_32) = key_loc(&self.header, key);
+
+        // Test for an existing record with provided key.
+        // As a side effect, caches the necessary bucket.
+        let have_record: bool = self.int_get(key)? != None;
+        if have_record && !ok_overwrite {
+            return Ok(false);
+        }
+
+        Ok(false)
+    }
+
+    pub fn insert(&mut self, key: &[u8], val: &[u8]) -> io::Result<()> {
+        let _res = self.int_insert(key, val, true)?;
+        Ok(())
+    }
+
+    pub fn try_insert(&mut self, key: &[u8], val: &[u8]) -> io::Result<bool> {
+        self.int_insert(key, val, false)
     }
 
     // API: print bucket directory
