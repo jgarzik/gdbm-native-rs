@@ -1,7 +1,9 @@
+use byteorder::{LittleEndian, ReadBytesExt};
 use std::collections::HashMap;
+use std::io::{self, Read};
 
 use crate::ser::{w32, woff_t};
-use crate::AvailElem;
+use crate::{AvailElem, KEY_SMALL};
 
 pub const BUCKET_AVAIL: u32 = 6;
 
@@ -15,6 +17,31 @@ pub struct BucketElement {
 }
 
 impl BucketElement {
+    pub fn from_reader(is_64: bool, rdr: &mut impl Read) -> io::Result<Self> {
+        let hash = rdr.read_u32::<LittleEndian>()?;
+
+        let mut key_start = [0; KEY_SMALL];
+        rdr.read(&mut key_start)?;
+
+        let data_ofs: u64;
+        if is_64 {
+            data_ofs = rdr.read_u64::<LittleEndian>()?;
+        } else {
+            data_ofs = rdr.read_u32::<LittleEndian>()? as u64;
+        }
+
+        let key_size = rdr.read_u32::<LittleEndian>()?;
+        let data_size = rdr.read_u32::<LittleEndian>()?;
+
+        Ok(BucketElement {
+            hash,
+            key_start,
+            data_ofs,
+            key_size,
+            data_size,
+        })
+    }
+
     pub fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.append(&mut w32(is_le, self.hash));

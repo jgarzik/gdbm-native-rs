@@ -282,24 +282,8 @@ impl Gdbm {
         // read bucket elements section
         let mut tab = Vec::new();
         for _idx in 0..self.header.bucket_elems {
-            let hash = self.f.read_u32::<LittleEndian>()?;
-            let mut key_start = [0; KEY_SMALL];
-            self.f.read(&mut key_start)?;
-            let data_ofs: u64;
-            if self.header.is_64 {
-                data_ofs = self.f.read_u64::<LittleEndian>()?;
-            } else {
-                data_ofs = self.f.read_u32::<LittleEndian>()? as u64;
-            }
-            let key_size = self.f.read_u32::<LittleEndian>()?;
-            let data_size = self.f.read_u32::<LittleEndian>()?;
-            tab.push(BucketElement {
-                hash,
-                key_start,
-                data_ofs,
-                key_size,
-                data_size,
-            });
+            let bucket_elem = BucketElement::from_reader(self.header.is_64, &mut self.f)?;
+            tab.push(bucket_elem);
         }
 
         let new_bucket = Bucket {
