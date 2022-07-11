@@ -743,30 +743,78 @@ impl Gdbm {
         Ok(Some(data))
     }
 
-    fn int_insert(&mut self, key: &[u8], val: &[u8], ok_overwrite: bool) -> io::Result<bool> {
+    fn int_insert(
+        &mut self,
+        key: &[u8],
+        val: &[u8],
+        ok_overwrite: bool,
+    ) -> io::Result<(bool, Option<Vec<u8>>)> {
         let key_sz = key.len() as u32;
         let val_sz = val.len() as u32;
         let datum_sz = key_sz + val_sz;
-        let (_key_hash, _bucket_dir, _elem_ofs_32) = key_loc(&self.header, key);
+        let (key_hash, _bucket_dir, elem_ofs_32) = key_loc(&self.header, key);
+        let mut elem_ofs = elem_ofs_32 as usize;
 
         // Test for an existing record with provided key.
         // As a side effect, caches the necessary bucket.
-        let have_record: bool = self.int_get(key)? != None;
-        if have_record && !ok_overwrite {
-            return Ok(false);
+        let old_record_opt = self.int_get(key)?;
+        let have_oldrec = old_record_opt != None;
+        if have_oldrec {
+            let (_oldrec_key_hash, oldrec_elem_ofs, oldrec_data) = old_record_opt.unwrap();
+            if !ok_overwrite {
+                return Ok((false, Some(oldrec_data)));
+            }
+
+            elem_ofs = oldrec_elem_ofs;
         }
 
-        let _storage_elem = self.alloc(datum_sz)?;
+        let mut bucket = self.get_current_bucket();
+        let storage_elem = self.alloc(datum_sz)?;
 
-        Ok(false)
+        if !have_oldrec {
+            // TODO split-bucket, a major operation, not implemented yet
+            assert_ne!(bucket.count, self.header.bucket_elems);
+
+            elem_ofs = key_hash as usize % self.header.bucket_elems as usize;
+            let start_ofs = elem_ofs;
+
+            while bucket.tab[elem_ofs].hash != 0xffffffff {
+                elem_ofs = (elem_ofs + 1) % self.header.bucket_elems as usize;
+                if elem_ofs == start_ofs {
+                    return Err(Error::new(ErrorKind::Other, "invalid bucket htab"));
+                }
+            }
+
+            bucket.count += 1;
+
+            bucket.tab[elem_ofs].hash = key_hash;
+            bucket.tab[elem_ofs].key_size = key_sz;
+
+            for n in 0..KEY_SMALL {
+                // todo: surely a better way?
+                bucket.tab[elem_ofs].key_start[n] = key[n];
+            }
+        }
+
+        bucket.tab[elem_ofs].data_ofs = storage_elem.addr;
+        bucket.tab[elem_ofs].data_size = val_sz;
+
+        // TODO: write key, val to storage
+
+        // store updated bucket in cache, and mark dirty
+        self.bucket_cache.update(self.cur_bucket_ofs, bucket);
+
+        // TODO: free old record storage
+
+        Ok((false, None))
     }
 
-    pub fn insert(&mut self, key: &[u8], val: &[u8]) -> io::Result<()> {
-        let _res = self.int_insert(key, val, true)?;
-        Ok(())
+    pub fn insert(&mut self, key: &[u8], val: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        let (_is_stored, old_record_opt) = self.int_insert(key, val, true)?;
+        Ok(old_record_opt)
     }
 
-    pub fn try_insert(&mut self, key: &[u8], val: &[u8]) -> io::Result<bool> {
+    pub fn try_insert(&mut self, key: &[u8], val: &[u8]) -> io::Result<(bool, Option<Vec<u8>>)> {
         self.int_insert(key, val, false)
     }
 
