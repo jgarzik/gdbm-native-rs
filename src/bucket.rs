@@ -1,9 +1,9 @@
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::collections::HashMap;
-use std::io::{self, Read};
+use std::io::{self, Error, ErrorKind, Read};
 
 use crate::ser::{w32, woff_t};
-use crate::{AvailElem, KEY_SMALL};
+use crate::{AvailElem, Header, KEY_SMALL};
 
 pub const BUCKET_AVAIL: u32 = 6;
 
@@ -65,6 +65,42 @@ pub struct Bucket {
 }
 
 impl Bucket {
+    pub fn from_reader(header: &Header, rdr: &mut impl Read) -> io::Result<Self> {
+        // read avail section
+        let av_count = rdr.read_u32::<LittleEndian>()?;
+        let _padding = rdr.read_u32::<LittleEndian>()?;
+        let mut avail = Vec::new();
+        for _idx in 0..BUCKET_AVAIL {
+            let av_elem = AvailElem::from_reader(header.is_64, rdr)?;
+            avail.push(av_elem);
+        }
+
+        // todo: validate and assure-sorted avail[]
+
+        // read misc. section
+        let bits = rdr.read_u32::<LittleEndian>()?;
+        let count = rdr.read_u32::<LittleEndian>()?;
+
+        if !(count <= header.bucket_elems && bits <= header.dir_bits) {
+            return Err(Error::new(ErrorKind::Other, "invalid bucket c/b"));
+        }
+
+        // read bucket elements section
+        let mut tab = Vec::new();
+        for _idx in 0..header.bucket_elems {
+            let bucket_elem = BucketElement::from_reader(header.is_64, rdr)?;
+            tab.push(bucket_elem);
+        }
+
+        Ok(Bucket {
+            av_count,
+            avail,
+            bits,
+            count,
+            tab,
+        })
+    }
+
     pub fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
         let mut buf = Vec::new();
 
