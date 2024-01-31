@@ -747,9 +747,9 @@ use std::path::PathBuf;
 
 #[cfg(test)]
 mod test_gdbm {
-    const EMPTY_DB_FN: &'static str = "empty.db";
+    const EMPTY_DB_FN: &'static str = "empty.db.le64";
     const BASIC_DB: usize = 1;
-    const BASIC_DB_FN: &'static str = "basic.db";
+    const BASIC_DB_FN: &'static str = "basic.db.le64";
 
     use super::*;
     use std::collections::HashMap;
