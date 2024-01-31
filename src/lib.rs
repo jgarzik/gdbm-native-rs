@@ -747,16 +747,16 @@ use std::path::PathBuf;
 
 #[cfg(test)]
 mod test_gdbm {
-    const EMPTY_DB_FN: &'static str = "empty.db.le64";
     const BASIC_DB: usize = 1;
-    const BASIC_DB_FN: &'static str = "basic.db.le64";
 
     use super::*;
     use std::collections::HashMap;
     use std::fs;
 
     struct TestInfo {
-        pub path: String,
+        #[allow(dead_code)]
+        pub json_path: String,
+        pub db_path: String,
         pub n_records: usize,
     }
 
@@ -770,24 +770,30 @@ mod test_gdbm {
         }
     }
 
+    fn push_test(cfg: &mut TestConfig, db_fn: &str, json_fn: &str, n_rec: usize) {
+        let mut dbp = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        dbp.push("src/data");
+        dbp.push(db_fn);
+
+        let mut jsp = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        jsp.push("src/data");
+        jsp.push(json_fn);
+
+        cfg.tests.push(TestInfo {
+            db_path: dbp.to_str().unwrap().to_string(),
+            json_path: jsp.to_str().unwrap().to_string(),
+            n_records: n_rec,
+        });
+    }
+
     fn init_tests() -> TestConfig {
         let mut cfg = TestConfig::new();
 
-        let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        d.push("src/data");
-        d.push(EMPTY_DB_FN);
-        cfg.tests.push(TestInfo {
-            path: d.to_str().unwrap().to_string(),
-            n_records: 0,
-        });
+        // NOTE: Order of push is important.
+        // Some tests depend on basic.db being index 1 (2nd item)
 
-        let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        d.push("src/data");
-        d.push(BASIC_DB_FN);
-        cfg.tests.push(TestInfo {
-            path: d.to_str().unwrap().to_string(),
-            n_records: 10001,
-        });
+        push_test(&mut cfg, "empty.db.le64", "empty.json.le64", 0);
+        push_test(&mut cfg, "basic.db.le64", "basic.json.le64", 10001);
 
         cfg
     }
@@ -797,7 +803,7 @@ mod test_gdbm {
         let testcfg = init_tests();
 
         for testdb in &testcfg.tests {
-            let _res = Gdbm::open(&testdb.path).unwrap();
+            let _res = Gdbm::open(&testdb.db_path).unwrap();
             // implicit close when scope closes
         }
     }
@@ -807,14 +813,14 @@ mod test_gdbm {
         let testcfg = init_tests();
 
         for testdb in &testcfg.tests {
-            let mut db = Gdbm::open(&testdb.path).unwrap();
+            let mut db = Gdbm::open(&testdb.db_path).unwrap();
             let res = db.contains_key(b"dummy").unwrap();
             assert_eq!(res, false);
         }
 
         if true {
             let testdb = &testcfg.tests[BASIC_DB];
-            let mut db = Gdbm::open(&testdb.path).unwrap();
+            let mut db = Gdbm::open(&testdb.db_path).unwrap();
             let res = db.contains_key(b"key -111").unwrap();
             assert_eq!(res, false);
         }
@@ -825,7 +831,7 @@ mod test_gdbm {
         let testcfg = init_tests();
 
         let testdb = &testcfg.tests[BASIC_DB];
-        let mut db = Gdbm::open(&testdb.path).unwrap();
+        let mut db = Gdbm::open(&testdb.db_path).unwrap();
 
         for n in 0..10001 {
             let keystr = format!("key {}", n);
@@ -850,7 +856,7 @@ mod test_gdbm {
         assert_eq!(keys_remaining.len(), testdb.n_records);
 
         // open basic.db
-        let mut db = Gdbm::open(&testdb.path).unwrap();
+        let mut db = Gdbm::open(&testdb.db_path).unwrap();
 
         // iterate through each key in db
         let mut key_res = db.first_key().unwrap();
@@ -872,7 +878,7 @@ mod test_gdbm {
         let testcfg = init_tests();
 
         for testdb in &testcfg.tests {
-            let mut db = Gdbm::open(&testdb.path).unwrap();
+            let mut db = Gdbm::open(&testdb.db_path).unwrap();
             let res = db.len().unwrap();
             assert_eq!(res, testdb.n_records);
         }
@@ -885,7 +891,7 @@ mod test_gdbm {
         let testcfg = init_tests();
 
         let testdb = &testcfg.tests[BASIC_DB];
-        let mut db = Gdbm::open(&testdb.path).unwrap();
+        let mut db = Gdbm::open(&testdb.db_path).unwrap();
         let mut outf = OpenOptions::new()
             .read(true)
             .write(true)
@@ -907,7 +913,7 @@ mod test_gdbm {
         let testcfg = init_tests();
 
         let testdb = &testcfg.tests[BASIC_DB];
-        let mut db = Gdbm::open(&testdb.path).unwrap();
+        let mut db = Gdbm::open(&testdb.db_path).unwrap();
         let mut outf = OpenOptions::new()
             .read(true)
             .write(true)
@@ -928,7 +934,7 @@ mod test_gdbm {
 
         for testdb in &testcfg.tests {
             let keystr = String::from("This key does not exist.");
-            let mut db = Gdbm::open(&testdb.path).unwrap();
+            let mut db = Gdbm::open(&testdb.db_path).unwrap();
             let res = db.get(keystr.as_bytes()).unwrap();
             assert_eq!(res, None);
         }
@@ -939,7 +945,7 @@ mod test_gdbm {
         let testcfg = init_tests();
 
         let testdb = &testcfg.tests[BASIC_DB];
-        let mut db = Gdbm::open(&testdb.path).unwrap();
+        let mut db = Gdbm::open(&testdb.db_path).unwrap();
 
         for n in 0..10001 {
             let keystr = format!("key {}", n);
