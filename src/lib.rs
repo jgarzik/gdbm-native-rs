@@ -747,8 +747,6 @@ use std::path::PathBuf;
 
 #[cfg(test)]
 mod test_gdbm {
-    const BASIC_DB: usize = 1;
-
     use super::*;
     use std::collections::HashMap;
     use std::fs;
@@ -757,6 +755,7 @@ mod test_gdbm {
         #[allow(dead_code)]
         pub json_path: String,
         pub db_path: String,
+        pub is_basic: bool,
         pub n_records: usize,
     }
 
@@ -770,7 +769,7 @@ mod test_gdbm {
         }
     }
 
-    fn push_test(cfg: &mut TestConfig, db_fn: &str, json_fn: &str, n_rec: usize) {
+    fn push_test(cfg: &mut TestConfig, db_fn: &str, json_fn: &str, is_basic: bool, n_rec: usize) {
         let mut dbp = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         dbp.push("src/data");
         dbp.push(db_fn);
@@ -782,6 +781,7 @@ mod test_gdbm {
         cfg.tests.push(TestInfo {
             db_path: dbp.to_str().unwrap().to_string(),
             json_path: jsp.to_str().unwrap().to_string(),
+            is_basic,
             n_records: n_rec,
         });
     }
@@ -792,8 +792,8 @@ mod test_gdbm {
         // NOTE: Order of push is important.
         // Some tests depend on basic.db being index 1 (2nd item)
 
-        push_test(&mut cfg, "empty.db.le64", "empty.json.le64", 0);
-        push_test(&mut cfg, "basic.db.le64", "basic.json.le64", 10001);
+        push_test(&mut cfg, "empty.db.le64", "empty.json.le64", false, 0);
+        push_test(&mut cfg, "basic.db.le64", "basic.json.le64", true, 10001);
 
         cfg
     }
@@ -816,13 +816,12 @@ mod test_gdbm {
             let mut db = Gdbm::open(&testdb.db_path).unwrap();
             let res = db.contains_key(b"dummy").unwrap();
             assert_eq!(res, false);
-        }
 
-        if true {
-            let testdb = &testcfg.tests[BASIC_DB];
-            let mut db = Gdbm::open(&testdb.db_path).unwrap();
-            let res = db.contains_key(b"key -111").unwrap();
-            assert_eq!(res, false);
+            if testdb.is_basic {
+                db = Gdbm::open(&testdb.db_path).unwrap();
+                let res = db.contains_key(b"key -111").unwrap();
+                assert_eq!(res, false);
+            }
         }
     }
 
@@ -830,13 +829,16 @@ mod test_gdbm {
     fn api_exists() {
         let testcfg = init_tests();
 
-        let testdb = &testcfg.tests[BASIC_DB];
-        let mut db = Gdbm::open(&testdb.db_path).unwrap();
+        for testdb in &testcfg.tests {
+            if testdb.is_basic {
+                let mut db = Gdbm::open(&testdb.db_path).unwrap();
 
-        for n in 0..10001 {
-            let keystr = format!("key {}", n);
-            let res = db.contains_key(keystr.as_bytes()).unwrap();
-            assert_eq!(res, true);
+                for n in 0..10001 {
+                    let keystr = format!("key {}", n);
+                    let res = db.contains_key(keystr.as_bytes()).unwrap();
+                    assert_eq!(res, true);
+                }
+            }
         }
     }
 
@@ -844,33 +846,36 @@ mod test_gdbm {
     fn api_first_next_key() {
         let testcfg = init_tests();
 
-        // build internal map of keys expected to be present in basic.db
-        let mut keys_remaining: HashMap<Vec<u8>, bool> = HashMap::new();
-        for n in 0..10001 {
-            let keystr = format!("key {}", n);
-            keys_remaining.insert(keystr.as_bytes().to_vec(), true);
+        for testdb in &testcfg.tests {
+            if testdb.is_basic {
+                // build internal map of keys expected to be present in basic.db
+                let mut keys_remaining: HashMap<Vec<u8>, bool> = HashMap::new();
+                for n in 0..10001 {
+                    let keystr = format!("key {}", n);
+                    keys_remaining.insert(keystr.as_bytes().to_vec(), true);
+                }
+
+                // simple verf of correct map construction
+                assert_eq!(keys_remaining.len(), testdb.n_records);
+
+                // open basic.db
+                let mut db = Gdbm::open(&testdb.db_path).unwrap();
+
+                // iterate through each key in db
+                let mut key_res = db.first_key().unwrap();
+                while key_res != None {
+                    let key = key_res.unwrap();
+
+                    // remove iteration key from internal map
+                    assert_ne!(keys_remaining.remove(&key), None);
+
+                    key_res = db.next_key(&key).unwrap();
+                }
+
+                // if internal map is empty, success
+                assert_eq!(keys_remaining.len(), 0);
+            }
         }
-
-        // simple verf of correct map construction
-        let testdb = &testcfg.tests[BASIC_DB];
-        assert_eq!(keys_remaining.len(), testdb.n_records);
-
-        // open basic.db
-        let mut db = Gdbm::open(&testdb.db_path).unwrap();
-
-        // iterate through each key in db
-        let mut key_res = db.first_key().unwrap();
-        while key_res != None {
-            let key = key_res.unwrap();
-
-            // remove iteration key from internal map
-            assert_ne!(keys_remaining.remove(&key), None);
-
-            key_res = db.next_key(&key).unwrap();
-        }
-
-        // if internal map is empty, success
-        assert_eq!(keys_remaining.len(), 0);
     }
 
     #[test]
@@ -890,20 +895,21 @@ mod test_gdbm {
 
         let testcfg = init_tests();
 
-        let testdb = &testcfg.tests[BASIC_DB];
-        let mut db = Gdbm::open(&testdb.db_path).unwrap();
-        let mut outf = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(EXPORT_FN)
-            .unwrap();
+        for testdb in &testcfg.tests {
+            let mut db = Gdbm::open(&testdb.db_path).unwrap();
+            let mut outf = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .open(EXPORT_FN)
+                .unwrap();
 
-        let _iores = db.export_bin(&mut outf, ExportBinMode::ExpNative).unwrap();
-        fs::remove_file(EXPORT_FN).unwrap();
+            let _iores = db.export_bin(&mut outf, ExportBinMode::ExpNative).unwrap();
+            fs::remove_file(EXPORT_FN).unwrap();
 
-        // TODO: once Store is implemented, import the exported data
-        // into a new db, and verify that old & new dbs match.
+            // TODO: once Store is implemented, import the exported data
+            // into a new db, and verify that old & new dbs match.
+        }
     }
 
     #[test]
@@ -912,20 +918,21 @@ mod test_gdbm {
 
         let testcfg = init_tests();
 
-        let testdb = &testcfg.tests[BASIC_DB];
-        let mut db = Gdbm::open(&testdb.db_path).unwrap();
-        let mut outf = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(EXPORT_FN)
-            .unwrap();
+        for testdb in &testcfg.tests {
+            let mut db = Gdbm::open(&testdb.db_path).unwrap();
+            let mut outf = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .open(EXPORT_FN)
+                .unwrap();
 
-        let _iores = db.export_ascii(&mut outf).unwrap();
-        fs::remove_file(EXPORT_FN).unwrap();
+            let _iores = db.export_ascii(&mut outf).unwrap();
+            fs::remove_file(EXPORT_FN).unwrap();
 
-        // TODO: once Store is implemented, import the exported data
-        // into a new db, and verify that old & new dbs match.
+            // TODO: once Store is implemented, import the exported data
+            // into a new db, and verify that old & new dbs match.
+        }
     }
 
     #[test]
@@ -944,24 +951,27 @@ mod test_gdbm {
     fn api_get() {
         let testcfg = init_tests();
 
-        let testdb = &testcfg.tests[BASIC_DB];
-        let mut db = Gdbm::open(&testdb.db_path).unwrap();
+        for testdb in &testcfg.tests {
+            if testdb.is_basic {
+                let mut db = Gdbm::open(&testdb.db_path).unwrap();
 
-        for n in 0..10001 {
-            let keystr = format!("key {}", n);
-            let res = db.get(keystr.as_bytes());
-            match res {
-                Ok(opt) => match opt {
-                    None => {
-                        assert!(false);
+                for n in 0..10001 {
+                    let keystr = format!("key {}", n);
+                    let res = db.get(keystr.as_bytes());
+                    match res {
+                        Ok(opt) => match opt {
+                            None => {
+                                assert!(false);
+                            }
+                            Some(val) => {
+                                let valstr = format!("value {}", n);
+                                assert_eq!(val, valstr.as_bytes());
+                            }
+                        },
+                        Err(_e) => {
+                            assert!(false);
+                        }
                     }
-                    Some(val) => {
-                        let valstr = format!("value {}", n);
-                        assert_eq!(val, valstr.as_bytes());
-                    }
-                },
-                Err(_e) => {
-                    assert!(false);
                 }
             }
         }
