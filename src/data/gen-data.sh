@@ -1,11 +1,10 @@
 #!/bin/sh
 
 TESTGEN=../testgen
+SFX=.le64
 
-mkdir -p data
-cd data
 for plan in basic empty
 do
-	$TESTGEN -o $plan.db -j $plan.json -p $plan
+	$TESTGEN -o $plan.db$SFX -j $plan.json$SFX -p $plan
 done
 
