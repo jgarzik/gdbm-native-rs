@@ -1,4 +1,4 @@
-use byteorder::{LittleEndian, ReadBytesExt};
+use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::io::{self, Read};
 
 use crate::ser::{w32, woff_t};
@@ -10,14 +10,26 @@ pub struct AvailElem {
 }
 
 impl AvailElem {
-    pub fn from_reader(is_lfs: bool, rdr: &mut impl Read) -> io::Result<Self> {
-        let elem_sz = rdr.read_u32::<LittleEndian>()?;
+    pub fn from_reader(is_lfs: bool, is_le: bool, rdr: &mut impl Read) -> io::Result<Self> {
+        let elem_sz: u32;
         let elem_ofs: u64;
-        if is_lfs {
-            let _padding = rdr.read_u32::<LittleEndian>()?;
-            elem_ofs = rdr.read_u64::<LittleEndian>()?;
+
+        if is_le {
+            elem_sz = rdr.read_u32::<LittleEndian>()?;
+            if is_lfs {
+                let _padding = rdr.read_u32::<LittleEndian>()?;
+                elem_ofs = rdr.read_u64::<LittleEndian>()?;
+            } else {
+                elem_ofs = rdr.read_u32::<LittleEndian>()? as u64;
+            }
         } else {
-            elem_ofs = rdr.read_u32::<LittleEndian>()? as u64;
+            elem_sz = rdr.read_u32::<BigEndian>()?;
+            if is_lfs {
+                let _padding = rdr.read_u32::<BigEndian>()?;
+                elem_ofs = rdr.read_u64::<BigEndian>()?;
+            } else {
+                elem_ofs = rdr.read_u32::<BigEndian>()? as u64;
+            }
         }
 
         Ok(AvailElem {

@@ -1,4 +1,4 @@
-use byteorder::{LittleEndian, ReadBytesExt};
+use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::collections::HashMap;
 use std::io::{self, Error, ErrorKind, Read};
 
@@ -17,21 +17,39 @@ pub struct BucketElement {
 }
 
 impl BucketElement {
-    pub fn from_reader(is_lfs: bool, rdr: &mut impl Read) -> io::Result<Self> {
-        let hash = rdr.read_u32::<LittleEndian>()?;
+    pub fn from_reader(is_lfs: bool, is_le: bool, rdr: &mut impl Read) -> io::Result<Self> {
+        let hash;
+        if is_le {
+            hash = rdr.read_u32::<LittleEndian>()?;
+        } else {
+            hash = rdr.read_u32::<BigEndian>()?;
+        }
 
         let mut key_start = [0; KEY_SMALL];
         rdr.read(&mut key_start)?;
 
         let data_ofs: u64;
-        if is_lfs {
-            data_ofs = rdr.read_u64::<LittleEndian>()?;
-        } else {
-            data_ofs = rdr.read_u32::<LittleEndian>()? as u64;
-        }
+        let (key_size, data_size);
 
-        let key_size = rdr.read_u32::<LittleEndian>()?;
-        let data_size = rdr.read_u32::<LittleEndian>()?;
+        if is_le {
+            if is_lfs {
+                data_ofs = rdr.read_u64::<LittleEndian>()?;
+            } else {
+                data_ofs = rdr.read_u32::<LittleEndian>()? as u64;
+            }
+
+            key_size = rdr.read_u32::<LittleEndian>()?;
+            data_size = rdr.read_u32::<LittleEndian>()?;
+        } else {
+            if is_lfs {
+                data_ofs = rdr.read_u64::<BigEndian>()?;
+            } else {
+                data_ofs = rdr.read_u32::<BigEndian>()? as u64;
+            }
+
+            key_size = rdr.read_u32::<BigEndian>()?;
+            data_size = rdr.read_u32::<BigEndian>()?;
+        }
 
         Ok(BucketElement {
             hash,
@@ -67,19 +85,33 @@ pub struct Bucket {
 impl Bucket {
     pub fn from_reader(header: &Header, rdr: &mut impl Read) -> io::Result<Self> {
         // read avail section
-        let av_count = rdr.read_u32::<LittleEndian>()?;
-        let _padding = rdr.read_u32::<LittleEndian>()?;
+        let av_count;
+        if header.is_le {
+            av_count = rdr.read_u32::<LittleEndian>()?;
+            let _padding = rdr.read_u32::<LittleEndian>()?;
+        } else {
+            av_count = rdr.read_u32::<BigEndian>()?;
+            let _padding = rdr.read_u32::<BigEndian>()?;
+        }
+
         let mut avail = Vec::new();
         for _idx in 0..BUCKET_AVAIL {
-            let av_elem = AvailElem::from_reader(header.is_lfs, rdr)?;
+            let av_elem = AvailElem::from_reader(header.is_lfs, header.is_le, rdr)?;
             avail.push(av_elem);
         }
 
         // todo: validate and assure-sorted avail[]
 
         // read misc. section
-        let bits = rdr.read_u32::<LittleEndian>()?;
-        let count = rdr.read_u32::<LittleEndian>()?;
+        let (bits, count);
+
+        if header.is_le {
+            bits = rdr.read_u32::<LittleEndian>()?;
+            count = rdr.read_u32::<LittleEndian>()?;
+        } else {
+            bits = rdr.read_u32::<BigEndian>()?;
+            count = rdr.read_u32::<BigEndian>()?;
+        }
 
         if !(count <= header.bucket_elems && bits <= header.dir_bits) {
             return Err(Error::new(ErrorKind::Other, "invalid bucket c/b"));
@@ -88,7 +120,7 @@ impl Bucket {
         // read bucket elements section
         let mut tab = Vec::new();
         for _idx in 0..header.bucket_elems {
-            let bucket_elem = BucketElement::from_reader(header.is_lfs, rdr)?;
+            let bucket_elem = BucketElement::from_reader(header.is_lfs, header.is_le, rdr)?;
             tab.push(bucket_elem);
         }
 

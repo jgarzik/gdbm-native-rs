@@ -1,4 +1,4 @@
-use byteorder::{LittleEndian, ReadBytesExt};
+use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::io::{self, Seek, SeekFrom};
 
 use crate::ser::woff_t;
@@ -44,6 +44,26 @@ pub fn dirent_elem_size(is_lfs: bool) -> usize {
     }
 }
 
+fn roff_t(f: &mut std::fs::File, is_lfs: bool, is_le: bool) -> io::Result<u64> {
+    let v;
+
+    if is_le {
+        if is_lfs {
+            v = f.read_u64::<LittleEndian>()?;
+        } else {
+            v = f.read_u32::<LittleEndian>()? as u64;
+        }
+    } else {
+        if is_lfs {
+            v = f.read_u64::<BigEndian>()?;
+        } else {
+            v = f.read_u32::<BigEndian>()? as u64;
+        }
+    }
+
+    Ok(v)
+}
+
 // Read C-struct-based bucket directory (a vector of storage offsets)
 pub fn dir_reader(f: &mut std::fs::File, header: &Header) -> io::Result<Vec<u64>> {
     let is_lfs = header.is_lfs;
@@ -55,12 +75,7 @@ pub fn dir_reader(f: &mut std::fs::File, header: &Header) -> io::Result<Vec<u64>
     let _pos = f.seek(SeekFrom::Start(header.dir_ofs))?;
 
     for _idx in 0..dirent_count {
-        let ofs: u64;
-        if is_lfs {
-            ofs = f.read_u64::<LittleEndian>()?;
-        } else {
-            ofs = f.read_u32::<LittleEndian>()? as u64;
-        }
+        let ofs = roff_t(f, header.is_lfs, header.is_le)?;
         dir.push(ofs);
     }
 
