@@ -10,10 +10,10 @@ pub struct AvailElem {
 }
 
 impl AvailElem {
-    pub fn from_reader(is_64: bool, rdr: &mut impl Read) -> io::Result<Self> {
+    pub fn from_reader(is_lfs: bool, rdr: &mut impl Read) -> io::Result<Self> {
         let elem_sz = rdr.read_u32::<LittleEndian>()?;
         let elem_ofs: u64;
-        if is_64 {
+        if is_lfs {
             let _padding = rdr.read_u32::<LittleEndian>()?;
             elem_ofs = rdr.read_u64::<LittleEndian>()?;
         } else {
@@ -26,14 +26,14 @@ impl AvailElem {
         })
     }
 
-    pub fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
+    pub fn serialize(&self, is_lfs: bool, is_le: bool) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.append(&mut w32(is_le, self.sz));
-        if is_64 {
+        if is_lfs {
             let padding: u32 = 0;
             buf.append(&mut w32(is_le, padding));
         }
-        buf.append(&mut woff_t(is_64, is_le, self.addr));
+        buf.append(&mut woff_t(is_lfs, is_le, self.addr));
 
         buf
     }
@@ -78,14 +78,14 @@ impl AvailBlock {
         }
     }
 
-    pub fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
+    pub fn serialize(&self, is_lfs: bool, is_le: bool) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.append(&mut w32(is_le, self.sz));
         buf.append(&mut w32(is_le, self.count));
-        buf.append(&mut woff_t(is_64, is_le, self.next_block));
+        buf.append(&mut woff_t(is_lfs, is_le, self.next_block));
 
         for elem in &self.elems {
-            buf.append(&mut elem.serialize(is_64, is_le));
+            buf.append(&mut elem.serialize(is_lfs, is_le));
         }
 
         buf

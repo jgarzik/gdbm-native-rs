@@ -26,8 +26,8 @@ pub fn w64(is_le: bool, val: u64) -> Vec<u8> {
     buf
 }
 
-pub fn woff_t(is_64: bool, is_le: bool, val: u64) -> Vec<u8> {
-    match is_64 {
+pub fn woff_t(is_lfs: bool, is_le: bool, val: u64) -> Vec<u8> {
+    match is_lfs {
         true => w64(is_le, val),
         false => w32(is_le, val as u32),
     }
