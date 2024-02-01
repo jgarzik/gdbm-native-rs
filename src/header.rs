@@ -1,4 +1,4 @@
-use byteorder::{LittleEndian, ReadBytesExt};
+use byteorder::{BigEndian, LittleEndian, NativeEndian, ReadBytesExt};
 use std::io::{self, Error, ErrorKind, Read};
 
 use crate::dir::build_dir_size;
@@ -24,7 +24,8 @@ pub struct Header {
     pub avail: AvailBlock,
 
     // following fields are calculated, not stored
-    pub is_lfs: bool,
+    pub is_lfs: bool, // using 64-bit off_t?
+    pub is_le: bool,  // metadata endianness is big (false) or little (true)
     pub dirty: bool,
 }
 
@@ -36,26 +37,79 @@ impl Header {
     pub fn from_reader(metadata: &std::fs::Metadata, mut rdr: impl Read) -> io::Result<Self> {
         let file_sz = metadata.len();
 
-        let magic = rdr.read_u32::<LittleEndian>()?;
+        let magic = rdr.read_u32::<NativeEndian>()?;
 
-        let is_lfs = match magic {
-            GDBM_MAGIC64 | GDBM_MAGIC64_SWAP => true,
-            _ => false,
+        // determine db file version, intrinsics from magic number
+        let (is_lfs, need_swap) = match magic {
+            GDBM_OMAGIC => (false, false),
+            GDBM_OMAGIC_SWAP => (false, true),
+            GDBM_MAGIC32 => (false, false),
+            GDBM_MAGIC32_SWAP => (false, true),
+            GDBM_MAGIC64 => (true, false),
+            GDBM_MAGIC64_SWAP => (true, true),
+            _ => {
+                return Err(Error::new(ErrorKind::Other, "Unknown/invalid magic number"));
+            }
+        };
+
+        // detect db file endianness
+        let is_le = match need_swap {
+            true => {
+                if cfg!(target_endian = "little") {
+                    false
+                } else {
+                    true
+                }
+            }
+            false => {
+                if cfg!(target_endian = "little") {
+                    true
+                } else {
+                    false
+                }
+            }
         };
 
         // fixme: read u32, not u64, if is_lfs
 
-        let block_sz = rdr.read_u32::<LittleEndian>()?;
-        let dir_ofs = rdr.read_u64::<LittleEndian>()?;
-        let dir_sz = rdr.read_u32::<LittleEndian>()?;
-        let dir_bits = rdr.read_u32::<LittleEndian>()?;
-        let bucket_sz = rdr.read_u32::<LittleEndian>()?;
-        let bucket_elems = rdr.read_u32::<LittleEndian>()?;
-        let next_block = rdr.read_u64::<LittleEndian>()?;
+        let (
+            block_sz,
+            dir_ofs,
+            dir_sz,
+            dir_bits,
+            bucket_sz,
+            bucket_elems,
+            next_block,
+            avail_sz,
+            avail_count,
+            avail_next_block,
+        );
 
-        let avail_sz = rdr.read_u32::<LittleEndian>()?;
-        let avail_count = rdr.read_u32::<LittleEndian>()?;
-        let avail_next_block = rdr.read_u64::<LittleEndian>()?;
+        if is_le {
+            block_sz = rdr.read_u32::<LittleEndian>()?;
+            dir_ofs = rdr.read_u64::<LittleEndian>()?;
+            dir_sz = rdr.read_u32::<LittleEndian>()?;
+            dir_bits = rdr.read_u32::<LittleEndian>()?;
+            bucket_sz = rdr.read_u32::<LittleEndian>()?;
+            bucket_elems = rdr.read_u32::<LittleEndian>()?;
+            next_block = rdr.read_u64::<LittleEndian>()?;
+
+            avail_sz = rdr.read_u32::<LittleEndian>()?;
+            avail_count = rdr.read_u32::<LittleEndian>()?;
+            avail_next_block = rdr.read_u64::<LittleEndian>()?;
+        } else {
+            block_sz = rdr.read_u32::<BigEndian>()?;
+            dir_ofs = rdr.read_u64::<BigEndian>()?;
+            dir_sz = rdr.read_u32::<BigEndian>()?;
+            dir_bits = rdr.read_u32::<BigEndian>()?;
+            bucket_sz = rdr.read_u32::<BigEndian>()?;
+            bucket_elems = rdr.read_u32::<BigEndian>()?;
+            next_block = rdr.read_u64::<BigEndian>()?;
+
+            avail_sz = rdr.read_u32::<BigEndian>()?;
+            avail_count = rdr.read_u32::<BigEndian>()?;
+            avail_next_block = rdr.read_u64::<BigEndian>()?;
+        }
 
         if !(block_sz > 0 && block_sz > GDBM_HDR_SZ && block_sz - GDBM_HDR_SZ >= GDBM_AVAIL_ELEM_SZ)
         {
@@ -99,7 +153,7 @@ impl Header {
 
         let mut elems: Vec<AvailElem> = Vec::new();
         for _idx in 0..avail_count {
-            let av_elem = AvailElem::from_reader(is_lfs, &mut rdr)?;
+            let av_elem = AvailElem::from_reader(is_lfs, is_le, &mut rdr)?;
             elems.push(av_elem);
         }
 
@@ -141,6 +195,7 @@ impl Header {
                 elems,
             },
             is_lfs,
+            is_le,
             dirty: false,
         })
     }

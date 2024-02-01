@@ -38,7 +38,6 @@ const GDBM_AVAIL_HDR_SZ: u32 = 16;
 const GDBM_AVAIL_ELEM_SZ: u32 = 16;
 const KEY_SMALL: usize = 4;
 const IGNORE_SMALL: usize = 4;
-const DEF_IS_LE: bool = true;
 
 pub enum ExportBinMode {
     ExpNative,
@@ -527,7 +526,7 @@ impl Gdbm {
         self.header.dirty = true;
 
         // write extension block to storage (immediately)
-        let ext_bytes = ext_blk.serialize(self.header.is_lfs, DEF_IS_LE);
+        let ext_bytes = ext_blk.serialize(self.header.is_lfs, self.header.is_le);
         write_ofs(&mut self.f, new_blk_ofs, &ext_bytes)?;
 
         Ok(())
@@ -582,7 +581,7 @@ impl Gdbm {
     }
 
     fn write_bucket(&mut self, bucket_ofs: u64, bucket: &Bucket) -> io::Result<()> {
-        let bytes = bucket.serialize(self.header.is_lfs, DEF_IS_LE);
+        let bytes = bucket.serialize(self.header.is_lfs, self.header.is_le);
         write_ofs(&mut self.f, bucket_ofs, &bytes)?;
 
         Ok(())
@@ -612,7 +611,7 @@ impl Gdbm {
             return Ok(());
         }
 
-        let bytes = self.dir.serialize(self.header.is_lfs, DEF_IS_LE);
+        let bytes = self.dir.serialize(self.header.is_lfs, self.header.is_le);
         write_ofs(&mut self.f, self.header.dir_ofs, &bytes)?;
 
         self.dir_dirty = false;
@@ -626,7 +625,7 @@ impl Gdbm {
             return Ok(());
         }
 
-        let bytes = self.header.serialize(self.header.is_lfs, DEF_IS_LE);
+        let bytes = self.header.serialize(self.header.is_lfs, self.header.is_le);
         write_ofs(&mut self.f, 0, &bytes)?;
 
         self.header.dirty = false;
