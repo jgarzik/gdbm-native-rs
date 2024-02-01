@@ -748,8 +748,18 @@ use std::path::PathBuf;
 #[cfg(test)]
 mod test_gdbm {
     use super::*;
+    use serde::Deserialize;
     use std::collections::HashMap;
     use std::fs;
+
+    #[allow(dead_code)]
+    #[derive(Deserialize)]
+    struct TestMetadata {
+        pub generated_by: String,
+        pub generated_time: String,
+        pub data_records: usize,
+        pub data: Vec<Vec<String>>,
+    }
 
     struct TestInfo {
         #[allow(dead_code)]
@@ -757,6 +767,8 @@ mod test_gdbm {
         pub db_path: String,
         pub is_basic: bool,
         pub n_records: usize,
+        #[allow(dead_code)]
+        pub metadata: TestMetadata,
     }
 
     struct TestConfig {
@@ -769,7 +781,7 @@ mod test_gdbm {
         }
     }
 
-    fn push_test(cfg: &mut TestConfig, db_fn: &str, json_fn: &str, is_basic: bool, n_rec: usize) {
+    fn push_test(cfg: &mut TestConfig, db_fn: &str, json_fn: &str, is_basic: bool) {
         let mut dbp = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         dbp.push("src/data");
         dbp.push(db_fn);
@@ -778,11 +790,17 @@ mod test_gdbm {
         jsp.push("src/data");
         jsp.push(json_fn);
 
+        let json_path = jsp.to_str().unwrap().to_string();
+        let json_data = fs::read_to_string(&json_path).expect("Unable to read JSON file");
+        let metadata: TestMetadata =
+            serde_json::from_str(&json_data).expect("Test JSON was not well formed");
+
         cfg.tests.push(TestInfo {
             db_path: dbp.to_str().unwrap().to_string(),
-            json_path: jsp.to_str().unwrap().to_string(),
+            json_path,
             is_basic,
-            n_records: n_rec,
+            n_records: metadata.data_records,
+            metadata,
         });
     }
 
@@ -792,10 +810,10 @@ mod test_gdbm {
         // NOTE: Order of push is important.
         // Some tests depend on basic.db being index 1 (2nd item)
 
-        push_test(&mut cfg, "empty.db.le32", "empty.json.le32", false, 0);
-        push_test(&mut cfg, "basic.db.le32", "basic.json.le32", true, 10001);
-        push_test(&mut cfg, "empty.db.le64", "empty.json.le64", false, 0);
-        push_test(&mut cfg, "basic.db.le64", "basic.json.le64", true, 10001);
+        push_test(&mut cfg, "empty.db.le32", "empty.json.le32", false);
+        push_test(&mut cfg, "basic.db.le32", "basic.json.le32", true);
+        push_test(&mut cfg, "empty.db.le64", "empty.json.le64", false);
+        push_test(&mut cfg, "basic.db.le64", "basic.json.le64", true);
 
         cfg
     }
