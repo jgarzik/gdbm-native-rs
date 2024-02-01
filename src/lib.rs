@@ -7,7 +7,7 @@ use std::{
 
 mod avail;
 mod bucket;
-mod dir;
+pub mod dir;
 mod hashutil;
 mod header;
 mod ser;
@@ -71,7 +71,7 @@ fn write_ofs(f: &mut std::fs::File, ofs: u64, data: &[u8]) -> io::Result<()> {
 pub struct Gdbm {
     pathname: String,
     f: std::fs::File,
-    header: Header,
+    pub header: Header,
     dir: Directory,
     dir_dirty: bool,
     bucket_cache: BucketCache,
