@@ -24,7 +24,7 @@ pub struct Header {
     pub avail: AvailBlock,
 
     // following fields are calculated, not stored
-    pub is_64: bool,
+    pub is_lfs: bool,
     pub dirty: bool,
 }
 
@@ -38,12 +38,12 @@ impl Header {
 
         let magic = rdr.read_u32::<LittleEndian>()?;
 
-        let is_64 = match magic {
+        let is_lfs = match magic {
             GDBM_MAGIC64 | GDBM_MAGIC64_SWAP => true,
             _ => false,
         };
 
-        // fixme: read u32, not u64, if is_64
+        // fixme: read u32, not u64, if is_lfs
 
         let block_sz = rdr.read_u32::<LittleEndian>()?;
         let dir_ofs = rdr.read_u64::<LittleEndian>()?;
@@ -99,7 +99,7 @@ impl Header {
 
         let mut elems: Vec<AvailElem> = Vec::new();
         for _idx in 0..avail_count {
-            let av_elem = AvailElem::from_reader(is_64, &mut rdr)?;
+            let av_elem = AvailElem::from_reader(is_lfs, &mut rdr)?;
             elems.push(av_elem);
         }
 
@@ -140,22 +140,22 @@ impl Header {
                 next_block: avail_next_block,
                 elems,
             },
-            is_64,
+            is_lfs,
             dirty: false,
         })
     }
 
-    pub fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
+    pub fn serialize(&self, is_lfs: bool, is_le: bool) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.append(&mut w32(is_le, self.magic)); // fixme: check swap?
         buf.append(&mut w32(is_le, self.block_sz));
-        buf.append(&mut woff_t(is_64, is_le, self.dir_ofs));
+        buf.append(&mut woff_t(is_lfs, is_le, self.dir_ofs));
         buf.append(&mut w32(is_le, self.dir_sz));
         buf.append(&mut w32(is_le, self.dir_bits));
         buf.append(&mut w32(is_le, self.bucket_sz));
         buf.append(&mut w32(is_le, self.bucket_elems));
-        buf.append(&mut woff_t(is_64, is_le, self.next_block));
-        buf.append(&mut self.avail.serialize(is_64, is_le));
+        buf.append(&mut woff_t(is_lfs, is_le, self.next_block));
+        buf.append(&mut self.avail.serialize(is_lfs, is_le));
 
         buf
     }

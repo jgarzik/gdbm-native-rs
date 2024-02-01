@@ -17,14 +17,14 @@ pub struct BucketElement {
 }
 
 impl BucketElement {
-    pub fn from_reader(is_64: bool, rdr: &mut impl Read) -> io::Result<Self> {
+    pub fn from_reader(is_lfs: bool, rdr: &mut impl Read) -> io::Result<Self> {
         let hash = rdr.read_u32::<LittleEndian>()?;
 
         let mut key_start = [0; KEY_SMALL];
         rdr.read(&mut key_start)?;
 
         let data_ofs: u64;
-        if is_64 {
+        if is_lfs {
             data_ofs = rdr.read_u64::<LittleEndian>()?;
         } else {
             data_ofs = rdr.read_u32::<LittleEndian>()? as u64;
@@ -42,11 +42,11 @@ impl BucketElement {
         })
     }
 
-    pub fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
+    pub fn serialize(&self, is_lfs: bool, is_le: bool) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.append(&mut w32(is_le, self.hash));
         buf.append(&mut self.key_start.to_vec());
-        buf.append(&mut woff_t(is_64, is_le, self.data_ofs));
+        buf.append(&mut woff_t(is_lfs, is_le, self.data_ofs));
         buf.append(&mut w32(is_le, self.key_size));
         buf.append(&mut w32(is_le, self.data_size));
 
@@ -71,7 +71,7 @@ impl Bucket {
         let _padding = rdr.read_u32::<LittleEndian>()?;
         let mut avail = Vec::new();
         for _idx in 0..BUCKET_AVAIL {
-            let av_elem = AvailElem::from_reader(header.is_64, rdr)?;
+            let av_elem = AvailElem::from_reader(header.is_lfs, rdr)?;
             avail.push(av_elem);
         }
 
@@ -88,7 +88,7 @@ impl Bucket {
         // read bucket elements section
         let mut tab = Vec::new();
         for _idx in 0..header.bucket_elems {
-            let bucket_elem = BucketElement::from_reader(header.is_64, rdr)?;
+            let bucket_elem = BucketElement::from_reader(header.is_lfs, rdr)?;
             tab.push(bucket_elem);
         }
 
@@ -101,7 +101,7 @@ impl Bucket {
         })
     }
 
-    pub fn serialize(&self, is_64: bool, is_le: bool) -> Vec<u8> {
+    pub fn serialize(&self, is_lfs: bool, is_le: bool) -> Vec<u8> {
         let mut buf = Vec::new();
 
         //
@@ -109,14 +109,14 @@ impl Bucket {
         //
 
         buf.append(&mut w32(is_le, self.av_count));
-        if is_64 {
+        if is_lfs {
             let padding: u32 = 0;
             buf.append(&mut w32(is_le, padding));
         }
 
         assert_eq!(self.avail.len(), BUCKET_AVAIL as usize);
         for avail_elem in &self.avail {
-            buf.append(&mut avail_elem.serialize(is_64, is_le));
+            buf.append(&mut avail_elem.serialize(is_lfs, is_le));
         }
 
         //
@@ -129,7 +129,7 @@ impl Bucket {
         // bucket elements section
         //
         for bucket_elem in &self.tab {
-            buf.append(&mut bucket_elem.serialize(is_64, is_le));
+            buf.append(&mut bucket_elem.serialize(is_lfs, is_le));
         }
 
         buf
