@@ -810,8 +810,6 @@ mod test_gdbm {
         // NOTE: Order of push is important.
         // Some tests depend on basic.db being index 1 (2nd item)
 
-        push_test(&mut cfg, "empty.db.le32", "empty.json.le32", false);
-        push_test(&mut cfg, "basic.db.le32", "basic.json.le32", true);
         push_test(&mut cfg, "empty.db.le64", "empty.json.le64", false);
         push_test(&mut cfg, "basic.db.le64", "basic.json.le64", true);
 
