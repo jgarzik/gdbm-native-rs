@@ -1,4 +1,4 @@
-use byteorder::{LittleEndian, ReadBytesExt};
+use byteorder::{LittleEndian, NativeEndian, ReadBytesExt};
 use std::io::{self, Error, ErrorKind, Read};
 
 use crate::dir::build_dir_size;
@@ -24,7 +24,8 @@ pub struct Header {
     pub avail: AvailBlock,
 
     // following fields are calculated, not stored
-    pub is_lfs: bool,
+    pub is_lfs: bool, // using 64-bit off_t?
+    pub is_le: bool,  // metadata endianness is big (false) or little (true)
     pub dirty: bool,
 }
 
@@ -36,11 +37,37 @@ impl Header {
     pub fn from_reader(metadata: &std::fs::Metadata, mut rdr: impl Read) -> io::Result<Self> {
         let file_sz = metadata.len();
 
-        let magic = rdr.read_u32::<LittleEndian>()?;
+        let magic = rdr.read_u32::<NativeEndian>()?;
 
-        let is_lfs = match magic {
-            GDBM_MAGIC64 | GDBM_MAGIC64_SWAP => true,
-            _ => false,
+        // determine db file version, intrinsics from magic number
+        let (is_lfs, need_swap) = match magic {
+            GDBM_OMAGIC => (false, false),
+            GDBM_OMAGIC_SWAP => (false, true),
+            GDBM_MAGIC32 => (false, false),
+            GDBM_MAGIC32_SWAP => (false, true),
+            GDBM_MAGIC64 => (true, false),
+            GDBM_MAGIC64_SWAP => (true, true),
+            _ => {
+                return Err(Error::new(ErrorKind::Other, "Unknown/invalid magic number"));
+            }
+        };
+
+        // detect db file endianness
+        let is_le = match need_swap {
+            true => {
+                if cfg!(target_endian = "little") {
+                    false
+                } else {
+                    true
+                }
+            }
+            false => {
+                if cfg!(target_endian = "little") {
+                    true
+                } else {
+                    false
+                }
+            }
         };
 
         // fixme: read u32, not u64, if is_lfs
@@ -141,6 +168,7 @@ impl Header {
                 elems,
             },
             is_lfs,
+            is_le,
             dirty: false,
         })
     }
