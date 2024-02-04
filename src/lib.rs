@@ -71,7 +71,7 @@ pub struct Gdbm {
     pathname: String,
     f: std::fs::File,
     pub header: Header,
-    dir: Directory,
+    pub dir: Directory,
     dir_dirty: bool,
     bucket_cache: BucketCache,
     cur_bucket_ofs: u64,
