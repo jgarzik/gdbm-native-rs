@@ -66,9 +66,17 @@ fn write_ofs(f: &mut std::fs::File, ofs: u64, data: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone)]
+pub struct GdbmOptions {
+    pub readonly: bool,
+    pub creat: bool,
+}
+
+// #[derive(Debug)]
 pub struct Gdbm {
     pathname: String,
+    cfg: GdbmOptions,
+
     f: std::fs::File,
     pub header: Header,
     pub dir: Directory,
@@ -80,23 +88,37 @@ pub struct Gdbm {
 
 impl Gdbm {
     // API: open database file, read and validate header
-    pub fn open(pathname: &str) -> io::Result<Gdbm> {
+    pub fn open(pathname: &str, dbcfg: &GdbmOptions) -> io::Result<Gdbm> {
+        // derive open options
+        let opt_write: bool = !dbcfg.readonly;
+        let opt_create: bool;
+        if dbcfg.readonly {
+            opt_create = false;
+        } else {
+            opt_create = dbcfg.creat;
+        }
+
+        // open filesystem file
         let mut f = OpenOptions::new()
             .read(true)
-            .write(true)
-            .create(true)
+            .write(opt_write)
+            .create(opt_create)
             .open(pathname)?;
         let metadata = f.metadata()?;
 
+        // read gdbm global header
         let header = Header::from_reader(&metadata, f.try_clone()?)?;
         println!("{:?}", header);
 
+        // read gdbm hash directory
         let dir = dir_reader(&mut f, &header)?;
         let cur_bucket_dir: usize = 0;
         let cur_bucket_ofs = dir[cur_bucket_dir];
 
+        // success; create new Gdbm object
         Ok(Gdbm {
             pathname: pathname.to_string(),
+            cfg: *dbcfg,
             f,
             header,
             dir: Directory { dir },
@@ -644,7 +666,9 @@ impl Gdbm {
 
     // API: ensure database is flushed to stable storage
     pub fn sync(&mut self) -> io::Result<()> {
-        // TODO: read-only check
+        if self.cfg.readonly {
+            return Err(Error::new(ErrorKind::Other, "Writable op on read-only db"));
+        }
 
         self.write_dirty()?;
         self.f.sync_data()?;
@@ -654,6 +678,10 @@ impl Gdbm {
 
     // API: remove a key/value pair from db, given a key
     pub fn remove(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        if self.cfg.readonly {
+            return Err(Error::new(ErrorKind::Other, "Writable op on read-only db"));
+        }
+
         let get_opt = self.int_get(key)?;
         if get_opt == None {
             return Ok(None);
@@ -771,12 +799,24 @@ mod test_gdbm {
     }
 
     struct TestConfig {
+        pub def_ro_cfg: GdbmOptions,
+        pub def_rw_cfg: GdbmOptions,
         pub tests: Vec<TestInfo>,
     }
 
     impl TestConfig {
         fn new() -> TestConfig {
-            TestConfig { tests: Vec::new() }
+            TestConfig {
+                def_ro_cfg: GdbmOptions {
+                    readonly: true,
+                    creat: false,
+                },
+                def_rw_cfg: GdbmOptions {
+                    readonly: false,
+                    creat: false,
+                },
+                tests: Vec::new(),
+            }
         }
     }
 
@@ -820,7 +860,7 @@ mod test_gdbm {
         let testcfg = init_tests();
 
         for testdb in &testcfg.tests {
-            let _res = Gdbm::open(&testdb.db_path).unwrap();
+            let _res = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
             // implicit close when scope closes
         }
     }
@@ -830,12 +870,12 @@ mod test_gdbm {
         let testcfg = init_tests();
 
         for testdb in &testcfg.tests {
-            let mut db = Gdbm::open(&testdb.db_path).unwrap();
+            let mut db = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
             let res = db.contains_key(b"dummy").unwrap();
             assert_eq!(res, false);
 
             if testdb.is_basic {
-                db = Gdbm::open(&testdb.db_path).unwrap();
+                db = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
                 let res = db.contains_key(b"key -111").unwrap();
                 assert_eq!(res, false);
             }
@@ -848,7 +888,7 @@ mod test_gdbm {
 
         for testdb in &testcfg.tests {
             if testdb.is_basic {
-                let mut db = Gdbm::open(&testdb.db_path).unwrap();
+                let mut db = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
 
                 for n in 0..10001 {
                     let keystr = format!("key {}", n);
@@ -876,7 +916,7 @@ mod test_gdbm {
                 assert_eq!(keys_remaining.len(), testdb.n_records);
 
                 // open basic.db
-                let mut db = Gdbm::open(&testdb.db_path).unwrap();
+                let mut db = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
 
                 // iterate through each key in db
                 let mut key_res = db.first_key().unwrap();
@@ -900,7 +940,7 @@ mod test_gdbm {
         let testcfg = init_tests();
 
         for testdb in &testcfg.tests {
-            let mut db = Gdbm::open(&testdb.db_path).unwrap();
+            let mut db = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
             let res = db.len().unwrap();
             assert_eq!(res, testdb.n_records);
         }
@@ -913,7 +953,7 @@ mod test_gdbm {
         let testcfg = init_tests();
 
         for testdb in &testcfg.tests {
-            let mut db = Gdbm::open(&testdb.db_path).unwrap();
+            let mut db = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
             let mut outf = OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -942,7 +982,7 @@ mod test_gdbm {
                 fs::copy(&testdb.db_path, &newdb_fn).expect("DB File copy failed");
 
                 // Open database for testing
-                let mut db = Gdbm::open(&newdb_fn).expect("GDBM open failed");
+                let mut db = Gdbm::open(&newdb_fn, &testcfg.def_rw_cfg).expect("GDBM open failed");
 
                 // Test: remove non-existent key
                 let keystr = String::from("This key does not exist.");
@@ -962,7 +1002,7 @@ mod test_gdbm {
         let testcfg = init_tests();
 
         for testdb in &testcfg.tests {
-            let mut db = Gdbm::open(&testdb.db_path).unwrap();
+            let mut db = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
             let mut outf = OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -984,7 +1024,7 @@ mod test_gdbm {
 
         for testdb in &testcfg.tests {
             let keystr = String::from("This key does not exist.");
-            let mut db = Gdbm::open(&testdb.db_path).unwrap();
+            let mut db = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
             let res = db.get(keystr.as_bytes()).unwrap();
             assert_eq!(res, None);
         }
@@ -996,7 +1036,7 @@ mod test_gdbm {
 
         for testdb in &testcfg.tests {
             if testdb.is_basic {
-                let mut db = Gdbm::open(&testdb.db_path).unwrap();
+                let mut db = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
 
                 for n in 0..10001 {
                     let keystr = format!("key {}", n);
