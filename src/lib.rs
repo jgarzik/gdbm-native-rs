@@ -723,49 +723,6 @@ impl Gdbm {
 
         Ok(Some(data))
     }
-
-    // API: print bucket directory
-    pub fn print_dir(&self) {
-        println!(
-            "size = {}, bits = {}, buckets = ?",
-            self.header.dir_sz, self.header.dir_bits
-        );
-
-        for idx in 0..self.dir.len() {
-            println!("{}: {}", idx, self.dir.dir[idx]);
-        }
-    }
-
-    // API: print bucket
-    pub fn print_bucket(&mut self, bucket_dir: usize) -> io::Result<()> {
-        self.cache_load_bucket(bucket_dir)?;
-        let bucket_ofs = self.dir.dir[bucket_dir];
-        let bucket = self.bucket_cache.bucket_map[&bucket_ofs].clone();
-
-        println!("bits = {}", bucket.bits);
-        println!("count = {}", bucket.count);
-
-        for idx in 0..bucket.tab.len() {
-            let elem = &bucket.tab[idx];
-            println!(
-                "{}   {:x}   {}   {}   {}  {}",
-                idx,
-                elem.hash,
-                elem.key_size,
-                elem.data_size,
-                elem.data_ofs,
-                String::from_utf8_lossy(&elem.key_start)
-            );
-        }
-
-        println!("avail count = {}", bucket.avail.len());
-        println!("Address     Size");
-        for av_elem in &bucket.avail {
-            println!("{}   {}", av_elem.addr, av_elem.sz);
-        }
-
-        Ok(())
-    }
 }
 
 #[cfg(test)]
