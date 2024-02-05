@@ -930,6 +930,32 @@ mod test_gdbm {
     }
 
     #[test]
+    fn api_remove() {
+        let testcfg = init_tests();
+
+        for testdb in &testcfg.tests {
+            if testdb.is_basic {
+                // Create temporary filename for writable db
+                let newdb_fn = String::from(&testdb.db_path) + ".rmtest";
+
+                // Copy existing test db to temp filepath
+                fs::copy(&testdb.db_path, &newdb_fn).expect("DB File copy failed");
+
+                // Open database for testing
+                let mut db = Gdbm::open(&newdb_fn).expect("GDBM open failed");
+
+                // Test: remove non-existent key
+                let keystr = String::from("This key does not exist.");
+                let res = db.remove(keystr.as_bytes()).expect("GDBM remove failed");
+                assert_eq!(res, None);
+
+                // Cleanup
+                fs::remove_file(newdb_fn).expect("Test file remove failed");
+            }
+        }
+    }
+
+    #[test]
     fn api_export_ascii() {
         const EXPORT_FN: &'static str = "./export.txt";
 
