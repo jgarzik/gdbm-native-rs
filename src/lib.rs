@@ -566,11 +566,10 @@ impl Gdbm {
 
         // smaller items go into bucket avail list
         let mut bucket = self.get_current_bucket();
-        if sz < self.header.block_sz && bucket.av_count < BUCKET_AVAIL {
+        if sz < self.header.block_sz && bucket.avail.len() < BUCKET_AVAIL {
             // insort into bucket avail vector, sorted by size
             let pos = bucket.avail.binary_search(&elem).unwrap_or_else(|e| e);
             bucket.avail.insert(pos, elem);
-            bucket.av_count += 1;
 
             // store updated bucket in cache, and mark dirty
             self.bucket_cache.update(self.cur_bucket_ofs, bucket);
@@ -759,7 +758,7 @@ impl Gdbm {
             );
         }
 
-        println!("avail count = {}", bucket.av_count);
+        println!("avail count = {}", bucket.avail.len());
         println!("Address     Size");
         for av_elem in &bucket.avail {
             println!("{}   {}", av_elem.addr, av_elem.sz);
@@ -988,6 +987,13 @@ mod test_gdbm {
                 let keystr = String::from("This key does not exist.");
                 let res = db.remove(keystr.as_bytes()).expect("GDBM remove failed");
                 assert_eq!(res, None);
+
+                // Test: remove existing key
+                let key1 = String::from("key 1");
+                let res = db.remove(key1.as_bytes()).expect("GDBM remove failed");
+                let removed_val = res.expect("Expected some value data");
+                let val1 = String::from("value 1");
+                assert_eq!(removed_val, val1.as_bytes());
 
                 // Cleanup
                 fs::remove_file(newdb_fn).expect("Test file remove failed");

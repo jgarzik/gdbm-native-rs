@@ -5,7 +5,7 @@ use std::io::{self, Error, ErrorKind, Read};
 use crate::ser::{w32, woff_t};
 use crate::{AvailElem, Header, KEY_SMALL};
 
-pub const BUCKET_AVAIL: u32 = 6;
+pub const BUCKET_AVAIL: usize = 6;
 
 #[derive(Debug, Clone)]
 pub struct BucketElement {
@@ -75,7 +75,6 @@ impl BucketElement {
 #[derive(Debug, Clone)]
 pub struct Bucket {
     // on-disk gdbm database hash bucket
-    pub av_count: u32,
     pub avail: Vec<AvailElem>,
     pub bits: u32,
     pub count: u32,
@@ -94,10 +93,17 @@ impl Bucket {
             let _padding = rdr.read_u32::<BigEndian>()?;
         }
 
+        // read av_count entries from bucket_avail[]
         let mut avail = Vec::new();
-        for _idx in 0..BUCKET_AVAIL {
+        for _idx in 0..av_count {
             let av_elem = AvailElem::from_reader(header.is_lfs, header.is_le, rdr)?;
             avail.push(av_elem);
+        }
+
+        // read remaining to-be-ignored entries from bucket_avail[]
+        let pad_elems = BUCKET_AVAIL - avail.len();
+        for _idx in 0..pad_elems {
+            let _av_elem = AvailElem::from_reader(header.is_lfs, header.is_le, rdr)?;
         }
 
         // todo: validate and assure-sorted avail[]
@@ -125,7 +131,6 @@ impl Bucket {
         }
 
         Ok(Bucket {
-            av_count,
             avail,
             bits,
             count,
@@ -140,15 +145,24 @@ impl Bucket {
         // avail section
         //
 
-        buf.append(&mut w32(is_le, self.av_count));
+        let av_count: u32 = self.avail.len() as u32;
+        buf.append(&mut w32(is_le, av_count));
         if is_lfs {
             let padding: u32 = 0;
             buf.append(&mut w32(is_le, padding));
         }
 
-        assert_eq!(self.avail.len(), BUCKET_AVAIL as usize);
+        // valid avail elements
         for avail_elem in &self.avail {
             buf.append(&mut avail_elem.serialize(is_lfs, is_le));
+        }
+
+        // dummy avail elements
+        assert!(self.avail.len() <= BUCKET_AVAIL);
+        let pad_elems = BUCKET_AVAIL - self.avail.len();
+        for _idx in 0..pad_elems {
+            let dummy_elem = AvailElem { addr: 0, sz: 0 };
+            buf.append(&mut dummy_elem.serialize(is_lfs, is_le));
         }
 
         //
