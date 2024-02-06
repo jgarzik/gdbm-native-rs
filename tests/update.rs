@@ -2,9 +2,9 @@ extern crate rs_gdbm;
 
 mod common;
 
-use std::fs;
 use common::init_tests;
 use rs_gdbm::Gdbm;
+use std::fs;
 
 #[test]
 fn api_remove() {

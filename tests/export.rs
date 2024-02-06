@@ -2,13 +2,10 @@ extern crate rs_gdbm;
 
 mod common;
 
-use std::{
-    fs,
-    fs::OpenOptions,
-};
+use std::{fs, fs::OpenOptions};
 
 use common::init_tests;
-use rs_gdbm::{Gdbm, ExportBinMode};
+use rs_gdbm::{ExportBinMode, Gdbm};
 
 #[test]
 fn api_export_bin() {
@@ -55,4 +52,3 @@ fn api_export_ascii() {
         // into a new db, and verify that old & new dbs match.
     }
 }
-
