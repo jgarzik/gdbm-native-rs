@@ -15,3 +15,14 @@ fn api_open_close() {
     }
 }
 
+#[test]
+fn api_len() {
+    let testcfg = init_tests();
+
+    for testdb in &testcfg.tests {
+        let mut db = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
+        let res = db.len().unwrap();
+        assert_eq!(res, testdb.n_records);
+    }
+}
+
