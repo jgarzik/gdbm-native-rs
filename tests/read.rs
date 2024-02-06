@@ -2,9 +2,9 @@ extern crate rs_gdbm;
 
 mod common;
 
-use std::collections::HashMap;
 use common::init_tests;
 use rs_gdbm::Gdbm;
+use std::collections::HashMap;
 
 #[test]
 fn api_exists_not() {
@@ -138,4 +138,3 @@ fn api_len() {
         assert_eq!(res, testdb.n_records);
     }
 }
-

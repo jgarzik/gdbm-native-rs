@@ -724,4 +724,3 @@ impl Gdbm {
         Ok(Some(data))
     }
 }
-
