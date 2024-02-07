@@ -33,6 +33,12 @@ fn api_remove() {
             let val1 = String::from("value 1");
             assert_eq!(removed_val, val1.as_bytes());
 
+            // Test: validate that just-removed key is not in db anymore
+            let res = db
+                .contains_key(key1.as_bytes())
+                .expect("GDBM contains-key failed");
+            assert_eq!(res, false);
+
             // Cleanup
             fs::remove_file(newdb_fn).expect("Test file remove failed");
         }
