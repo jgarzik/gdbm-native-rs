@@ -1,11 +1,12 @@
-extern crate rs_gdbm;
+
+extern crate gdbm_native;
 
 mod common;
 
 use std::{fs, fs::OpenOptions};
 
 use common::init_tests;
-use rs_gdbm::{ExportBinMode, Gdbm};
+use gdbm_native::{ExportBinMode, Gdbm};
 
 #[test]
 fn api_export_bin() {
