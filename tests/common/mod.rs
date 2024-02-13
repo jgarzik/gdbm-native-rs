@@ -1,6 +1,7 @@
-extern crate rs_gdbm;
 
-use rs_gdbm::GdbmOptions;
+extern crate gdbm_native;
+
+use gdbm_native::GdbmOptions;
 use serde::Deserialize;
 use std::fs;
 use std::path::PathBuf;

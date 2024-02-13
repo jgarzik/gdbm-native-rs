@@ -1,9 +1,10 @@
-extern crate rs_gdbm;
+
+extern crate gdbm_native;
 
 mod common;
 
 use common::init_tests;
-use rs_gdbm::Gdbm;
+use gdbm_native::Gdbm;
 use std::collections::HashMap;
 
 #[test]
