@@ -1,3 +1,13 @@
+//
+// bucket.rs -- GDBM bucket routines
+//
+// Copyright (c) 2019-2024 Jeff Garzik
+//
+// This file is part of the gdbm-native software project covered under
+// the MIT License.  For the full license text, please see the LICENSE
+// file in the root directory of this project.
+// SPDX-License-Identifier: MIT
+
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::collections::HashMap;
 use std::io::{self, Error, ErrorKind, Read};

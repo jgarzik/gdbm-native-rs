@@ -1,4 +1,3 @@
-
 extern crate gdbm_native;
 
 use gdbm_native::GdbmOptions;

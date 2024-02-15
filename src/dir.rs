@@ -1,3 +1,13 @@
+//
+// dir.rs -- GDBM hash directory routines
+//
+// Copyright (c) 2019-2024 Jeff Garzik
+//
+// This file is part of the gdbm-native software project covered under
+// the MIT License.  For the full license text, please see the LICENSE
+// file in the root directory of this project.
+// SPDX-License-Identifier: MIT
+
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::io::{self, Seek, SeekFrom};
 
