@@ -6,6 +6,7 @@ edition = "2021"
 license = "MIT"
 readme = "README.md"
 description = "Rust-native implementation of GDBM key/value database"
+repository = "https://github.com/jgarzik/gdbm-native-rs.git"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
