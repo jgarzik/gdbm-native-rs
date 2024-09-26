@@ -80,13 +80,7 @@ impl AvailBlock {
     }
 
     fn find_elem(&self, sz: usize) -> Option<usize> {
-        for i in 0..self.elems.len() {
-            if (self.elems[i].sz as usize) >= sz {
-                return Some(i);
-            }
-        }
-
-        None
+        self.elems.iter().position(|elem| elem.sz as usize >= sz)
     }
 
     pub fn remove_elem(&mut self, sz: usize) -> Option<AvailElem> {
@@ -95,7 +89,7 @@ impl AvailBlock {
             None => None,
             Some(idx) => {
                 self.count -= 1;
-                return Some(self.elems.remove(idx));
+                Some(self.elems.remove(idx))
             }
         }
     }

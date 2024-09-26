@@ -64,20 +64,8 @@ impl Header {
 
         // detect db file endianness
         let is_le = match need_swap {
-            true => {
-                if cfg!(target_endian = "little") {
-                    false
-                } else {
-                    true
-                }
-            }
-            false => {
-                if cfg!(target_endian = "little") {
-                    true
-                } else {
-                    false
-                }
-            }
+            true => !cfg!(target_endian = "little"),
+            false => cfg!(target_endian = "little"),
         };
 
         // fixme: read u32, not u64, if is_lfs
@@ -121,8 +109,7 @@ impl Header {
             avail_next_block = rdr.read_u64::<BigEndian>()?;
         }
 
-        if !(block_sz > 0 && block_sz > GDBM_HDR_SZ && block_sz - GDBM_HDR_SZ >= GDBM_AVAIL_ELEM_SZ)
-        {
+        if !(block_sz > GDBM_HDR_SZ && block_sz - GDBM_HDR_SZ >= GDBM_AVAIL_ELEM_SZ) {
             return Err(Error::new(ErrorKind::Other, "bad header: blksz"));
         }
 
@@ -136,7 +123,7 @@ impl Header {
         }
 
         let (ck_dir_sz, _ck_dir_bits) = build_dir_size(block_sz);
-        if !(dir_sz >= ck_dir_sz) {
+        if dir_sz < ck_dir_sz {
             return Err(Error::new(ErrorKind::Other, "bad header: dir sz"));
         }
 
@@ -145,7 +132,7 @@ impl Header {
             return Err(Error::new(ErrorKind::Other, "bad header: dir bits"));
         }
 
-        if !(bucket_sz > GDBM_HASH_BUCKET_SZ) {
+        if bucket_sz <= GDBM_HASH_BUCKET_SZ {
             return Err(Error::new(ErrorKind::Other, "bad header: bucket sz"));
         }
 

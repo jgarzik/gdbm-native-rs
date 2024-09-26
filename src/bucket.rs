@@ -28,15 +28,14 @@ pub struct BucketElement {
 
 impl BucketElement {
     pub fn from_reader(is_lfs: bool, is_le: bool, rdr: &mut impl Read) -> io::Result<Self> {
-        let hash;
-        if is_le {
-            hash = rdr.read_u32::<LittleEndian>()?;
+        let hash = if is_le {
+            rdr.read_u32::<LittleEndian>()?
         } else {
-            hash = rdr.read_u32::<BigEndian>()?;
-        }
+            rdr.read_u32::<BigEndian>()?
+        };
 
         let mut key_start = [0; KEY_SMALL];
-        rdr.read(&mut key_start)?;
+        rdr.read_exact(&mut key_start)?;
 
         let data_ofs: u64;
         let (key_size, data_size);
@@ -212,7 +211,7 @@ impl BucketCache {
 
     pub fn dirty_list(&mut self) -> Vec<u64> {
         let mut dl: Vec<u64> = Vec::new();
-        for (ofs, _dummy) in &self.dirty {
+        for ofs in self.dirty.keys() {
             dl.push(*ofs);
         }
         dl.sort();
