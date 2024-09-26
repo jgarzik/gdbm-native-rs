@@ -106,7 +106,7 @@ impl Gdbm {
         let metadata = f.metadata()?;
 
         // read gdbm global header
-        let header = Header::from_reader(&metadata, f.try_clone()?)?;
+        let header = Header::from_reader(&metadata, &mut f)?;
         println!("{:?}", header);
 
         // read gdbm hash directory

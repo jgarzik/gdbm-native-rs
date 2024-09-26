@@ -8,10 +8,9 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::io::{self, Read};
 
-use crate::ser::{w32, woff_t, Alignment, Endian};
+use crate::ser::{read32, read64, w32, woff_t, Alignment, Endian};
 
 #[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct AvailElem {
@@ -23,28 +22,19 @@ impl AvailElem {
     pub fn from_reader(
         alignment: Alignment,
         endian: Endian,
-        rdr: &mut impl Read,
+        reader: &mut impl Read,
     ) -> io::Result<Self> {
-        let elem_sz: u32;
-        let elem_ofs: u64;
+        let elem_sz = read32(endian, reader)?;
 
-        if endian == Endian::Little {
-            elem_sz = rdr.read_u32::<LittleEndian>()?;
-            if alignment == Alignment::Align64 {
-                let _padding = rdr.read_u32::<LittleEndian>()?;
-                elem_ofs = rdr.read_u64::<LittleEndian>()?;
-            } else {
-                elem_ofs = rdr.read_u32::<LittleEndian>()? as u64;
-            }
-        } else {
-            elem_sz = rdr.read_u32::<BigEndian>()?;
-            if alignment == Alignment::Align64 {
-                let _padding = rdr.read_u32::<BigEndian>()?;
-                elem_ofs = rdr.read_u64::<BigEndian>()?;
-            } else {
-                elem_ofs = rdr.read_u32::<BigEndian>()? as u64;
-            }
+        // skip padding
+        if alignment.is64() {
+            read32(endian, reader)?;
         }
+
+        let elem_ofs = match alignment {
+            Alignment::Align32 => (read32(endian, reader)?) as u64,
+            Alignment::Align64 => read64(endian, reader)?,
+        };
 
         Ok(AvailElem {
             sz: elem_sz,
@@ -55,7 +45,7 @@ impl AvailElem {
     pub fn serialize(&self, alignment: Alignment, endian: Endian) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.append(&mut w32(endian, self.sz));
-        if alignment == Alignment::Align64 {
+        if alignment.is64() {
             let padding: u32 = 0;
             buf.append(&mut w32(endian, padding));
         }

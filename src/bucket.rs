@@ -8,11 +8,10 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::collections::HashMap;
 use std::io::{self, Error, ErrorKind, Read};
 
-use crate::ser::{w32, woff_t, Alignment, Endian};
+use crate::ser::{read32, read64, w32, woff_t, Alignment, Endian};
 use crate::{AvailElem, Header, KEY_SMALL};
 
 pub const BUCKET_AVAIL: usize = 6;
@@ -30,39 +29,20 @@ impl BucketElement {
     pub fn from_reader(
         alignment: Alignment,
         endian: Endian,
-        rdr: &mut impl Read,
+        reader: &mut impl Read,
     ) -> io::Result<Self> {
-        let hash = if endian == Endian::Little {
-            rdr.read_u32::<LittleEndian>()?
-        } else {
-            rdr.read_u32::<BigEndian>()?
-        };
+        let hash = read32(endian, reader)?;
 
         let mut key_start = [0; KEY_SMALL];
-        rdr.read_exact(&mut key_start)?;
+        reader.read_exact(&mut key_start)?;
 
-        let data_ofs: u64;
-        let (key_size, data_size);
+        let data_ofs = match alignment {
+            Alignment::Align32 => (read32(endian, reader)?) as u64,
+            Alignment::Align64 => read64(endian, reader)?,
+        };
 
-        if endian == Endian::Little {
-            if alignment == Alignment::Align64 {
-                data_ofs = rdr.read_u64::<LittleEndian>()?;
-            } else {
-                data_ofs = rdr.read_u32::<LittleEndian>()? as u64;
-            }
-
-            key_size = rdr.read_u32::<LittleEndian>()?;
-            data_size = rdr.read_u32::<LittleEndian>()?;
-        } else {
-            if alignment == Alignment::Align64 {
-                data_ofs = rdr.read_u64::<BigEndian>()?;
-            } else {
-                data_ofs = rdr.read_u32::<BigEndian>()? as u64;
-            }
-
-            key_size = rdr.read_u32::<BigEndian>()?;
-            data_size = rdr.read_u32::<BigEndian>()?;
-        }
+        let key_size = read32(endian, reader)?;
+        let data_size = read32(endian, reader)?;
 
         Ok(BucketElement {
             hash,
@@ -95,53 +75,37 @@ pub struct Bucket {
 }
 
 impl Bucket {
-    pub fn from_reader(header: &Header, rdr: &mut impl Read) -> io::Result<Self> {
+    pub fn from_reader(header: &Header, reader: &mut impl Read) -> io::Result<Self> {
         // read avail section
-        let av_count;
-        if header.endian() == Endian::Little {
-            av_count = rdr.read_u32::<LittleEndian>()?;
-            let _padding = rdr.read_u32::<LittleEndian>()?;
-        } else {
-            av_count = rdr.read_u32::<BigEndian>()?;
-            let _padding = rdr.read_u32::<BigEndian>()?;
-        }
+        let av_count = read32(header.endian(), reader)? as usize;
+
+        // always padding here
+        read32(header.endian(), reader)?;
 
         // read av_count entries from bucket_avail[]
-        let mut avail = Vec::new();
-        for _idx in 0..av_count {
-            let av_elem = AvailElem::from_reader(header.alignment(), header.endian(), rdr)?;
-            avail.push(av_elem);
-        }
+        let avail = (0..av_count)
+            .map(|_| AvailElem::from_reader(header.alignment(), header.endian(), reader))
+            .collect::<io::Result<Vec<_>>>()?;
 
         // read remaining to-be-ignored entries from bucket_avail[]
-        let pad_elems = BUCKET_AVAIL - avail.len();
-        for _idx in 0..pad_elems {
-            let _av_elem = AvailElem::from_reader(header.alignment(), header.endian(), rdr)?;
-        }
+        (av_count..BUCKET_AVAIL).try_for_each(|_| {
+            AvailElem::from_reader(header.alignment(), header.endian(), reader).map(|_| ())
+        })?;
 
         // todo: validate and assure-sorted avail[]
 
         // read misc. section
-        let (bits, count);
-
-        if header.endian() == Endian::Little {
-            bits = rdr.read_u32::<LittleEndian>()?;
-            count = rdr.read_u32::<LittleEndian>()?;
-        } else {
-            bits = rdr.read_u32::<BigEndian>()?;
-            count = rdr.read_u32::<BigEndian>()?;
-        }
+        let bits = read32(header.endian(), reader)?;
+        let count = read32(header.endian(), reader)?;
 
         if !(count <= header.bucket_elems && bits <= header.dir_bits) {
             return Err(Error::new(ErrorKind::Other, "invalid bucket c/b"));
         }
 
         // read bucket elements section
-        let mut tab = Vec::new();
-        for _idx in 0..header.bucket_elems {
-            let bucket_elem = BucketElement::from_reader(header.alignment(), header.endian(), rdr)?;
-            tab.push(bucket_elem);
-        }
+        let tab = (0..header.bucket_elems)
+            .map(|_| BucketElement::from_reader(header.alignment(), header.endian(), reader))
+            .collect::<io::Result<Vec<_>>>()?;
 
         Ok(Bucket {
             avail,

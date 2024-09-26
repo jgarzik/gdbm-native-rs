@@ -8,12 +8,11 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::io::{self, Error, ErrorKind, Read};
 
 use crate::dir::build_dir_size;
 use crate::magic::Magic;
-use crate::ser::{w32, woff_t, Alignment, Endian};
+use crate::ser::{read32, read64, w32, woff_t, Alignment, Endian};
 use crate::{
     AvailBlock, AvailElem, GDBM_AVAIL_ELEM_SZ, GDBM_BUCKET_ELEM_SZ, GDBM_HASH_BUCKET_SZ,
     GDBM_HDR_SZ,
@@ -42,49 +41,22 @@ pub fn bucket_count(bucket_sz: u32) -> u32 {
 }
 
 impl Header {
-    pub fn from_reader(metadata: &std::fs::Metadata, mut rdr: impl Read) -> io::Result<Self> {
+    pub fn from_reader(metadata: &std::fs::Metadata, reader: &mut impl Read) -> io::Result<Self> {
         let file_sz = metadata.len();
 
-        let magic = Magic::from_reader(&mut rdr)?;
+        // fixme: read u32, not u64, if is_lfs
 
-        let (
-            block_sz,
-            dir_ofs,
-            dir_sz,
-            dir_bits,
-            bucket_sz,
-            bucket_elems,
-            next_block,
-            avail_sz,
-            avail_count,
-            avail_next_block,
-        );
-
-        if magic.endian() == Endian::Little {
-            block_sz = rdr.read_u32::<LittleEndian>()?;
-            dir_ofs = rdr.read_u64::<LittleEndian>()?;
-            dir_sz = rdr.read_u32::<LittleEndian>()?;
-            dir_bits = rdr.read_u32::<LittleEndian>()?;
-            bucket_sz = rdr.read_u32::<LittleEndian>()?;
-            bucket_elems = rdr.read_u32::<LittleEndian>()?;
-            next_block = rdr.read_u64::<LittleEndian>()?;
-
-            avail_sz = rdr.read_u32::<LittleEndian>()?;
-            avail_count = rdr.read_u32::<LittleEndian>()?;
-            avail_next_block = rdr.read_u64::<LittleEndian>()?;
-        } else {
-            block_sz = rdr.read_u32::<BigEndian>()?;
-            dir_ofs = rdr.read_u64::<BigEndian>()?;
-            dir_sz = rdr.read_u32::<BigEndian>()?;
-            dir_bits = rdr.read_u32::<BigEndian>()?;
-            bucket_sz = rdr.read_u32::<BigEndian>()?;
-            bucket_elems = rdr.read_u32::<BigEndian>()?;
-            next_block = rdr.read_u64::<BigEndian>()?;
-
-            avail_sz = rdr.read_u32::<BigEndian>()?;
-            avail_count = rdr.read_u32::<BigEndian>()?;
-            avail_next_block = rdr.read_u64::<BigEndian>()?;
-        }
+        let magic = Magic::from_reader(reader)?;
+        let block_sz = read32(magic.endian(), reader)?;
+        let dir_ofs = read64(magic.endian(), reader)?;
+        let dir_sz = read32(magic.endian(), reader)?;
+        let dir_bits = read32(magic.endian(), reader)?;
+        let bucket_sz = read32(magic.endian(), reader)?;
+        let bucket_elems = read32(magic.endian(), reader)?;
+        let next_block = read64(magic.endian(), reader)?;
+        let avail_sz = read32(magic.endian(), reader)?;
+        let avail_count = read32(magic.endian(), reader)?;
+        let avail_next_block = read64(magic.endian(), reader)?;
 
         if !(block_sz > GDBM_HDR_SZ && block_sz - GDBM_HDR_SZ >= GDBM_AVAIL_ELEM_SZ) {
             return Err(Error::new(ErrorKind::Other, "bad header: blksz"));
@@ -127,7 +99,7 @@ impl Header {
 
         let mut elems: Vec<AvailElem> = Vec::new();
         for _idx in 0..avail_count {
-            let av_elem = AvailElem::from_reader(magic.alignment(), magic.endian(), &mut rdr)?;
+            let av_elem = AvailElem::from_reader(magic.alignment(), magic.endian(), reader)?;
             elems.push(av_elem);
         }
 
