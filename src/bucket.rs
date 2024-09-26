@@ -9,9 +9,9 @@
 // SPDX-License-Identifier: MIT
 
 use std::collections::HashMap;
-use std::io::{self, Error, ErrorKind, Read};
+use std::io::{self, Error, ErrorKind, Read, Write};
 
-use crate::ser::{read32, read64, w32, woff_t, Alignment, Endian};
+use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
 use crate::{AvailElem, Header, KEY_SMALL};
 
 pub const BUCKET_AVAIL: usize = 6;
@@ -53,15 +53,25 @@ impl BucketElement {
         })
     }
 
-    pub fn serialize(&self, alignment: Alignment, endian: Endian) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.append(&mut w32(endian, self.hash));
-        buf.append(&mut self.key_start.to_vec());
-        buf.append(&mut woff_t(alignment, endian, self.data_ofs));
-        buf.append(&mut w32(endian, self.key_size));
-        buf.append(&mut w32(endian, self.data_size));
+    pub fn serialize(
+        &self,
+        alignment: Alignment,
+        endian: Endian,
+        writer: &mut impl Write,
+    ) -> io::Result<()> {
+        write32(endian, writer, self.hash)?;
 
-        buf
+        writer.write_all(&self.key_start)?;
+
+        match alignment {
+            Alignment::Align32 => write32(endian, writer, self.data_ofs as u32)?,
+            Alignment::Align64 => write64(endian, writer, self.data_ofs)?,
+        }
+
+        write32(endian, writer, self.key_size)?;
+        write32(endian, writer, self.data_size)?;
+
+        Ok(())
     }
 }
 
@@ -115,47 +125,44 @@ impl Bucket {
         })
     }
 
-    pub fn serialize(&self, alignment: Alignment, endian: Endian) -> Vec<u8> {
-        let mut buf = Vec::new();
+    pub fn serialize(
+        &self,
+        alignment: Alignment,
+        endian: Endian,
+        writer: &mut impl Write,
+    ) -> io::Result<()> {
+        assert!(self.avail.len() <= BUCKET_AVAIL);
 
         //
         // avail section
         //
 
-        let av_count: u32 = self.avail.len() as u32;
-        buf.append(&mut w32(endian, av_count));
-        if alignment == Alignment::Align64 {
-            let padding: u32 = 0;
-            buf.append(&mut w32(endian, padding));
-        }
+        write32(endian, writer, self.avail.len() as u32)?;
+        write32(endian, writer, 0)?;
 
         // valid avail elements
-        for avail_elem in &self.avail {
-            buf.append(&mut avail_elem.serialize(alignment, endian));
-        }
+        self.avail
+            .iter()
+            .try_for_each(|elem| elem.serialize(alignment, endian, writer))?;
 
         // dummy avail elements
-        assert!(self.avail.len() <= BUCKET_AVAIL);
-        let pad_elems = BUCKET_AVAIL - self.avail.len();
-        for _idx in 0..pad_elems {
-            let dummy_elem = AvailElem { addr: 0, sz: 0 };
-            buf.append(&mut dummy_elem.serialize(alignment, endian));
-        }
+        (self.avail.len()..BUCKET_AVAIL)
+            .try_for_each(|_| AvailElem::default().serialize(alignment, endian, writer))?;
 
         //
         // misc section
         //
-        buf.append(&mut w32(endian, self.bits));
-        buf.append(&mut w32(endian, self.count));
+        write32(endian, writer, self.bits)?;
+        write32(endian, writer, self.count)?;
 
         //
         // bucket elements section
         //
-        for bucket_elem in &self.tab {
-            buf.append(&mut bucket_elem.serialize(alignment, endian));
-        }
+        self.tab
+            .iter()
+            .try_for_each(|elem| elem.serialize(alignment, endian, writer))?;
 
-        buf
+        Ok(())
     }
 }
 

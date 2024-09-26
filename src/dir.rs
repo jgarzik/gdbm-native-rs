@@ -8,9 +8,9 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
-use std::io::{self, Seek, SeekFrom};
+use std::io::{self, Seek, SeekFrom, Write};
 
-use crate::ser::{read32, read64, woff_t, Alignment, Endian};
+use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
 use crate::{Header, GDBM_HASH_BITS};
 
 pub fn build_dir_size(block_sz: u32) -> (u32, u32) {
@@ -36,14 +36,16 @@ impl Directory {
         self.dir.len()
     }
 
-    pub fn serialize(&self, alignment: Alignment, endian: Endian) -> Vec<u8> {
-        let mut buf = Vec::new();
-
-        for ofs in &self.dir {
-            buf.append(&mut woff_t(alignment, endian, *ofs));
-        }
-
-        buf
+    pub fn serialize(
+        &self,
+        alignment: Alignment,
+        endian: Endian,
+        writer: &mut impl Write,
+    ) -> io::Result<()> {
+        self.dir.iter().try_for_each(|ofs| match alignment {
+            Alignment::Align32 => write32(endian, writer, *ofs as u32),
+            Alignment::Align64 => write64(endian, writer, *ofs),
+        })
     }
 }
 

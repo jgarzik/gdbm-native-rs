@@ -27,7 +27,7 @@ use bucket::{Bucket, BucketCache, BUCKET_AVAIL};
 use dir::{dir_reader, dirent_elem_size, Directory};
 use hashutil::{key_loc, partial_key_match};
 use header::Header;
-use ser::{woff_t, Alignment, Endian};
+use ser::{write32, write64, Alignment, Endian};
 
 // Our claimed GDBM lib version compatibility.  Appears in dump files.
 const COMPAT_GDBM_VERSION: &str = "1.23";
@@ -57,15 +57,6 @@ fn read_ofs(f: &mut std::fs::File, ofs: u64, total_size: usize) -> io::Result<Ve
     f.read_exact(&mut data)?;
 
     Ok(data)
-}
-
-// write data to storage at (ofs,total_size)
-// todo:  use Write+Seek traits rather than File
-fn write_ofs(f: &mut std::fs::File, ofs: u64, data: &[u8]) -> io::Result<()> {
-    f.seek(SeekFrom::Start(ofs))?;
-    f.write_all(data)?;
-
-    Ok(())
 }
 
 #[derive(Copy, Clone)]
@@ -206,8 +197,10 @@ impl Gdbm {
         bindata: &[u8],
     ) -> io::Result<()> {
         // write metadata:  big-endian datum size, 32b or 64b
-        let size_bytes = woff_t(alignment, Endian::Big, bindata.len() as u64);
-        outf.write_all(&size_bytes)?;
+        match alignment {
+            Alignment::Align32 => write32(Endian::Big, outf, bindata.len() as u32)?,
+            Alignment::Align64 => write64(Endian::Big, outf, bindata.len() as u64)?,
+        }
 
         // write datum
         outf.write_all(bindata)?;
@@ -551,8 +544,8 @@ impl Gdbm {
         self.header.dirty = true;
 
         // write extension block to storage (immediately)
-        let ext_bytes = ext_blk.serialize(self.header.alignment(), self.header.endian());
-        write_ofs(&mut self.f, new_blk_ofs, &ext_bytes)?;
+        self.f.seek(SeekFrom::Start(new_blk_ofs))?;
+        ext_blk.serialize(self.header.alignment(), self.header.endian(), &mut self.f)?;
 
         Ok(())
     }
@@ -605,8 +598,8 @@ impl Gdbm {
     }
 
     fn write_bucket(&mut self, bucket_ofs: u64, bucket: &Bucket) -> io::Result<()> {
-        let bytes = bucket.serialize(self.header.alignment(), self.header.endian());
-        write_ofs(&mut self.f, bucket_ofs, &bytes)?;
+        self.f.seek(SeekFrom::Start(bucket_ofs))?;
+        bucket.serialize(self.header.alignment(), self.header.endian(), &mut self.f)?;
 
         Ok(())
     }
@@ -635,10 +628,9 @@ impl Gdbm {
             return Ok(());
         }
 
-        let bytes = self
-            .dir
-            .serialize(self.header.alignment(), self.header.endian());
-        write_ofs(&mut self.f, self.header.dir_ofs, &bytes)?;
+        self.f.seek(SeekFrom::Start(self.header.dir_ofs))?;
+        self.dir
+            .serialize(self.header.alignment(), self.header.endian(), &mut self.f)?;
 
         self.dir_dirty = false;
 
@@ -651,10 +643,8 @@ impl Gdbm {
             return Ok(());
         }
 
-        let bytes = self
-            .header
-            .serialize(self.header.alignment(), self.header.endian());
-        write_ofs(&mut self.f, 0, &bytes)?;
+        self.f.seek(SeekFrom::Start(0))?;
+        self.header.serialize(&mut self.f)?;
 
         self.header.dirty = false;
 

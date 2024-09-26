@@ -8,11 +8,11 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 
-use crate::ser::{read32, read64, w32, woff_t, Alignment, Endian};
+use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
 
-#[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Default, Debug, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct AvailElem {
     pub sz: u32,
     pub addr: u64,
@@ -42,16 +42,25 @@ impl AvailElem {
         })
     }
 
-    pub fn serialize(&self, alignment: Alignment, endian: Endian) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.append(&mut w32(endian, self.sz));
-        if alignment.is64() {
-            let padding: u32 = 0;
-            buf.append(&mut w32(endian, padding));
-        }
-        buf.append(&mut woff_t(alignment, endian, self.addr));
+    pub fn serialize(
+        &self,
+        alignment: Alignment,
+        endian: Endian,
+        writer: &mut impl Write,
+    ) -> io::Result<()> {
+        write32(endian, writer, self.sz)?;
 
-        buf
+        // insert padding
+        if alignment.is64() {
+            write32(endian, writer, 0)?;
+        }
+
+        match alignment {
+            Alignment::Align32 => write32(endian, writer, self.addr as u32)?,
+            Alignment::Align64 => write64(endian, writer, self.addr)?,
+        }
+
+        Ok(())
     }
 }
 
@@ -88,16 +97,23 @@ impl AvailBlock {
         }
     }
 
-    pub fn serialize(&self, alignment: Alignment, endian: Endian) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.append(&mut w32(endian, self.sz));
-        buf.append(&mut w32(endian, self.count));
-        buf.append(&mut woff_t(alignment, endian, self.next_block));
-
-        for elem in &self.elems {
-            buf.append(&mut elem.serialize(alignment, endian));
+    pub fn serialize(
+        &self,
+        alignment: Alignment,
+        endian: Endian,
+        writer: &mut impl Write,
+    ) -> io::Result<()> {
+        write32(endian, writer, self.sz)?;
+        write32(endian, writer, self.count)?;
+        match alignment {
+            Alignment::Align32 => write32(endian, writer, self.next_block as u32)?,
+            Alignment::Align64 => write64(endian, writer, self.next_block)?,
         }
 
-        buf
+        self.elems
+            .iter()
+            .try_for_each(|elem| elem.serialize(alignment, endian, writer))?;
+
+        Ok(())
     }
 }

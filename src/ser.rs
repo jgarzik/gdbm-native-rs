@@ -8,7 +8,7 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 
 /// Field alignment of DB file
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -50,27 +50,18 @@ pub fn read64(endian: Endian, reader: &mut impl Read) -> io::Result<u64> {
     })
 }
 
-// serialize u32, with runtime endian selection
-pub fn w32(endian: Endian, val: u32) -> Vec<u8> {
-    match endian {
-        Endian::Little => val.to_le_bytes(),
-        Endian::Big => val.to_be_bytes(),
-    }
-    .to_vec()
+pub fn write32(endian: Endian, writer: &mut impl Write, value: u32) -> io::Result<()> {
+    let bytes = match endian {
+        Endian::Little => value.to_le_bytes(),
+        Endian::Big => value.to_be_bytes(),
+    };
+    writer.write_all(&bytes)
 }
 
-// serialize u64, with runtime endian selection
-pub fn w64(endian: Endian, val: u64) -> Vec<u8> {
-    match endian {
-        Endian::Little => val.to_le_bytes(),
-        Endian::Big => val.to_be_bytes(),
-    }
-    .to_vec()
-}
-
-pub fn woff_t(alignment: Alignment, endian: Endian, val: u64) -> Vec<u8> {
-    match alignment {
-        Alignment::Align32 => w32(endian, val as u32),
-        Alignment::Align64 => w64(endian, val),
-    }
+pub fn write64(endian: Endian, writer: &mut impl Write, value: u64) -> io::Result<()> {
+    let bytes = match endian {
+        Endian::Little => value.to_le_bytes(),
+        Endian::Big => value.to_be_bytes(),
+    };
+    writer.write_all(&bytes)
 }

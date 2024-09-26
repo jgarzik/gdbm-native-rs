@@ -8,11 +8,11 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
-use std::io::{self, Error, ErrorKind, Read};
+use std::io::{self, Error, ErrorKind, Read, Write};
 
 use crate::dir::build_dir_size;
 use crate::magic::Magic;
-use crate::ser::{read32, read64, w32, woff_t, Alignment, Endian};
+use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
 use crate::{
     AvailBlock, AvailElem, GDBM_AVAIL_ELEM_SZ, GDBM_BUCKET_ELEM_SZ, GDBM_HASH_BUCKET_SZ,
     GDBM_HDR_SZ,
@@ -135,19 +135,30 @@ impl Header {
         })
     }
 
-    pub fn serialize(&self, alignment: Alignment, endian: Endian) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.extend_from_slice(self.magic.as_bytes());
-        buf.append(&mut w32(endian, self.block_sz));
-        buf.append(&mut woff_t(alignment, endian, self.dir_ofs));
-        buf.append(&mut w32(endian, self.dir_sz));
-        buf.append(&mut w32(endian, self.dir_bits));
-        buf.append(&mut w32(endian, self.bucket_sz));
-        buf.append(&mut w32(endian, self.bucket_elems));
-        buf.append(&mut woff_t(alignment, endian, self.next_block));
-        buf.append(&mut self.avail.serialize(alignment, endian));
+    pub fn serialize(&self, writer: &mut impl Write) -> io::Result<()> {
+        writer.write_all(self.magic.as_bytes())?;
 
-        buf
+        write32(self.endian(), writer, self.block_sz)?;
+
+        match self.alignment() {
+            Alignment::Align32 => write32(self.endian(), writer, self.dir_ofs as u32)?,
+            Alignment::Align64 => write64(self.endian(), writer, self.dir_ofs)?,
+        }
+
+        write32(self.endian(), writer, self.dir_sz)?;
+        write32(self.endian(), writer, self.dir_bits)?;
+        write32(self.endian(), writer, self.bucket_sz)?;
+        write32(self.endian(), writer, self.bucket_elems)?;
+
+        match self.alignment() {
+            Alignment::Align32 => write32(self.endian(), writer, self.next_block as u32)?,
+            Alignment::Align64 => write64(self.endian(), writer, self.next_block)?,
+        }
+
+        self.avail
+            .serialize(self.alignment(), self.endian(), writer)?;
+
+        Ok(())
     }
 
     pub fn endian(&self) -> Endian {
