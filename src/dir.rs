@@ -75,7 +75,7 @@ fn roff_t(f: &mut std::fs::File, alignment: Alignment, endian: Endian) -> io::Re
 
 // Read C-struct-based bucket directory (a vector of storage offsets)
 pub fn dir_reader(f: &mut std::fs::File, header: &Header) -> io::Result<Vec<u64>> {
-    let dirent_count = header.dir_sz as usize / dirent_elem_size(header.alignment);
+    let dirent_count = header.dir_sz as usize / dirent_elem_size(header.alignment());
 
     let mut dir = Vec::new();
     dir.reserve_exact(dirent_count);
@@ -83,7 +83,7 @@ pub fn dir_reader(f: &mut std::fs::File, header: &Header) -> io::Result<Vec<u64>
     let _pos = f.seek(SeekFrom::Start(header.dir_ofs))?;
 
     for _idx in 0..dirent_count {
-        let ofs = roff_t(f, header.alignment, header.endian)?;
+        let ofs = roff_t(f, header.alignment(), header.endian())?;
         dir.push(ofs);
     }
 

@@ -20,6 +20,7 @@ mod bucket;
 pub mod dir;
 mod hashutil;
 mod header;
+mod magic;
 mod ser;
 use avail::{AvailBlock, AvailElem};
 use bucket::{Bucket, BucketCache, BUCKET_AVAIL};
@@ -27,15 +28,6 @@ use dir::{dir_reader, dirent_elem_size, Directory};
 use hashutil::{key_loc, partial_key_match};
 use header::Header;
 use ser::{woff_t, Alignment, Endian};
-
-// todo: convert to enum w/ value
-const GDBM_OMAGIC: u32 = 0x13579ace; /* Original magic number. */
-const GDBM_MAGIC32: u32 = 0x13579acd; /* New 32bit magic number. */
-const GDBM_MAGIC64: u32 = 0x13579acf; /* New 64bit magic number. */
-
-const GDBM_OMAGIC_SWAP: u32 = 0xce9a5713; /* OMAGIC swapped. */
-const GDBM_MAGIC32_SWAP: u32 = 0xcd9a5713; /* MAGIC32 swapped. */
-const GDBM_MAGIC64_SWAP: u32 = 0xcf9a5713; /* MAGIC64 swapped. */
 
 // Our claimed GDBM lib version compatibility.  Appears in dump files.
 const COMPAT_GDBM_VERSION: &str = "1.23";
@@ -245,7 +237,7 @@ impl Gdbm {
     // API: export database to binary dump file
     pub fn export_bin(&mut self, outf: &mut std::fs::File, mode: ExportBinMode) -> io::Result<()> {
         let alignment = match mode {
-            ExportBinMode::ExpNative => self.header.alignment,
+            ExportBinMode::ExpNative => self.header.alignment(),
             ExportBinMode::Exp32 => Alignment::Align32,
             ExportBinMode::Exp64 => Alignment::Align64,
         };
@@ -306,7 +298,7 @@ impl Gdbm {
     }
 
     fn dir_max_elem(&self) -> usize {
-        self.header.dir_sz as usize / dirent_elem_size(self.header.alignment)
+        self.header.dir_sz as usize / dirent_elem_size(self.header.alignment())
     }
 
     // since one bucket dir entry may duplicate another,
@@ -559,7 +551,7 @@ impl Gdbm {
         self.header.dirty = true;
 
         // write extension block to storage (immediately)
-        let ext_bytes = ext_blk.serialize(self.header.alignment, self.header.endian);
+        let ext_bytes = ext_blk.serialize(self.header.alignment(), self.header.endian());
         write_ofs(&mut self.f, new_blk_ofs, &ext_bytes)?;
 
         Ok(())
@@ -613,7 +605,7 @@ impl Gdbm {
     }
 
     fn write_bucket(&mut self, bucket_ofs: u64, bucket: &Bucket) -> io::Result<()> {
-        let bytes = bucket.serialize(self.header.alignment, self.header.endian);
+        let bytes = bucket.serialize(self.header.alignment(), self.header.endian());
         write_ofs(&mut self.f, bucket_ofs, &bytes)?;
 
         Ok(())
@@ -645,7 +637,7 @@ impl Gdbm {
 
         let bytes = self
             .dir
-            .serialize(self.header.alignment, self.header.endian);
+            .serialize(self.header.alignment(), self.header.endian());
         write_ofs(&mut self.f, self.header.dir_ofs, &bytes)?;
 
         self.dir_dirty = false;
@@ -661,7 +653,7 @@ impl Gdbm {
 
         let bytes = self
             .header
-            .serialize(self.header.alignment, self.header.endian);
+            .serialize(self.header.alignment(), self.header.endian());
         write_ofs(&mut self.f, 0, &bytes)?;
 
         self.header.dirty = false;

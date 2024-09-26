@@ -98,7 +98,7 @@ impl Bucket {
     pub fn from_reader(header: &Header, rdr: &mut impl Read) -> io::Result<Self> {
         // read avail section
         let av_count;
-        if header.endian == Endian::Little {
+        if header.endian() == Endian::Little {
             av_count = rdr.read_u32::<LittleEndian>()?;
             let _padding = rdr.read_u32::<LittleEndian>()?;
         } else {
@@ -109,14 +109,14 @@ impl Bucket {
         // read av_count entries from bucket_avail[]
         let mut avail = Vec::new();
         for _idx in 0..av_count {
-            let av_elem = AvailElem::from_reader(header.alignment, header.endian, rdr)?;
+            let av_elem = AvailElem::from_reader(header.alignment(), header.endian(), rdr)?;
             avail.push(av_elem);
         }
 
         // read remaining to-be-ignored entries from bucket_avail[]
         let pad_elems = BUCKET_AVAIL - avail.len();
         for _idx in 0..pad_elems {
-            let _av_elem = AvailElem::from_reader(header.alignment, header.endian, rdr)?;
+            let _av_elem = AvailElem::from_reader(header.alignment(), header.endian(), rdr)?;
         }
 
         // todo: validate and assure-sorted avail[]
@@ -124,7 +124,7 @@ impl Bucket {
         // read misc. section
         let (bits, count);
 
-        if header.endian == Endian::Little {
+        if header.endian() == Endian::Little {
             bits = rdr.read_u32::<LittleEndian>()?;
             count = rdr.read_u32::<LittleEndian>()?;
         } else {
@@ -139,7 +139,7 @@ impl Bucket {
         // read bucket elements section
         let mut tab = Vec::new();
         for _idx in 0..header.bucket_elems {
-            let bucket_elem = BucketElement::from_reader(header.alignment, header.endian, rdr)?;
+            let bucket_elem = BucketElement::from_reader(header.alignment(), header.endian(), rdr)?;
             tab.push(bucket_elem);
         }
 
