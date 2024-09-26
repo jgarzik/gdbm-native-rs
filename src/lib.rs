@@ -37,7 +37,7 @@ const GDBM_MAGIC32_SWAP: u32 = 0xcd9a5713; /* MAGIC32 swapped. */
 const GDBM_MAGIC64_SWAP: u32 = 0xcf9a5713; /* MAGIC64 swapped. */
 
 // Our claimed GDBM lib version compatibility.  Appears in dump files.
-const COMPAT_GDBM_VERSION: &'static str = "1.23";
+const COMPAT_GDBM_VERSION: &str = "1.23";
 
 const GDBM_HASH_BITS: u32 = 31;
 
@@ -58,11 +58,10 @@ pub enum ExportBinMode {
 // read and return file data stored at (ofs,total_size)
 // todo:  use Read+Seek traits rather than File
 fn read_ofs(f: &mut std::fs::File, ofs: u64, total_size: usize) -> io::Result<Vec<u8>> {
-    let mut data: Vec<u8> = Vec::with_capacity(total_size);
-    data.resize(total_size, 0);
+    let mut data: Vec<u8> = vec![0; total_size];
 
     f.seek(SeekFrom::Start(ofs))?;
-    f.read(&mut data)?;
+    f.read_exact(&mut data)?;
 
     Ok(data)
 }
@@ -103,12 +102,7 @@ impl Gdbm {
     pub fn open(pathname: &str, dbcfg: &GdbmOptions) -> io::Result<Gdbm> {
         // derive open options
         let opt_write: bool = !dbcfg.readonly;
-        let opt_create: bool;
-        if dbcfg.readonly {
-            opt_create = false;
-        } else {
-            opt_create = dbcfg.creat;
-        }
+        let opt_create = if dbcfg.readonly { false } else { dbcfg.creat };
 
         // open filesystem file
         let mut f = OpenOptions::new()
@@ -144,22 +138,18 @@ impl Gdbm {
 
     fn export_ascii_header(&self, outf: &mut std::fs::File) -> io::Result<()> {
         // TODO: add ctime() to "created by" output line
-        write!(
-            outf,
-            "# GDBM dump file created by {}\n",
-            COMPAT_GDBM_VERSION
-        )?;
-        write!(outf, "#:version=1.1\n")?;
-        write!(outf, "#:file={}\n", self.pathname)?;
-        write!(outf, "#:format={}\n", "standard")?;
-        write!(outf, "# End of header\n")?;
+        writeln!(outf, "# GDBM dump file created by {}", COMPAT_GDBM_VERSION)?;
+        writeln!(outf, "#:version=1.1")?;
+        writeln!(outf, "#:file={}", self.pathname)?;
+        writeln!(outf, "#:format=standard")?;
+        writeln!(outf, "# End of header")?;
         Ok(())
     }
 
     fn export_ascii_datum(&self, outf: &mut std::fs::File, bindata: &[u8]) -> io::Result<()> {
         const MAX_DUMP_LINE_LEN: usize = 76;
 
-        write!(outf, "#:len={}\n", bindata.len())?;
+        writeln!(outf, "#:len={}", bindata.len())?;
 
         let mut b64 = base64::encode(bindata);
 
@@ -167,11 +157,11 @@ impl Gdbm {
             let line = &b64[..MAX_DUMP_LINE_LEN];
             let rem = &b64[MAX_DUMP_LINE_LEN..];
 
-            write!(outf, "{}\n", line)?;
+            writeln!(outf, "{}", line)?;
 
             b64 = rem.to_string();
         }
-        write!(outf, "{}\n", b64)?;
+        writeln!(outf, "{}", b64)?;
 
         Ok(())
     }
@@ -179,7 +169,7 @@ impl Gdbm {
     fn export_ascii_records(&mut self, outf: &mut std::fs::File) -> io::Result<usize> {
         let mut n_written: usize = 0;
         let mut key_res = self.first_key()?;
-        while key_res != None {
+        while key_res.is_some() {
             let key = key_res.unwrap();
             let val_res = self.get(&key)?;
             let val = val_res.unwrap();
@@ -194,8 +184,8 @@ impl Gdbm {
     }
 
     fn export_ascii_footer(&self, outf: &mut std::fs::File, n_written: usize) -> io::Result<()> {
-        write!(outf, "#:count={}\n", n_written)?;
-        write!(outf, "# End of data\n")?;
+        writeln!(outf, "#:count={}", n_written)?;
+        writeln!(outf, "# End of data")?;
         Ok(())
     }
 
@@ -234,7 +224,7 @@ impl Gdbm {
 
     fn export_bin_records(&mut self, outf: &mut std::fs::File, is_lfs: bool) -> io::Result<()> {
         let mut key_res = self.first_key()?;
-        while key_res != None {
+        while key_res.is_some() {
             let key = key_res.unwrap();
             let val_res = self.get(&key)?;
             let val = val_res.unwrap();
@@ -249,12 +239,11 @@ impl Gdbm {
 
     // API: export database to binary dump file
     pub fn export_bin(&mut self, outf: &mut std::fs::File, mode: ExportBinMode) -> io::Result<()> {
-        let is_lfs;
-        match mode {
-            ExportBinMode::ExpNative => is_lfs = self.header.is_lfs,
-            ExportBinMode::Exp32 => is_lfs = false,
-            ExportBinMode::Exp64 => is_lfs = true,
-        }
+        let is_lfs = match mode {
+            ExportBinMode::ExpNative => self.header.is_lfs,
+            ExportBinMode::Exp32 => false,
+            ExportBinMode::Exp64 => true,
+        };
 
         self.export_bin_header(outf)?;
         self.export_bin_records(outf, is_lfs)?;
@@ -327,13 +316,14 @@ impl Gdbm {
 
         let cur_ofs = self.dir.dir[bucket_dir];
         while bucket_dir < dir_max_elem && cur_ofs == self.dir.dir[bucket_dir] {
-            bucket_dir = bucket_dir + 1;
+            bucket_dir += 1;
         }
 
         bucket_dir
     }
 
     // API: count entries in database
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&mut self) -> io::Result<usize> {
         let mut len: usize = 0;
         let mut cur_dir: usize = 0;
@@ -341,7 +331,7 @@ impl Gdbm {
         while cur_dir < dir_max_elem {
             self.cache_load_bucket(cur_dir)?;
             let bucket = self.get_current_bucket();
-            len = len + (bucket.count as usize);
+            len += bucket.count as usize;
 
             cur_dir = self.next_bucket_dir(cur_dir);
         }
@@ -368,7 +358,7 @@ impl Gdbm {
                     }
                 }
             } else {
-                elem_ofs = elem_ofs + 1;
+                elem_ofs += 1;
             }
 
             // finished current bucket. get next bucket.
@@ -410,7 +400,7 @@ impl Gdbm {
     // API: return next key, for given key, in db-wide sequential order.
     pub fn next_key(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         let get_opt = self.int_get(key)?;
-        if get_opt == None {
+        if get_opt.is_none() {
             return Ok(None);
         }
 
@@ -459,7 +449,7 @@ impl Gdbm {
                     (elem.key_size + elem.data_size) as usize,
                 )?;
                 if &data[0..key.len()] == key {
-                    return Ok(Some((elem_ofs, (&data[key.len()..]).to_vec())));
+                    return Ok(Some((elem_ofs, data[key.len()..].to_vec())));
                 }
             }
 
@@ -522,15 +512,18 @@ impl Gdbm {
 
         // divide avail into 2 vectors.  elements are sorted by size,
         // so we perform A/B push, rather than simply slice first 1/2 of vec
-        let mut index = 0;
-        for elem in &self.header.avail.elems {
-            if index & 0x1 == 0 {
-                hdr_blk.elems.push(elem.clone());
-            } else {
-                ext_blk.elems.push(elem.clone());
-            }
-            index += 1;
-        }
+        self.header
+            .avail
+            .elems
+            .iter()
+            .enumerate()
+            .for_each(|(index, elem)| {
+                if index & 0x1 == 0 {
+                    hdr_blk.elems.push(elem.clone());
+                } else {
+                    ext_blk.elems.push(elem.clone());
+                }
+            });
 
         // finalize new header avail block.  equates to
         //     head.next = second
@@ -627,7 +620,7 @@ impl Gdbm {
 
         // write out each dirty bucket
         for bucket_ofs in dirty_list {
-            assert_eq!(self.bucket_cache.contains(bucket_ofs), true);
+            assert!(self.bucket_cache.contains(bucket_ofs));
             let bucket = self.bucket_cache.bucket_map[&bucket_ofs].clone();
 
             self.write_bucket(bucket_ofs, &bucket)?;
@@ -695,7 +688,7 @@ impl Gdbm {
         }
 
         let get_opt = self.int_get(key)?;
-        if get_opt == None {
+        if get_opt.is_none() {
             return Ok(None);
         }
         let (mut elem_ofs, data) = get_opt.unwrap();
@@ -747,20 +740,17 @@ impl Iterator for Gdbm {
     type Item = Vec<u8>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let key_res;
-
-        if self.iter_key.is_empty() {
-            key_res = self.first_key().expect("DB first_key I/O error");
+        let key_res = if self.iter_key.is_empty() {
+            self.first_key().expect("DB first_key I/O error")
         } else {
             let ikey = self.iter_key.clone();
-            key_res = self.next_key(&ikey).expect("DB next_key I/O error");
-        }
+            self.next_key(&ikey).expect("DB next_key I/O error")
+        };
 
         if key_res.is_none() {
             self.iter_reset();
-            None
-        } else {
-            Some(key_res.unwrap())
         }
+
+        key_res
     }
 }

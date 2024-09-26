@@ -19,8 +19,8 @@ pub fn build_dir_size(block_sz: u32) -> (u32, u32) {
     let mut dir_bits = 3;
 
     while dir_size < block_sz && dir_bits < GDBM_HASH_BITS - 3 {
-        dir_size = dir_size << 1;
-        dir_bits = dir_bits + 1;
+        dir_size <<= 1;
+        dir_bits += 1;
     }
 
     (dir_size, dir_bits)
@@ -32,6 +32,7 @@ pub struct Directory {
 }
 
 impl Directory {
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.dir.len()
     }
@@ -63,12 +64,10 @@ fn roff_t(f: &mut std::fs::File, is_lfs: bool, is_le: bool) -> io::Result<u64> {
         } else {
             v = f.read_u32::<LittleEndian>()? as u64;
         }
+    } else if is_lfs {
+        v = f.read_u64::<BigEndian>()?;
     } else {
-        if is_lfs {
-            v = f.read_u64::<BigEndian>()?;
-        } else {
-            v = f.read_u32::<BigEndian>()? as u64;
-        }
+        v = f.read_u32::<BigEndian>()? as u64;
     }
 
     Ok(v)
@@ -80,7 +79,7 @@ pub fn dir_reader(f: &mut std::fs::File, header: &Header) -> io::Result<Vec<u64>
     let dirent_count = header.dir_sz as usize / dirent_elem_size(is_lfs);
 
     let mut dir = Vec::new();
-    dir.reserve_exact(dirent_count as usize);
+    dir.reserve_exact(dirent_count);
 
     let _pos = f.seek(SeekFrom::Start(header.dir_ofs))?;
 
