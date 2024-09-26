@@ -12,7 +12,7 @@ use byteorder::{BigEndian, LittleEndian, NativeEndian, ReadBytesExt};
 use std::io::{self, Error, ErrorKind, Read};
 
 use crate::dir::build_dir_size;
-use crate::ser::{w32, woff_t};
+use crate::ser::{w32, woff_t, Alignment, Endian};
 use crate::{
     AvailBlock, AvailElem, GDBM_AVAIL_ELEM_SZ, GDBM_BUCKET_ELEM_SZ, GDBM_HASH_BUCKET_SZ,
     GDBM_HDR_SZ, GDBM_MAGIC32, GDBM_MAGIC32_SWAP, GDBM_MAGIC64, GDBM_MAGIC64_SWAP, GDBM_OMAGIC,
@@ -34,8 +34,8 @@ pub struct Header {
     pub avail: AvailBlock,
 
     // following fields are calculated, not stored
-    pub is_lfs: bool, // using 64-bit off_t?
-    pub is_le: bool,  // metadata endianness is big (false) or little (true)
+    pub endian: Endian,       // using 64-bit off_t?
+    pub alignment: Alignment, // metadata endianness is big (false) or little (true)
     pub dirty: bool,
 }
 
@@ -50,22 +50,24 @@ impl Header {
         let magic = rdr.read_u32::<NativeEndian>()?;
 
         // determine db file version, intrinsics from magic number
-        let (is_lfs, need_swap) = match magic {
-            GDBM_OMAGIC => (false, false),
-            GDBM_OMAGIC_SWAP => (false, true),
-            GDBM_MAGIC32 => (false, false),
-            GDBM_MAGIC32_SWAP => (false, true),
-            GDBM_MAGIC64 => (true, false),
-            GDBM_MAGIC64_SWAP => (true, true),
+        let (alignment, need_swap) = match magic {
+            GDBM_OMAGIC => (Alignment::Align32, false),
+            GDBM_OMAGIC_SWAP => (Alignment::Align32, true),
+            GDBM_MAGIC32 => (Alignment::Align32, false),
+            GDBM_MAGIC32_SWAP => (Alignment::Align32, true),
+            GDBM_MAGIC64 => (Alignment::Align64, false),
+            GDBM_MAGIC64_SWAP => (Alignment::Align64, true),
             _ => {
                 return Err(Error::new(ErrorKind::Other, "Unknown/invalid magic number"));
             }
         };
 
         // detect db file endianness
-        let is_le = match need_swap {
-            true => !cfg!(target_endian = "little"),
-            false => cfg!(target_endian = "little"),
+        let endian = match (need_swap, cfg!(target_endian = "little")) {
+            (true, true) => Endian::Big,
+            (true, false) => Endian::Little,
+            (false, true) => Endian::Little,
+            (false, false) => Endian::Big,
         };
 
         // fixme: read u32, not u64, if is_lfs
@@ -83,7 +85,7 @@ impl Header {
             avail_next_block,
         );
 
-        if is_le {
+        if endian == Endian::Little {
             block_sz = rdr.read_u32::<LittleEndian>()?;
             dir_ofs = rdr.read_u64::<LittleEndian>()?;
             dir_sz = rdr.read_u32::<LittleEndian>()?;
@@ -150,7 +152,7 @@ impl Header {
 
         let mut elems: Vec<AvailElem> = Vec::new();
         for _idx in 0..avail_count {
-            let av_elem = AvailElem::from_reader(is_lfs, is_le, &mut rdr)?;
+            let av_elem = AvailElem::from_reader(alignment, endian, &mut rdr)?;
             elems.push(av_elem);
         }
 
@@ -191,23 +193,23 @@ impl Header {
                 next_block: avail_next_block,
                 elems,
             },
-            is_lfs,
-            is_le,
+            alignment,
+            endian,
             dirty: false,
         })
     }
 
-    pub fn serialize(&self, is_lfs: bool, is_le: bool) -> Vec<u8> {
+    pub fn serialize(&self, alignment: Alignment, endian: Endian) -> Vec<u8> {
         let mut buf = Vec::new();
-        buf.append(&mut w32(is_le, self.magic)); // fixme: check swap?
-        buf.append(&mut w32(is_le, self.block_sz));
-        buf.append(&mut woff_t(is_lfs, is_le, self.dir_ofs));
-        buf.append(&mut w32(is_le, self.dir_sz));
-        buf.append(&mut w32(is_le, self.dir_bits));
-        buf.append(&mut w32(is_le, self.bucket_sz));
-        buf.append(&mut w32(is_le, self.bucket_elems));
-        buf.append(&mut woff_t(is_lfs, is_le, self.next_block));
-        buf.append(&mut self.avail.serialize(is_lfs, is_le));
+        buf.append(&mut w32(endian, self.magic)); // fixme: check swap?
+        buf.append(&mut w32(endian, self.block_sz));
+        buf.append(&mut woff_t(alignment, endian, self.dir_ofs));
+        buf.append(&mut w32(endian, self.dir_sz));
+        buf.append(&mut w32(endian, self.dir_bits));
+        buf.append(&mut w32(endian, self.bucket_sz));
+        buf.append(&mut w32(endian, self.bucket_elems));
+        buf.append(&mut woff_t(alignment, endian, self.next_block));
+        buf.append(&mut self.avail.serialize(alignment, endian));
 
         buf
     }

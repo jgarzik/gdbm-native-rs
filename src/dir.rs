@@ -11,7 +11,7 @@
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::io::{self, Seek, SeekFrom};
 
-use crate::ser::woff_t;
+use crate::ser::{woff_t, Alignment, Endian};
 use crate::{Header, GDBM_HASH_BITS};
 
 pub fn build_dir_size(block_sz: u32) -> (u32, u32) {
@@ -37,34 +37,34 @@ impl Directory {
         self.dir.len()
     }
 
-    pub fn serialize(&self, is_lfs: bool, is_le: bool) -> Vec<u8> {
+    pub fn serialize(&self, alignment: Alignment, endian: Endian) -> Vec<u8> {
         let mut buf = Vec::new();
 
         for ofs in &self.dir {
-            buf.append(&mut woff_t(is_lfs, is_le, *ofs));
+            buf.append(&mut woff_t(alignment, endian, *ofs));
         }
 
         buf
     }
 }
 
-pub fn dirent_elem_size(is_lfs: bool) -> usize {
-    match is_lfs {
-        true => 8,
-        false => 4,
+pub fn dirent_elem_size(alignment: Alignment) -> usize {
+    match alignment {
+        Alignment::Align32 => 4,
+        Alignment::Align64 => 8,
     }
 }
 
-fn roff_t(f: &mut std::fs::File, is_lfs: bool, is_le: bool) -> io::Result<u64> {
+fn roff_t(f: &mut std::fs::File, alignment: Alignment, endian: Endian) -> io::Result<u64> {
     let v;
 
-    if is_le {
-        if is_lfs {
+    if endian == Endian::Little {
+        if alignment == Alignment::Align64 {
             v = f.read_u64::<LittleEndian>()?;
         } else {
             v = f.read_u32::<LittleEndian>()? as u64;
         }
-    } else if is_lfs {
+    } else if alignment == Alignment::Align64 {
         v = f.read_u64::<BigEndian>()?;
     } else {
         v = f.read_u32::<BigEndian>()? as u64;
@@ -75,8 +75,7 @@ fn roff_t(f: &mut std::fs::File, is_lfs: bool, is_le: bool) -> io::Result<u64> {
 
 // Read C-struct-based bucket directory (a vector of storage offsets)
 pub fn dir_reader(f: &mut std::fs::File, header: &Header) -> io::Result<Vec<u64>> {
-    let is_lfs = header.is_lfs;
-    let dirent_count = header.dir_sz as usize / dirent_elem_size(is_lfs);
+    let dirent_count = header.dir_sz as usize / dirent_elem_size(header.alignment);
 
     let mut dir = Vec::new();
     dir.reserve_exact(dirent_count);
@@ -84,7 +83,7 @@ pub fn dir_reader(f: &mut std::fs::File, header: &Header) -> io::Result<Vec<u64>
     let _pos = f.seek(SeekFrom::Start(header.dir_ofs))?;
 
     for _idx in 0..dirent_count {
-        let ofs = roff_t(f, header.is_lfs, header.is_le)?;
+        let ofs = roff_t(f, header.alignment, header.endian)?;
         dir.push(ofs);
     }
 

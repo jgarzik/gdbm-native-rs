@@ -11,7 +11,7 @@
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::io::{self, Read};
 
-use crate::ser::{w32, woff_t};
+use crate::ser::{w32, woff_t, Alignment, Endian};
 
 #[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct AvailElem {
@@ -20,13 +20,17 @@ pub struct AvailElem {
 }
 
 impl AvailElem {
-    pub fn from_reader(is_lfs: bool, is_le: bool, rdr: &mut impl Read) -> io::Result<Self> {
+    pub fn from_reader(
+        alignment: Alignment,
+        endian: Endian,
+        rdr: &mut impl Read,
+    ) -> io::Result<Self> {
         let elem_sz: u32;
         let elem_ofs: u64;
 
-        if is_le {
+        if endian == Endian::Little {
             elem_sz = rdr.read_u32::<LittleEndian>()?;
-            if is_lfs {
+            if alignment == Alignment::Align64 {
                 let _padding = rdr.read_u32::<LittleEndian>()?;
                 elem_ofs = rdr.read_u64::<LittleEndian>()?;
             } else {
@@ -34,7 +38,7 @@ impl AvailElem {
             }
         } else {
             elem_sz = rdr.read_u32::<BigEndian>()?;
-            if is_lfs {
+            if alignment == Alignment::Align64 {
                 let _padding = rdr.read_u32::<BigEndian>()?;
                 elem_ofs = rdr.read_u64::<BigEndian>()?;
             } else {
@@ -48,14 +52,14 @@ impl AvailElem {
         })
     }
 
-    pub fn serialize(&self, is_lfs: bool, is_le: bool) -> Vec<u8> {
+    pub fn serialize(&self, alignment: Alignment, endian: Endian) -> Vec<u8> {
         let mut buf = Vec::new();
-        buf.append(&mut w32(is_le, self.sz));
-        if is_lfs {
+        buf.append(&mut w32(endian, self.sz));
+        if alignment == Alignment::Align64 {
             let padding: u32 = 0;
-            buf.append(&mut w32(is_le, padding));
+            buf.append(&mut w32(endian, padding));
         }
-        buf.append(&mut woff_t(is_lfs, is_le, self.addr));
+        buf.append(&mut woff_t(alignment, endian, self.addr));
 
         buf
     }
@@ -94,14 +98,14 @@ impl AvailBlock {
         }
     }
 
-    pub fn serialize(&self, is_lfs: bool, is_le: bool) -> Vec<u8> {
+    pub fn serialize(&self, alignment: Alignment, endian: Endian) -> Vec<u8> {
         let mut buf = Vec::new();
-        buf.append(&mut w32(is_le, self.sz));
-        buf.append(&mut w32(is_le, self.count));
-        buf.append(&mut woff_t(is_lfs, is_le, self.next_block));
+        buf.append(&mut w32(endian, self.sz));
+        buf.append(&mut w32(endian, self.count));
+        buf.append(&mut woff_t(alignment, endian, self.next_block));
 
         for elem in &self.elems {
-            buf.append(&mut elem.serialize(is_lfs, is_le));
+            buf.append(&mut elem.serialize(alignment, endian));
         }
 
         buf

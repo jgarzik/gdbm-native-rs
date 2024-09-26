@@ -8,35 +8,43 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
-use byteorder::{BigEndian, ByteOrder, LittleEndian};
+/// Field alignment of DB file
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Alignment {
+    /// File offset fields are 32bit
+    Align32,
+    /// File offset fields are 64bit
+    Align64,
+}
+
+/// Endianness of DB file
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Endian {
+    Little,
+    Big,
+}
 
 // serialize u32, with runtime endian selection
-pub fn w32(is_le: bool, val: u32) -> Vec<u8> {
-    let mut buf = vec![0; 4];
-
-    match is_le {
-        true => LittleEndian::write_u32(&mut buf, val),
-        false => BigEndian::write_u32(&mut buf, val),
+pub fn w32(endian: Endian, val: u32) -> Vec<u8> {
+    match endian {
+        Endian::Little => val.to_le_bytes(),
+        Endian::Big => val.to_be_bytes(),
     }
-
-    buf
+    .to_vec()
 }
 
 // serialize u64, with runtime endian selection
-pub fn w64(is_le: bool, val: u64) -> Vec<u8> {
-    let mut buf = vec![0; 8];
-
-    match is_le {
-        true => LittleEndian::write_u64(&mut buf, val),
-        false => BigEndian::write_u64(&mut buf, val),
+pub fn w64(endian: Endian, val: u64) -> Vec<u8> {
+    match endian {
+        Endian::Little => val.to_le_bytes(),
+        Endian::Big => val.to_be_bytes(),
     }
-
-    buf
+    .to_vec()
 }
 
-pub fn woff_t(is_lfs: bool, is_le: bool, val: u64) -> Vec<u8> {
-    match is_lfs {
-        true => w64(is_le, val),
-        false => w32(is_le, val as u32),
+pub fn woff_t(alignment: Alignment, endian: Endian, val: u64) -> Vec<u8> {
+    match alignment {
+        Alignment::Align32 => w32(endian, val as u32),
+        Alignment::Align64 => w64(endian, val),
     }
 }
