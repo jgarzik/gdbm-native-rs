@@ -8,39 +8,33 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 
-use crate::ser::{w32, woff_t};
+use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
 
-#[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Default, Debug, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct AvailElem {
     pub sz: u32,
     pub addr: u64,
 }
 
 impl AvailElem {
-    pub fn from_reader(is_lfs: bool, is_le: bool, rdr: &mut impl Read) -> io::Result<Self> {
-        let elem_sz: u32;
-        let elem_ofs: u64;
+    pub fn from_reader(
+        alignment: Alignment,
+        endian: Endian,
+        reader: &mut impl Read,
+    ) -> io::Result<Self> {
+        let elem_sz = read32(endian, reader)?;
 
-        if is_le {
-            elem_sz = rdr.read_u32::<LittleEndian>()?;
-            if is_lfs {
-                let _padding = rdr.read_u32::<LittleEndian>()?;
-                elem_ofs = rdr.read_u64::<LittleEndian>()?;
-            } else {
-                elem_ofs = rdr.read_u32::<LittleEndian>()? as u64;
-            }
-        } else {
-            elem_sz = rdr.read_u32::<BigEndian>()?;
-            if is_lfs {
-                let _padding = rdr.read_u32::<BigEndian>()?;
-                elem_ofs = rdr.read_u64::<BigEndian>()?;
-            } else {
-                elem_ofs = rdr.read_u32::<BigEndian>()? as u64;
-            }
+        // skip padding
+        if alignment.is64() {
+            read32(endian, reader)?;
         }
+
+        let elem_ofs = match alignment {
+            Alignment::Align32 => (read32(endian, reader)?) as u64,
+            Alignment::Align64 => read64(endian, reader)?,
+        };
 
         Ok(AvailElem {
             sz: elem_sz,
@@ -48,16 +42,25 @@ impl AvailElem {
         })
     }
 
-    pub fn serialize(&self, is_lfs: bool, is_le: bool) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.append(&mut w32(is_le, self.sz));
-        if is_lfs {
-            let padding: u32 = 0;
-            buf.append(&mut w32(is_le, padding));
-        }
-        buf.append(&mut woff_t(is_lfs, is_le, self.addr));
+    pub fn serialize(
+        &self,
+        alignment: Alignment,
+        endian: Endian,
+        writer: &mut impl Write,
+    ) -> io::Result<()> {
+        write32(endian, writer, self.sz)?;
 
-        buf
+        // insert padding
+        if alignment.is64() {
+            write32(endian, writer, 0)?;
+        }
+
+        match alignment {
+            Alignment::Align32 => write32(endian, writer, self.addr as u32)?,
+            Alignment::Align64 => write64(endian, writer, self.addr)?,
+        }
+
+        Ok(())
     }
 }
 
@@ -94,16 +97,23 @@ impl AvailBlock {
         }
     }
 
-    pub fn serialize(&self, is_lfs: bool, is_le: bool) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.append(&mut w32(is_le, self.sz));
-        buf.append(&mut w32(is_le, self.count));
-        buf.append(&mut woff_t(is_lfs, is_le, self.next_block));
-
-        for elem in &self.elems {
-            buf.append(&mut elem.serialize(is_lfs, is_le));
+    pub fn serialize(
+        &self,
+        alignment: Alignment,
+        endian: Endian,
+        writer: &mut impl Write,
+    ) -> io::Result<()> {
+        write32(endian, writer, self.sz)?;
+        write32(endian, writer, self.count)?;
+        match alignment {
+            Alignment::Align32 => write32(endian, writer, self.next_block as u32)?,
+            Alignment::Align64 => write64(endian, writer, self.next_block)?,
         }
 
-        buf
+        self.elems
+            .iter()
+            .try_for_each(|elem| elem.serialize(alignment, endian, writer))?;
+
+        Ok(())
     }
 }

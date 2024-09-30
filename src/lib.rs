@@ -20,21 +20,14 @@ mod bucket;
 pub mod dir;
 mod hashutil;
 mod header;
+mod magic;
 mod ser;
 use avail::{AvailBlock, AvailElem};
 use bucket::{Bucket, BucketCache, BUCKET_AVAIL};
 use dir::{dir_reader, dirent_elem_size, Directory};
 use hashutil::{key_loc, partial_key_match};
 use header::Header;
-
-// todo: convert to enum w/ value
-const GDBM_OMAGIC: u32 = 0x13579ace; /* Original magic number. */
-const GDBM_MAGIC32: u32 = 0x13579acd; /* New 32bit magic number. */
-const GDBM_MAGIC64: u32 = 0x13579acf; /* New 64bit magic number. */
-
-const GDBM_OMAGIC_SWAP: u32 = 0xce9a5713; /* OMAGIC swapped. */
-const GDBM_MAGIC32_SWAP: u32 = 0xcd9a5713; /* MAGIC32 swapped. */
-const GDBM_MAGIC64_SWAP: u32 = 0xcf9a5713; /* MAGIC64 swapped. */
+use ser::{write32, write64, Alignment, Endian};
 
 // Our claimed GDBM lib version compatibility.  Appears in dump files.
 const COMPAT_GDBM_VERSION: &str = "1.23";
@@ -64,15 +57,6 @@ fn read_ofs(f: &mut std::fs::File, ofs: u64, total_size: usize) -> io::Result<Ve
     f.read_exact(&mut data)?;
 
     Ok(data)
-}
-
-// write data to storage at (ofs,total_size)
-// todo:  use Write+Seek traits rather than File
-fn write_ofs(f: &mut std::fs::File, ofs: u64, data: &[u8]) -> io::Result<()> {
-    f.seek(SeekFrom::Start(ofs))?;
-    f.write_all(data)?;
-
-    Ok(())
 }
 
 #[derive(Copy, Clone)]
@@ -113,7 +97,7 @@ impl Gdbm {
         let metadata = f.metadata()?;
 
         // read gdbm global header
-        let header = Header::from_reader(&metadata, f.try_clone()?)?;
+        let header = Header::from_reader(&metadata, &mut f)?;
         println!("{:?}", header);
 
         // read gdbm hash directory
@@ -209,12 +193,14 @@ impl Gdbm {
     fn export_bin_datum(
         &self,
         outf: &mut std::fs::File,
-        is_lfs: bool,
+        alignment: Alignment,
         bindata: &[u8],
     ) -> io::Result<()> {
         // write metadata:  big-endian datum size, 32b or 64b
-        let size_bytes = ser::woff_t(is_lfs, false, bindata.len() as u64);
-        outf.write_all(&size_bytes)?;
+        match alignment {
+            Alignment::Align32 => write32(Endian::Big, outf, bindata.len() as u32)?,
+            Alignment::Align64 => write64(Endian::Big, outf, bindata.len() as u64)?,
+        }
 
         // write datum
         outf.write_all(bindata)?;
@@ -222,15 +208,19 @@ impl Gdbm {
         Ok(())
     }
 
-    fn export_bin_records(&mut self, outf: &mut std::fs::File, is_lfs: bool) -> io::Result<()> {
+    fn export_bin_records(
+        &mut self,
+        outf: &mut std::fs::File,
+        alignment: Alignment,
+    ) -> io::Result<()> {
         let mut key_res = self.first_key()?;
         while key_res.is_some() {
             let key = key_res.unwrap();
             let val_res = self.get(&key)?;
             let val = val_res.unwrap();
 
-            self.export_bin_datum(outf, is_lfs, &key)?;
-            self.export_bin_datum(outf, is_lfs, &val)?;
+            self.export_bin_datum(outf, alignment, &key)?;
+            self.export_bin_datum(outf, alignment, &val)?;
 
             key_res = self.next_key(&key)?;
         }
@@ -239,14 +229,14 @@ impl Gdbm {
 
     // API: export database to binary dump file
     pub fn export_bin(&mut self, outf: &mut std::fs::File, mode: ExportBinMode) -> io::Result<()> {
-        let is_lfs = match mode {
-            ExportBinMode::ExpNative => self.header.is_lfs,
-            ExportBinMode::Exp32 => false,
-            ExportBinMode::Exp64 => true,
+        let alignment = match mode {
+            ExportBinMode::ExpNative => self.header.alignment(),
+            ExportBinMode::Exp32 => Alignment::Align32,
+            ExportBinMode::Exp64 => Alignment::Align64,
         };
 
         self.export_bin_header(outf)?;
-        self.export_bin_records(outf, is_lfs)?;
+        self.export_bin_records(outf, alignment)?;
         Ok(())
     }
 
@@ -301,7 +291,7 @@ impl Gdbm {
     }
 
     fn dir_max_elem(&self) -> usize {
-        self.header.dir_sz as usize / dirent_elem_size(self.header.is_lfs)
+        self.header.dir_sz as usize / dirent_elem_size(self.header.alignment())
     }
 
     // since one bucket dir entry may duplicate another,
@@ -554,8 +544,8 @@ impl Gdbm {
         self.header.dirty = true;
 
         // write extension block to storage (immediately)
-        let ext_bytes = ext_blk.serialize(self.header.is_lfs, self.header.is_le);
-        write_ofs(&mut self.f, new_blk_ofs, &ext_bytes)?;
+        self.f.seek(SeekFrom::Start(new_blk_ofs))?;
+        ext_blk.serialize(self.header.alignment(), self.header.endian(), &mut self.f)?;
 
         Ok(())
     }
@@ -608,8 +598,8 @@ impl Gdbm {
     }
 
     fn write_bucket(&mut self, bucket_ofs: u64, bucket: &Bucket) -> io::Result<()> {
-        let bytes = bucket.serialize(self.header.is_lfs, self.header.is_le);
-        write_ofs(&mut self.f, bucket_ofs, &bytes)?;
+        self.f.seek(SeekFrom::Start(bucket_ofs))?;
+        bucket.serialize(self.header.alignment(), self.header.endian(), &mut self.f)?;
 
         Ok(())
     }
@@ -638,8 +628,9 @@ impl Gdbm {
             return Ok(());
         }
 
-        let bytes = self.dir.serialize(self.header.is_lfs, self.header.is_le);
-        write_ofs(&mut self.f, self.header.dir_ofs, &bytes)?;
+        self.f.seek(SeekFrom::Start(self.header.dir_ofs))?;
+        self.dir
+            .serialize(self.header.alignment(), self.header.endian(), &mut self.f)?;
 
         self.dir_dirty = false;
 
@@ -652,8 +643,8 @@ impl Gdbm {
             return Ok(());
         }
 
-        let bytes = self.header.serialize(self.header.is_lfs, self.header.is_le);
-        write_ofs(&mut self.f, 0, &bytes)?;
+        self.f.seek(SeekFrom::Start(0))?;
+        self.header.serialize(&mut self.f)?;
 
         self.header.dirty = false;
 

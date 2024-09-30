@@ -8,10 +8,9 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
-use std::io::{self, Seek, SeekFrom};
+use std::io::{self, Seek, SeekFrom, Write};
 
-use crate::ser::woff_t;
+use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
 use crate::{Header, GDBM_HASH_BITS};
 
 pub fn build_dir_size(block_sz: u32) -> (u32, u32) {
@@ -37,56 +36,33 @@ impl Directory {
         self.dir.len()
     }
 
-    pub fn serialize(&self, is_lfs: bool, is_le: bool) -> Vec<u8> {
-        let mut buf = Vec::new();
-
-        for ofs in &self.dir {
-            buf.append(&mut woff_t(is_lfs, is_le, *ofs));
-        }
-
-        buf
+    pub fn serialize(
+        &self,
+        alignment: Alignment,
+        endian: Endian,
+        writer: &mut impl Write,
+    ) -> io::Result<()> {
+        self.dir.iter().try_for_each(|ofs| match alignment {
+            Alignment::Align32 => write32(endian, writer, *ofs as u32),
+            Alignment::Align64 => write64(endian, writer, *ofs),
+        })
     }
 }
 
-pub fn dirent_elem_size(is_lfs: bool) -> usize {
-    match is_lfs {
-        true => 8,
-        false => 4,
+pub fn dirent_elem_size(alignment: Alignment) -> usize {
+    match alignment {
+        Alignment::Align32 => 4,
+        Alignment::Align64 => 8,
     }
-}
-
-fn roff_t(f: &mut std::fs::File, is_lfs: bool, is_le: bool) -> io::Result<u64> {
-    let v;
-
-    if is_le {
-        if is_lfs {
-            v = f.read_u64::<LittleEndian>()?;
-        } else {
-            v = f.read_u32::<LittleEndian>()? as u64;
-        }
-    } else if is_lfs {
-        v = f.read_u64::<BigEndian>()?;
-    } else {
-        v = f.read_u32::<BigEndian>()? as u64;
-    }
-
-    Ok(v)
 }
 
 // Read C-struct-based bucket directory (a vector of storage offsets)
 pub fn dir_reader(f: &mut std::fs::File, header: &Header) -> io::Result<Vec<u64>> {
-    let is_lfs = header.is_lfs;
-    let dirent_count = header.dir_sz as usize / dirent_elem_size(is_lfs);
-
-    let mut dir = Vec::new();
-    dir.reserve_exact(dirent_count);
-
-    let _pos = f.seek(SeekFrom::Start(header.dir_ofs))?;
-
-    for _idx in 0..dirent_count {
-        let ofs = roff_t(f, header.is_lfs, header.is_le)?;
-        dir.push(ofs);
-    }
-
-    Ok(dir)
+    f.seek(SeekFrom::Start(header.dir_ofs))?;
+    (0..header.dir_sz as usize / dirent_elem_size(header.alignment()))
+        .map(|_| match header.alignment() {
+            Alignment::Align32 => read32(header.endian(), f).map(|v| v as u64),
+            Alignment::Align64 => read64(header.endian(), f),
+        })
+        .collect::<io::Result<Vec<_>>>()
 }

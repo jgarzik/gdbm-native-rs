@@ -8,11 +8,10 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::collections::HashMap;
-use std::io::{self, Error, ErrorKind, Read};
+use std::io::{self, Error, ErrorKind, Read, Write};
 
-use crate::ser::{w32, woff_t};
+use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
 use crate::{AvailElem, Header, KEY_SMALL};
 
 pub const BUCKET_AVAIL: usize = 6;
@@ -27,38 +26,23 @@ pub struct BucketElement {
 }
 
 impl BucketElement {
-    pub fn from_reader(is_lfs: bool, is_le: bool, rdr: &mut impl Read) -> io::Result<Self> {
-        let hash = if is_le {
-            rdr.read_u32::<LittleEndian>()?
-        } else {
-            rdr.read_u32::<BigEndian>()?
-        };
+    pub fn from_reader(
+        alignment: Alignment,
+        endian: Endian,
+        reader: &mut impl Read,
+    ) -> io::Result<Self> {
+        let hash = read32(endian, reader)?;
 
         let mut key_start = [0; KEY_SMALL];
-        rdr.read_exact(&mut key_start)?;
+        reader.read_exact(&mut key_start)?;
 
-        let data_ofs: u64;
-        let (key_size, data_size);
+        let data_ofs = match alignment {
+            Alignment::Align32 => (read32(endian, reader)?) as u64,
+            Alignment::Align64 => read64(endian, reader)?,
+        };
 
-        if is_le {
-            if is_lfs {
-                data_ofs = rdr.read_u64::<LittleEndian>()?;
-            } else {
-                data_ofs = rdr.read_u32::<LittleEndian>()? as u64;
-            }
-
-            key_size = rdr.read_u32::<LittleEndian>()?;
-            data_size = rdr.read_u32::<LittleEndian>()?;
-        } else {
-            if is_lfs {
-                data_ofs = rdr.read_u64::<BigEndian>()?;
-            } else {
-                data_ofs = rdr.read_u32::<BigEndian>()? as u64;
-            }
-
-            key_size = rdr.read_u32::<BigEndian>()?;
-            data_size = rdr.read_u32::<BigEndian>()?;
-        }
+        let key_size = read32(endian, reader)?;
+        let data_size = read32(endian, reader)?;
 
         Ok(BucketElement {
             hash,
@@ -69,15 +53,25 @@ impl BucketElement {
         })
     }
 
-    pub fn serialize(&self, is_lfs: bool, is_le: bool) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.append(&mut w32(is_le, self.hash));
-        buf.append(&mut self.key_start.to_vec());
-        buf.append(&mut woff_t(is_lfs, is_le, self.data_ofs));
-        buf.append(&mut w32(is_le, self.key_size));
-        buf.append(&mut w32(is_le, self.data_size));
+    pub fn serialize(
+        &self,
+        alignment: Alignment,
+        endian: Endian,
+        writer: &mut impl Write,
+    ) -> io::Result<()> {
+        write32(endian, writer, self.hash)?;
 
-        buf
+        writer.write_all(&self.key_start)?;
+
+        match alignment {
+            Alignment::Align32 => write32(endian, writer, self.data_ofs as u32)?,
+            Alignment::Align64 => write64(endian, writer, self.data_ofs)?,
+        }
+
+        write32(endian, writer, self.key_size)?;
+        write32(endian, writer, self.data_size)?;
+
+        Ok(())
     }
 }
 
@@ -91,53 +85,37 @@ pub struct Bucket {
 }
 
 impl Bucket {
-    pub fn from_reader(header: &Header, rdr: &mut impl Read) -> io::Result<Self> {
+    pub fn from_reader(header: &Header, reader: &mut impl Read) -> io::Result<Self> {
         // read avail section
-        let av_count;
-        if header.is_le {
-            av_count = rdr.read_u32::<LittleEndian>()?;
-            let _padding = rdr.read_u32::<LittleEndian>()?;
-        } else {
-            av_count = rdr.read_u32::<BigEndian>()?;
-            let _padding = rdr.read_u32::<BigEndian>()?;
-        }
+        let av_count = read32(header.endian(), reader)? as usize;
+
+        // always padding here
+        read32(header.endian(), reader)?;
 
         // read av_count entries from bucket_avail[]
-        let mut avail = Vec::new();
-        for _idx in 0..av_count {
-            let av_elem = AvailElem::from_reader(header.is_lfs, header.is_le, rdr)?;
-            avail.push(av_elem);
-        }
+        let avail = (0..av_count)
+            .map(|_| AvailElem::from_reader(header.alignment(), header.endian(), reader))
+            .collect::<io::Result<Vec<_>>>()?;
 
         // read remaining to-be-ignored entries from bucket_avail[]
-        let pad_elems = BUCKET_AVAIL - avail.len();
-        for _idx in 0..pad_elems {
-            let _av_elem = AvailElem::from_reader(header.is_lfs, header.is_le, rdr)?;
-        }
+        (av_count..BUCKET_AVAIL).try_for_each(|_| {
+            AvailElem::from_reader(header.alignment(), header.endian(), reader).map(|_| ())
+        })?;
 
         // todo: validate and assure-sorted avail[]
 
         // read misc. section
-        let (bits, count);
-
-        if header.is_le {
-            bits = rdr.read_u32::<LittleEndian>()?;
-            count = rdr.read_u32::<LittleEndian>()?;
-        } else {
-            bits = rdr.read_u32::<BigEndian>()?;
-            count = rdr.read_u32::<BigEndian>()?;
-        }
+        let bits = read32(header.endian(), reader)?;
+        let count = read32(header.endian(), reader)?;
 
         if !(count <= header.bucket_elems && bits <= header.dir_bits) {
             return Err(Error::new(ErrorKind::Other, "invalid bucket c/b"));
         }
 
         // read bucket elements section
-        let mut tab = Vec::new();
-        for _idx in 0..header.bucket_elems {
-            let bucket_elem = BucketElement::from_reader(header.is_lfs, header.is_le, rdr)?;
-            tab.push(bucket_elem);
-        }
+        let tab = (0..header.bucket_elems)
+            .map(|_| BucketElement::from_reader(header.alignment(), header.endian(), reader))
+            .collect::<io::Result<Vec<_>>>()?;
 
         Ok(Bucket {
             avail,
@@ -147,47 +125,44 @@ impl Bucket {
         })
     }
 
-    pub fn serialize(&self, is_lfs: bool, is_le: bool) -> Vec<u8> {
-        let mut buf = Vec::new();
+    pub fn serialize(
+        &self,
+        alignment: Alignment,
+        endian: Endian,
+        writer: &mut impl Write,
+    ) -> io::Result<()> {
+        assert!(self.avail.len() <= BUCKET_AVAIL);
 
         //
         // avail section
         //
 
-        let av_count: u32 = self.avail.len() as u32;
-        buf.append(&mut w32(is_le, av_count));
-        if is_lfs {
-            let padding: u32 = 0;
-            buf.append(&mut w32(is_le, padding));
-        }
+        write32(endian, writer, self.avail.len() as u32)?;
+        write32(endian, writer, 0)?;
 
         // valid avail elements
-        for avail_elem in &self.avail {
-            buf.append(&mut avail_elem.serialize(is_lfs, is_le));
-        }
+        self.avail
+            .iter()
+            .try_for_each(|elem| elem.serialize(alignment, endian, writer))?;
 
         // dummy avail elements
-        assert!(self.avail.len() <= BUCKET_AVAIL);
-        let pad_elems = BUCKET_AVAIL - self.avail.len();
-        for _idx in 0..pad_elems {
-            let dummy_elem = AvailElem { addr: 0, sz: 0 };
-            buf.append(&mut dummy_elem.serialize(is_lfs, is_le));
-        }
+        (self.avail.len()..BUCKET_AVAIL)
+            .try_for_each(|_| AvailElem::default().serialize(alignment, endian, writer))?;
 
         //
         // misc section
         //
-        buf.append(&mut w32(is_le, self.bits));
-        buf.append(&mut w32(is_le, self.count));
+        write32(endian, writer, self.bits)?;
+        write32(endian, writer, self.count)?;
 
         //
         // bucket elements section
         //
-        for bucket_elem in &self.tab {
-            buf.append(&mut bucket_elem.serialize(is_lfs, is_le));
-        }
+        self.tab
+            .iter()
+            .try_for_each(|elem| elem.serialize(alignment, endian, writer))?;
 
-        buf
+        Ok(())
     }
 }
 
