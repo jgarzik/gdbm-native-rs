@@ -67,7 +67,6 @@ impl AvailElem {
 #[derive(Debug)]
 pub struct AvailBlock {
     pub sz: u32,
-    pub count: u32,
     pub next_block: u64,
     pub elems: Vec<AvailElem>,
 }
@@ -76,25 +75,13 @@ impl AvailBlock {
     pub fn new(sz: u32) -> AvailBlock {
         AvailBlock {
             sz,
-            count: 0,
             next_block: 0,
             elems: Vec::new(),
         }
     }
 
-    fn find_elem(&self, sz: usize) -> Option<usize> {
-        self.elems.iter().position(|elem| elem.sz as usize >= sz)
-    }
-
-    pub fn remove_elem(&mut self, sz: usize) -> Option<AvailElem> {
-        assert!((self.count as usize) == self.elems.len());
-        match self.find_elem(sz) {
-            None => None,
-            Some(idx) => {
-                self.count -= 1;
-                Some(self.elems.remove(idx))
-            }
-        }
+    pub fn remove_elem(&mut self, sz: u32) -> Option<AvailElem> {
+        remove_elem(&mut self.elems, sz)
     }
 
     pub fn serialize(
@@ -104,7 +91,7 @@ impl AvailBlock {
         writer: &mut impl Write,
     ) -> io::Result<()> {
         write32(endian, writer, self.sz)?;
-        write32(endian, writer, self.count)?;
+        write32(endian, writer, self.elems.len() as u32)?;
         match alignment {
             Alignment::Align32 => write32(endian, writer, self.next_block as u32)?,
             Alignment::Align64 => write64(endian, writer, self.next_block)?,
@@ -115,5 +102,68 @@ impl AvailBlock {
             .try_for_each(|elem| elem.serialize(alignment, endian, writer))?;
 
         Ok(())
+    }
+}
+
+pub fn remove_elem(elems: &mut Vec<AvailElem>, size: u32) -> Option<AvailElem> {
+    elems
+        .iter()
+        .position(|elem| elem.sz >= size)
+        .map(|index| elems.remove(index))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{remove_elem, AvailElem};
+
+    #[test]
+    fn remove_elem_found() {
+        let mut elems = vec![
+            AvailElem { addr: 1000, sz: 1 },
+            AvailElem { addr: 2000, sz: 2 },
+            AvailElem { addr: 3000, sz: 3 },
+        ];
+
+        assert_eq!(
+            remove_elem(&mut elems, 2),
+            Some(AvailElem { addr: 2000, sz: 2 })
+        );
+
+        assert_eq!(
+            elems,
+            vec![
+                AvailElem { addr: 1000, sz: 1 },
+                AvailElem { addr: 3000, sz: 3 },
+            ]
+        );
+    }
+
+    #[test]
+    fn remove_elem_not_found() {
+        let mut elems = vec![
+            AvailElem { addr: 1000, sz: 1 },
+            AvailElem { addr: 2000, sz: 2 },
+            AvailElem { addr: 3000, sz: 3 },
+        ];
+
+        assert_eq!(remove_elem(&mut elems, 4), None);
+
+        assert_eq!(
+            elems,
+            vec![
+                AvailElem { addr: 1000, sz: 1 },
+                AvailElem { addr: 2000, sz: 2 },
+                AvailElem { addr: 3000, sz: 3 },
+            ]
+        );
+    }
+
+    #[test]
+    fn remove_elem_empty() {
+        let mut elems = vec![];
+
+        assert_eq!(remove_elem(&mut elems, 4), None);
+
+        assert_eq!(elems, vec![]);
     }
 }

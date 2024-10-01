@@ -8,8 +8,38 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
+use std::io::{self, Read, Write};
+use std::iter::repeat;
+
 use crate::header::Header;
 use crate::{GDBM_HASH_BITS, KEY_SMALL};
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PartialKey([u8; KEY_SMALL]);
+
+impl PartialKey {
+    pub fn new(key: &[u8]) -> Self {
+        Self(
+            key.iter()
+                .cloned()
+                .chain(repeat(0))
+                .take(KEY_SMALL)
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        )
+    }
+
+    pub fn from_reader(reader: &mut impl Read) -> io::Result<Self> {
+        let mut buf = [0; KEY_SMALL];
+        reader.read_exact(&mut buf)?;
+        Ok(Self(buf))
+    }
+
+    pub fn serialize(&self, writer: &mut impl Write) -> io::Result<()> {
+        writer.write_all(&self.0)
+    }
+}
 
 // core gdbm hashing function
 pub fn hash_key(key: &[u8]) -> u32 {
@@ -38,15 +68,6 @@ pub fn key_loc(header: &Header, key: &[u8]) -> (u32, usize, u32) {
     (hash, bucket, ofs)
 }
 
-// does key match the partial-key field?
-pub fn partial_key_match(key_a: &[u8], partial_b: &[u8; KEY_SMALL]) -> bool {
-    if key_a.len() <= KEY_SMALL {
-        key_a == &partial_b[0..key_a.len()]
-    } else {
-        &key_a[0..KEY_SMALL] == partial_b
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,11 +77,5 @@ mod tests {
         assert_eq!(hash_key(b"hello"), 1730502474);
         assert_eq!(hash_key(b"hello\0"), 72084335);
         assert_eq!(hash_key(b""), 12345);
-    }
-
-    #[test]
-    fn test_partial_key_match() {
-        assert!(partial_key_match(b"123", b"123 "));
-        assert!(partial_key_match(b"123456", b"1234"));
     }
 }

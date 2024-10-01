@@ -25,7 +25,7 @@ mod ser;
 use avail::{AvailBlock, AvailElem};
 use bucket::{Bucket, BucketCache, BUCKET_AVAIL};
 use dir::{dir_reader, dirent_elem_size, Directory};
-use hashutil::{key_loc, partial_key_match};
+use hashutil::{key_loc, PartialKey};
 use header::Header;
 use ser::{write32, write64, Alignment, Endian};
 
@@ -411,6 +411,7 @@ impl Gdbm {
     // retrieve record data, and element offset in bucket, for given key
     fn int_get(&mut self, key: &[u8]) -> io::Result<Option<(usize, Vec<u8>)>> {
         let (key_hash, bucket_dir, elem_ofs_32) = key_loc(&self.header, key);
+        let key_start = PartialKey::new(key);
         let mut elem_ofs = elem_ofs_32 as usize;
 
         let cached = self.cache_load_bucket(bucket_dir)?;
@@ -430,7 +431,7 @@ impl Gdbm {
             // if quick-match made, ...
             if bucket_hash == key_hash
                 && key.len() == elem.key_size as usize
-                && partial_key_match(key, &elem.key_start)
+                && elem.key_start == key_start
             {
                 // read full entry to verify full match
                 let data = read_ofs(
@@ -493,7 +494,7 @@ impl Gdbm {
         let mut ext_elem = self
             .header
             .avail
-            .remove_elem(new_blk_sz)
+            .remove_elem(new_blk_sz as u32)
             .unwrap_or(self.new_block(new_blk_sz));
         let new_blk_ofs = ext_elem.addr;
 
@@ -517,13 +518,11 @@ impl Gdbm {
 
         // finalize new header avail block.  equates to
         //     head.next = second
-        hdr_blk.count = hdr_blk.elems.len() as u32;
         hdr_blk.next_block = new_blk_ofs;
 
         // finalize new extension avail block, linked-to by header block
         // as with any linked list insertion at-head, our 'next' equates to
         //     second.next = head.next
-        ext_blk.count = ext_blk.elems.len() as u32;
         ext_blk.next_block = self.header.avail.next_block;
 
         // size allocation may have allocated more space than we needed.
@@ -536,7 +535,6 @@ impl Gdbm {
             // insert, sorted by size
             let pos = hdr_blk.elems.binary_search(&ext_elem).unwrap_or_else(|e| e);
             hdr_blk.elems.insert(pos, ext_elem);
-            hdr_blk.count += 1;
         }
 
         // update avail block in header (deferred write)
@@ -576,10 +574,10 @@ impl Gdbm {
 
         // larger items go into the header avail list
         // (and also when bucket avail list is full)
-        if self.header.avail.count == self.header.avail.sz {
+        if self.header.avail.elems.len() == self.header.avail.sz as usize {
             self.push_avail_block()?;
         }
-        assert!(self.header.avail.count < self.header.avail.sz);
+        assert!(self.header.avail.elems.len() < self.header.avail.sz as usize);
 
         // insort into header avail vector, sorted by size
         let pos = self
@@ -589,7 +587,6 @@ impl Gdbm {
             .binary_search(&elem)
             .unwrap_or_else(|e| e);
         self.header.avail.elems.insert(pos, elem);
-        self.header.avail.count += 1;
 
         // header needs to be written
         self.header.dirty = true;

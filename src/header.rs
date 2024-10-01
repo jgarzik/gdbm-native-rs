@@ -127,7 +127,6 @@ impl Header {
             next_block,
             avail: AvailBlock {
                 sz: avail_sz,
-                count: avail_count,
                 next_block: avail_next_block,
                 elems,
             },
