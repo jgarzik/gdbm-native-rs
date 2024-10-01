@@ -493,7 +493,7 @@ impl Gdbm {
         let mut ext_elem = self
             .header
             .avail
-            .remove_elem(new_blk_sz)
+            .remove_elem(new_blk_sz as u32)
             .unwrap_or(self.new_block(new_blk_sz));
         let new_blk_ofs = ext_elem.addr;
 

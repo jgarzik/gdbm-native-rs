@@ -80,15 +80,8 @@ impl AvailBlock {
         }
     }
 
-    fn find_elem(&self, sz: usize) -> Option<usize> {
-        self.elems.iter().position(|elem| elem.sz as usize >= sz)
-    }
-
-    pub fn remove_elem(&mut self, sz: usize) -> Option<AvailElem> {
-        match self.find_elem(sz) {
-            None => None,
-            Some(idx) => Some(self.elems.remove(idx)),
-        }
+    pub fn remove_elem(&mut self, sz: u32) -> Option<AvailElem> {
+        remove_elem(&mut self.elems, sz)
     }
 
     pub fn serialize(
@@ -109,5 +102,68 @@ impl AvailBlock {
             .try_for_each(|elem| elem.serialize(alignment, endian, writer))?;
 
         Ok(())
+    }
+}
+
+pub fn remove_elem(elems: &mut Vec<AvailElem>, size: u32) -> Option<AvailElem> {
+    elems
+        .iter()
+        .position(|elem| elem.sz >= size)
+        .map(|index| elems.remove(index))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{remove_elem, AvailElem};
+
+    #[test]
+    fn remove_elem_found() {
+        let mut elems = vec![
+            AvailElem { addr: 1000, sz: 1 },
+            AvailElem { addr: 2000, sz: 2 },
+            AvailElem { addr: 3000, sz: 3 },
+        ];
+
+        assert_eq!(
+            remove_elem(&mut elems, 2),
+            Some(AvailElem { addr: 2000, sz: 2 })
+        );
+
+        assert_eq!(
+            elems,
+            vec![
+                AvailElem { addr: 1000, sz: 1 },
+                AvailElem { addr: 3000, sz: 3 },
+            ]
+        );
+    }
+
+    #[test]
+    fn remove_elem_not_found() {
+        let mut elems = vec![
+            AvailElem { addr: 1000, sz: 1 },
+            AvailElem { addr: 2000, sz: 2 },
+            AvailElem { addr: 3000, sz: 3 },
+        ];
+
+        assert_eq!(remove_elem(&mut elems, 4), None);
+
+        assert_eq!(
+            elems,
+            vec![
+                AvailElem { addr: 1000, sz: 1 },
+                AvailElem { addr: 2000, sz: 2 },
+                AvailElem { addr: 3000, sz: 3 },
+            ]
+        );
+    }
+
+    #[test]
+    fn remove_elem_empty() {
+        let mut elems = vec![];
+
+        assert_eq!(remove_elem(&mut elems, 4), None);
+
+        assert_eq!(elems, vec![]);
     }
 }
