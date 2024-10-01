@@ -25,7 +25,7 @@ mod ser;
 use avail::{AvailBlock, AvailElem};
 use bucket::{Bucket, BucketCache, BUCKET_AVAIL};
 use dir::{dir_reader, dirent_elem_size, Directory};
-use hashutil::{key_loc, partial_key_match};
+use hashutil::{key_loc, PartialKey};
 use header::Header;
 use ser::{write32, write64, Alignment, Endian};
 
@@ -411,6 +411,7 @@ impl Gdbm {
     // retrieve record data, and element offset in bucket, for given key
     fn int_get(&mut self, key: &[u8]) -> io::Result<Option<(usize, Vec<u8>)>> {
         let (key_hash, bucket_dir, elem_ofs_32) = key_loc(&self.header, key);
+        let key_start = PartialKey::new(key);
         let mut elem_ofs = elem_ofs_32 as usize;
 
         let cached = self.cache_load_bucket(bucket_dir)?;
@@ -430,7 +431,7 @@ impl Gdbm {
             // if quick-match made, ...
             if bucket_hash == key_hash
                 && key.len() == elem.key_size as usize
-                && partial_key_match(key, &elem.key_start)
+                && elem.key_start == key_start
             {
                 // read full entry to verify full match
                 let data = read_ofs(

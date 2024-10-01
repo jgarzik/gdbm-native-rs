@@ -11,21 +11,32 @@
 use std::collections::HashMap;
 use std::io::{self, Error, ErrorKind, Read, Write};
 
+use crate::hashutil::{hash_key, PartialKey};
 use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
-use crate::{AvailElem, Header, KEY_SMALL};
+use crate::{AvailElem, Header};
 
 pub const BUCKET_AVAIL: usize = 6;
 
 #[derive(Debug, Clone)]
 pub struct BucketElement {
     pub hash: u32,
-    pub key_start: [u8; 4],
+    pub key_start: PartialKey,
     pub data_ofs: u64,
     pub key_size: u32,
     pub data_size: u32,
 }
 
 impl BucketElement {
+    pub fn new(key: &[u8], data: &[u8], offset: u64) -> Self {
+        Self {
+            hash: hash_key(key),
+            key_start: PartialKey::new(key),
+            data_ofs: offset,
+            key_size: key.len() as u32,
+            data_size: data.len() as u32,
+        }
+    }
+
     pub fn from_reader(
         alignment: Alignment,
         endian: Endian,
@@ -33,8 +44,7 @@ impl BucketElement {
     ) -> io::Result<Self> {
         let hash = read32(endian, reader)?;
 
-        let mut key_start = [0; KEY_SMALL];
-        reader.read_exact(&mut key_start)?;
+        let key_start = PartialKey::from_reader(reader)?;
 
         let data_ofs = match alignment {
             Alignment::Align32 => (read32(endian, reader)?) as u64,
@@ -61,7 +71,7 @@ impl BucketElement {
     ) -> io::Result<()> {
         write32(endian, writer, self.hash)?;
 
-        writer.write_all(&self.key_start)?;
+        self.key_start.serialize(writer)?;
 
         match alignment {
             Alignment::Align32 => write32(endian, writer, self.data_ofs as u32)?,
