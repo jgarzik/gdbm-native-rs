@@ -67,7 +67,6 @@ impl AvailElem {
 #[derive(Debug)]
 pub struct AvailBlock {
     pub sz: u32,
-    pub count: u32,
     pub next_block: u64,
     pub elems: Vec<AvailElem>,
 }
@@ -76,7 +75,6 @@ impl AvailBlock {
     pub fn new(sz: u32) -> AvailBlock {
         AvailBlock {
             sz,
-            count: 0,
             next_block: 0,
             elems: Vec::new(),
         }
@@ -87,13 +85,9 @@ impl AvailBlock {
     }
 
     pub fn remove_elem(&mut self, sz: usize) -> Option<AvailElem> {
-        assert!((self.count as usize) == self.elems.len());
         match self.find_elem(sz) {
             None => None,
-            Some(idx) => {
-                self.count -= 1;
-                Some(self.elems.remove(idx))
-            }
+            Some(idx) => Some(self.elems.remove(idx)),
         }
     }
 
@@ -104,7 +98,7 @@ impl AvailBlock {
         writer: &mut impl Write,
     ) -> io::Result<()> {
         write32(endian, writer, self.sz)?;
-        write32(endian, writer, self.count)?;
+        write32(endian, writer, self.elems.len() as u32)?;
         match alignment {
             Alignment::Align32 => write32(endian, writer, self.next_block as u32)?,
             Alignment::Align64 => write64(endian, writer, self.next_block)?,

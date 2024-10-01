@@ -517,13 +517,11 @@ impl Gdbm {
 
         // finalize new header avail block.  equates to
         //     head.next = second
-        hdr_blk.count = hdr_blk.elems.len() as u32;
         hdr_blk.next_block = new_blk_ofs;
 
         // finalize new extension avail block, linked-to by header block
         // as with any linked list insertion at-head, our 'next' equates to
         //     second.next = head.next
-        ext_blk.count = ext_blk.elems.len() as u32;
         ext_blk.next_block = self.header.avail.next_block;
 
         // size allocation may have allocated more space than we needed.
@@ -536,7 +534,6 @@ impl Gdbm {
             // insert, sorted by size
             let pos = hdr_blk.elems.binary_search(&ext_elem).unwrap_or_else(|e| e);
             hdr_blk.elems.insert(pos, ext_elem);
-            hdr_blk.count += 1;
         }
 
         // update avail block in header (deferred write)
@@ -576,10 +573,10 @@ impl Gdbm {
 
         // larger items go into the header avail list
         // (and also when bucket avail list is full)
-        if self.header.avail.count == self.header.avail.sz {
+        if self.header.avail.elems.len() == self.header.avail.sz as usize {
             self.push_avail_block()?;
         }
-        assert!(self.header.avail.count < self.header.avail.sz);
+        assert!(self.header.avail.elems.len() < self.header.avail.sz as usize);
 
         // insort into header avail vector, sorted by size
         let pos = self
@@ -589,7 +586,6 @@ impl Gdbm {
             .binary_search(&elem)
             .unwrap_or_else(|e| e);
         self.header.avail.elems.insert(pos, elem);
-        self.header.avail.count += 1;
 
         // header needs to be written
         self.header.dirty = true;
