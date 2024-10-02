@@ -78,7 +78,7 @@ pub struct Gdbm {
     cur_bucket_ofs: u64,
     cur_bucket_dir: usize,
 
-    iter_key: Vec<u8>,
+    iter_key: Option<Vec<u8>>,
 }
 
 impl Gdbm {
@@ -116,7 +116,7 @@ impl Gdbm {
             bucket_cache: BucketCache::new(),
             cur_bucket_ofs,
             cur_bucket_dir,
-            iter_key: Vec::new(),
+            iter_key: None,
         })
     }
 
@@ -720,7 +720,7 @@ impl Gdbm {
 
     // API: reset iterator state
     pub fn iter_reset(&mut self) {
-        self.iter_key.clear();
+        self.iter_key = None;
     }
 }
 
@@ -728,17 +728,13 @@ impl Iterator for Gdbm {
     type Item = Vec<u8>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let key_res = if self.iter_key.is_empty() {
-            self.first_key().expect("DB first_key I/O error")
-        } else {
-            let ikey = self.iter_key.clone();
-            self.next_key(&ikey).expect("DB next_key I/O error")
+        let next_key = match self.iter_key.take() {
+            None => self.first_key().expect("DB first_key I/O error"),
+            Some(key) => self.next_key(&key).expect("DB next_key I/O error"),
         };
 
-        if key_res.is_none() {
-            self.iter_reset();
-        }
+        self.iter_key = next_key.clone();
 
-        key_res
+        next_key
     }
 }
