@@ -80,6 +80,35 @@ impl AvailBlock {
         }
     }
 
+    pub fn from_reader(
+        alignment: Alignment,
+        endian: Endian,
+        reader: &mut impl Read,
+    ) -> io::Result<Self> {
+        let sz = read32(endian, reader)?;
+        let count = read32(endian, reader)?;
+
+        let next_block = match alignment {
+            Alignment::Align32 => (read32(endian, reader)?) as u64,
+            Alignment::Align64 => read64(endian, reader)?,
+        };
+
+        let mut elems = (0..count)
+            .map(|_| AvailElem::from_reader(alignment, endian, reader))
+            .collect::<io::Result<Vec<_>>>()?;
+
+        // maintain intrinsic: avail is always sorted by size
+        elems.sort();
+
+        // todo: check for overlapping segments
+
+        Ok(Self {
+            sz,
+            next_block,
+            elems,
+        })
+    }
+
     pub fn remove_elem(&mut self, sz: u32) -> Option<AvailElem> {
         remove_elem(&mut self.elems, sz)
     }

@@ -215,9 +215,4 @@ impl BucketCache {
     pub fn insert(&mut self, bucket_ofs: u64, bucket: Bucket) {
         self.bucket_map.insert(bucket_ofs, bucket);
     }
-
-    pub fn update(&mut self, bucket_ofs: u64, bucket: Bucket) {
-        self.bucket_map.insert(bucket_ofs, bucket);
-        self.dirty(bucket_ofs);
-    }
 }

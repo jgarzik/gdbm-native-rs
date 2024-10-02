@@ -78,7 +78,7 @@ pub struct Gdbm {
     cur_bucket_ofs: u64,
     cur_bucket_dir: usize,
 
-    iter_key: Vec<u8>,
+    iter_key: Option<Vec<u8>>,
 }
 
 impl Gdbm {
@@ -116,7 +116,7 @@ impl Gdbm {
             bucket_cache: BucketCache::new(),
             cur_bucket_ofs,
             cur_bucket_dir,
-            iter_key: Vec::new(),
+            iter_key: None,
         })
     }
 
@@ -283,11 +283,31 @@ impl Gdbm {
         Ok(true)
     }
 
-    // return a clone of the current bucket
-    fn get_current_bucket(&self) -> Bucket {
+    // return a reference to the current bucket
+    fn current_bucket(&self) -> &Bucket {
         // note: assumes will be called following cache_load_bucket() to cache
         // assignment of dir[0] to cur_bucket at Gdbm{} creation not sufficient.
-        self.bucket_cache.bucket_map[&self.cur_bucket_ofs].clone()
+        let bucket = self
+            .bucket_cache
+            .bucket_map
+            .get(&self.cur_bucket_ofs)
+            .unwrap();
+
+        bucket
+    }
+
+    // return a mutable reference to the current bucket
+    fn current_bucket_mut(&mut self) -> &mut Bucket {
+        // note: assumes will be called following cache_load_bucket() to cache
+        // assignment of dir[0] to cur_bucket at Gdbm{} creation not sufficient.
+        self.bucket_cache.dirty(self.cur_bucket_ofs);
+        let bucket = self
+            .bucket_cache
+            .bucket_map
+            .get_mut(&self.cur_bucket_ofs)
+            .unwrap();
+
+        bucket
     }
 
     fn dir_max_elem(&self) -> usize {
@@ -320,7 +340,7 @@ impl Gdbm {
         let dir_max_elem = self.dir_max_elem();
         while cur_dir < dir_max_elem {
             self.cache_load_bucket(cur_dir)?;
-            let bucket = self.get_current_bucket();
+            let bucket = self.current_bucket();
             len += bucket.count as usize;
 
             cur_dir = self.next_bucket_dir(cur_dir);
@@ -331,26 +351,9 @@ impl Gdbm {
 
     // given a bucket ptr, return the next key
     fn int_next_key(&mut self, elem_opt: Option<usize>) -> io::Result<Option<Vec<u8>>> {
-        let mut init_elem_ofs = false;
-        let mut elem_ofs: usize = 0;
-        let mut bucket = self.get_current_bucket();
-        let mut found = false;
-        while !found {
-            // setup our bucket ptr, if first time into loop
-            if !init_elem_ofs {
-                init_elem_ofs = true;
-                match elem_opt {
-                    None => {
-                        elem_ofs = 0;
-                    }
-                    Some(v) => {
-                        elem_ofs = v + 1;
-                    }
-                }
-            } else {
-                elem_ofs += 1;
-            }
-
+        let mut elem_ofs = elem_opt.map(|n| n + 1).unwrap_or_default();
+        let mut found = None;
+        while found.is_none() {
             // finished current bucket. get next bucket.
             if elem_ofs == self.header.bucket_elems as usize {
                 elem_ofs = 0;
@@ -359,23 +362,26 @@ impl Gdbm {
                 // the current bucket, so skip dups.
                 let cur_dir = self.next_bucket_dir(self.cur_bucket_dir);
                 if cur_dir == self.dir.len() {
-                    return Ok(None); // reached end of bucket dir - no more keys
+                    break; // reached end of bucket dir - no more keys
                 }
 
                 // load new bucket
                 self.cache_load_bucket(cur_dir)?;
-                bucket = self.get_current_bucket();
             }
 
             // any valid hash will do
-            found = bucket.tab[elem_ofs].hash != 0xffffffff
+            let elem = &self.current_bucket().tab[elem_ofs];
+            found = (elem.hash != 0xffffffff).then_some((elem.data_ofs, elem.key_size));
+
+            elem_ofs += 1;
         }
 
-        // read and return first half of key+value pair
-        let elem = &bucket.tab[elem_ofs];
-        let data = read_ofs(&mut self.f, elem.data_ofs, elem.key_size as usize)?;
+        let data = match found {
+            Some((offset, size)) => Some(read_ofs(&mut self.f, offset, size as usize)?),
+            None => None,
+        };
 
-        Ok(Some(data))
+        Ok(data)
     }
 
     // API: return first key in database, for sequential iteration start.
@@ -410,50 +416,45 @@ impl Gdbm {
 
     // retrieve record data, and element offset in bucket, for given key
     fn int_get(&mut self, key: &[u8]) -> io::Result<Option<(usize, Vec<u8>)>> {
-        let (key_hash, bucket_dir, elem_ofs_32) = key_loc(&self.header, key);
+        let (key_hash, bucket_dir, elem_ofs) = key_loc(&self.header, key);
         let key_start = PartialKey::new(key);
-        let mut elem_ofs = elem_ofs_32 as usize;
 
-        let cached = self.cache_load_bucket(bucket_dir)?;
-        if !cached {
+        println!("has: {}, key: {:?}", key_hash, key);
+
+        if !self.cache_load_bucket(bucket_dir)? {
             return Ok(None);
         } // bucket not found -> key not found
 
-        let bucket = self.get_current_bucket();
+        let bucket_entries = (0..self.header.bucket_elems)
+            .map(|index| ((index + elem_ofs) % self.header.bucket_elems) as usize)
+            .map(|offset| (offset, self.current_bucket().tab[offset].clone()))
+            .take_while(|(_, elem)| elem.hash != 0xffffffff)
+            .filter(|(_, elem)| {
+                elem.hash == key_hash
+                    && elem.key_size == key.len() as u32
+                    && elem.key_start == key_start
+            })
+            .collect::<Vec<_>>();
 
-        // loop through bucket, starting at elem_ofs position
-        let home_ofs = elem_ofs;
-        let mut bucket_hash = bucket.tab[elem_ofs].hash;
-        while bucket_hash != 0xffffffff {
-            let elem = &bucket.tab[elem_ofs];
-            // println!("elem={:?}", elem);
-
-            // if quick-match made, ...
-            if bucket_hash == key_hash
-                && key.len() == elem.key_size as usize
-                && elem.key_start == key_start
-            {
-                // read full entry to verify full match
-                let data = read_ofs(
+        let data_entries = bucket_entries
+            .into_iter()
+            .map(|(offset, elem)| {
+                read_ofs(
                     &mut self.f,
                     elem.data_ofs,
                     (elem.key_size + elem.data_size) as usize,
-                )?;
-                if &data[0..key.len()] == key {
-                    return Ok(Some((elem_ofs, data[key.len()..].to_vec())));
-                }
-            }
+                )
+                .map(|data| (offset, data))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
 
-            // next bucket slot (possibly warping back to beginning)
-            elem_ofs = (elem_ofs + 1) % (self.header.bucket_elems as usize);
-            if elem_ofs == home_ofs {
-                break;
-            }
+        let result = data_entries
+            .into_iter()
+            .filter(|(_, data)| data[..key.len()] == *key)
+            .map(|(offset, data)| (offset, data[key.len()..].to_vec()))
+            .next();
 
-            bucket_hash = bucket.tab[elem_ofs].hash;
-        }
-
-        Ok(None)
+        Ok(result)
     }
 
     // API: Fetch record value, given a key
@@ -559,14 +560,11 @@ impl Gdbm {
         let elem = AvailElem { sz, addr };
 
         // smaller items go into bucket avail list
-        let mut bucket = self.get_current_bucket();
+        let bucket = self.current_bucket();
         if sz < self.header.block_sz && bucket.avail.len() < BUCKET_AVAIL {
             // insort into bucket avail vector, sorted by size
             let pos = bucket.avail.binary_search(&elem).unwrap_or_else(|e| e);
-            bucket.avail.insert(pos, elem);
-
-            // store updated bucket in cache, and mark dirty
-            self.bucket_cache.update(self.cur_bucket_ofs, bucket);
+            self.current_bucket_mut().avail.insert(pos, elem);
 
             // success (and no I/O performed)
             return Ok(());
@@ -682,7 +680,7 @@ impl Gdbm {
         let (mut elem_ofs, data) = get_opt.unwrap();
 
         let bucket_elems = self.header.bucket_elems as usize;
-        let mut bucket = self.get_current_bucket();
+        let bucket = self.current_bucket_mut();
 
         // remember element to be removed
         let elem = bucket.tab[elem_ofs].clone();
@@ -706,9 +704,6 @@ impl Gdbm {
             elem_ofs = (elem_ofs + 1) % bucket_elems;
         }
 
-        // store updated bucket in cache, and mark dirty
-        self.bucket_cache.update(self.cur_bucket_ofs, bucket);
-
         // release record bytes to available-space pool
         self.free_record(elem.data_ofs, elem.key_size + elem.data_size)?;
 
@@ -720,7 +715,7 @@ impl Gdbm {
 
     // API: reset iterator state
     pub fn iter_reset(&mut self) {
-        self.iter_key.clear();
+        self.iter_key = None;
     }
 }
 
@@ -728,17 +723,13 @@ impl Iterator for Gdbm {
     type Item = Vec<u8>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let key_res = if self.iter_key.is_empty() {
-            self.first_key().expect("DB first_key I/O error")
-        } else {
-            let ikey = self.iter_key.clone();
-            self.next_key(&ikey).expect("DB next_key I/O error")
+        let next_key = match self.iter_key.take() {
+            None => self.first_key().expect("DB first_key I/O error"),
+            Some(key) => self.next_key(&key).expect("DB next_key I/O error"),
         };
 
-        if key_res.is_none() {
-            self.iter_reset();
-        }
+        self.iter_key.clone_from(&next_key);
 
-        key_res
+        next_key
     }
 }

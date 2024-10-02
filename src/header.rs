@@ -14,8 +14,7 @@ use crate::dir::build_dir_size;
 use crate::magic::Magic;
 use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
 use crate::{
-    AvailBlock, AvailElem, GDBM_AVAIL_ELEM_SZ, GDBM_BUCKET_ELEM_SZ, GDBM_HASH_BUCKET_SZ,
-    GDBM_HDR_SZ,
+    AvailBlock, GDBM_AVAIL_ELEM_SZ, GDBM_BUCKET_ELEM_SZ, GDBM_HASH_BUCKET_SZ, GDBM_HDR_SZ,
 };
 
 #[derive(Debug)]
@@ -54,9 +53,7 @@ impl Header {
         let bucket_sz = read32(magic.endian(), reader)?;
         let bucket_elems = read32(magic.endian(), reader)?;
         let next_block = read64(magic.endian(), reader)?;
-        let avail_sz = read32(magic.endian(), reader)?;
-        let avail_count = read32(magic.endian(), reader)?;
-        let avail_next_block = read64(magic.endian(), reader)?;
+        let avail = AvailBlock::from_reader(magic.alignment(), magic.endian(), reader)?;
 
         if !(block_sz > GDBM_HDR_SZ && block_sz - GDBM_HDR_SZ >= GDBM_AVAIL_ELEM_SZ) {
             return Err(Error::new(ErrorKind::Other, "bad header: blksz"));
@@ -89,29 +86,20 @@ impl Header {
             return Err(Error::new(ErrorKind::Other, "bad header: bucket elem"));
         }
 
-        if ((block_sz - GDBM_HDR_SZ) / GDBM_AVAIL_ELEM_SZ + 1) != avail_sz {
+        if avail
+            .elems
+            .iter()
+            .any(|elem| elem.addr < bucket_sz as u64 || elem.addr + elem.sz as u64 > next_block)
+        {
+            return Err(Error::new(ErrorKind::Other, "bad header: avail el"));
+        }
+
+        if ((block_sz - GDBM_HDR_SZ) / GDBM_AVAIL_ELEM_SZ + 1) != avail.sz {
             return Err(Error::new(ErrorKind::Other, "bad header: avail sz"));
         }
 
-        if !(avail_sz > 1 && avail_count <= avail_sz) {
+        if !(avail.sz > 1 && avail.elems.len() as u32 <= avail.sz) {
             return Err(Error::new(ErrorKind::Other, "bad header: avail sz/ct"));
-        }
-
-        let mut elems: Vec<AvailElem> = Vec::new();
-        for _idx in 0..avail_count {
-            let av_elem = AvailElem::from_reader(magic.alignment(), magic.endian(), reader)?;
-            elems.push(av_elem);
-        }
-
-        // maintain intrinsic: avail is always sorted by size
-        elems.sort();
-
-        // todo: check for overlapping segments
-
-        for elem in elems.iter() {
-            if !(elem.addr >= bucket_sz.into() && elem.addr + (elem.sz as u64) <= next_block) {
-                return Err(Error::new(ErrorKind::Other, "bad header: avail el"));
-            }
         }
 
         println!("magname {}", magic);
@@ -125,11 +113,7 @@ impl Header {
             bucket_sz,
             bucket_elems,
             next_block,
-            avail: AvailBlock {
-                sz: avail_sz,
-                next_block: avail_next_block,
-                elems,
-            },
+            avail,
             dirty: false,
         })
     }
