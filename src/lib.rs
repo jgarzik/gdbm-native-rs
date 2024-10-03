@@ -492,11 +492,11 @@ impl Gdbm {
         // having calculated size of 1st extension block (new_blk_sz),
         // - look in free list for that amount of space
         // - if not, get new space from end of file
-        let mut ext_elem = self
-            .header
-            .avail
-            .remove_elem(new_blk_sz as u32)
-            .unwrap_or(self.new_block(new_blk_sz));
+        let mut ext_elem = match self.header.avail.remove_elem(new_blk_sz as u32) {
+            Some(elem) => elem,
+            None => self.new_block(new_blk_sz),
+        };
+
         let new_blk_ofs = ext_elem.addr;
 
         let mut hdr_blk = AvailBlock::new(self.header.avail.sz);
