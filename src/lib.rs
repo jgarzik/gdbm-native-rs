@@ -24,7 +24,7 @@ mod magic;
 mod ser;
 use avail::{AvailBlock, AvailElem};
 use bucket::{Bucket, BucketCache, BUCKET_AVAIL};
-use dir::{dir_reader, dirent_elem_size, Directory};
+use dir::Directory;
 use hashutil::{key_loc, PartialKey};
 use header::Header;
 use ser::{write32, write64, Alignment, Endian};
@@ -73,7 +73,6 @@ pub struct Gdbm {
     f: std::fs::File,
     pub header: Header,
     pub dir: Directory,
-    dir_dirty: bool,
     bucket_cache: BucketCache,
     cur_bucket_ofs: u64,
     cur_bucket_dir: usize,
@@ -101,9 +100,11 @@ impl Gdbm {
         println!("{:?}", header);
 
         // read gdbm hash directory
-        let dir = dir_reader(&mut f, &header)?;
+        f.seek(SeekFrom::Start(header.dir_ofs))?;
+        let dir =
+            Directory::from_reader(header.alignment(), header.endian(), header.dir_sz, &mut f)?;
         let cur_bucket_dir: usize = 0;
-        let cur_bucket_ofs = dir[cur_bucket_dir];
+        let cur_bucket_ofs = dir.dir[cur_bucket_dir];
 
         // success; create new Gdbm object
         Ok(Gdbm {
@@ -111,8 +112,7 @@ impl Gdbm {
             cfg: *dbcfg,
             f,
             header,
-            dir: Directory { dir },
-            dir_dirty: false,
+            dir,
             bucket_cache: BucketCache::new(),
             cur_bucket_ofs,
             cur_bucket_dir,
@@ -309,14 +309,10 @@ impl Gdbm {
         bucket
     }
 
-    fn dir_max_elem(&self) -> usize {
-        self.header.dir_sz as usize / dirent_elem_size(self.header.alignment())
-    }
-
     // since one bucket dir entry may duplicate another,
     // this function returns the next non-dup bucket dir
     fn next_bucket_dir(&self, bucket_dir_in: usize) -> usize {
-        let dir_max_elem = self.dir_max_elem();
+        let dir_max_elem = self.dir.dir.len();
         if bucket_dir_in >= dir_max_elem {
             return dir_max_elem;
         }
@@ -336,7 +332,7 @@ impl Gdbm {
     pub fn len(&mut self) -> io::Result<usize> {
         let mut len: usize = 0;
         let mut cur_dir: usize = 0;
-        let dir_max_elem = self.dir_max_elem();
+        let dir_max_elem = self.dir.dir.len();
         while cur_dir < dir_max_elem {
             self.cache_load_bucket(cur_dir)?;
             let bucket = self.current_bucket();
@@ -593,7 +589,7 @@ impl Gdbm {
 
     // write out any cached, not-yet-written metadata and data to storage
     fn write_dir(&mut self) -> io::Result<()> {
-        if !self.dir_dirty {
+        if !self.dir.dirty {
             return Ok(());
         }
 
@@ -601,7 +597,7 @@ impl Gdbm {
         self.dir
             .serialize(self.header.alignment(), self.header.endian(), &mut self.f)?;
 
-        self.dir_dirty = false;
+        self.dir.dirty = false;
 
         Ok(())
     }
