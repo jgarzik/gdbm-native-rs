@@ -481,43 +481,43 @@ impl Gdbm {
 
     // Free list is full.  Split in half, and store 1/2 in new list block.
     fn push_avail_block(&mut self) -> io::Result<()> {
-        let new_blk_sz = ((self.header.avail.sz * GDBM_AVAIL_ELEM_SZ) / 2) + GDBM_AVAIL_HDR_SZ;
-        let new_blk_ofs = self.allocate_record(new_blk_sz)?;
-
-        let mut hdr_blk = AvailBlock::new(self.header.avail.sz);
-        let mut ext_blk = AvailBlock::new(self.header.avail.sz);
-
-        // divide avail into 2 vectors.  elements are sorted by size,
-        // so we perform A/B push, rather than simply slice first 1/2 of vec
-        self.header
-            .avail
-            .elems
-            .iter()
-            .enumerate()
-            .for_each(|(index, elem)| {
-                if index & 0x1 == 0 {
-                    hdr_blk.elems.push(elem.clone());
-                } else {
-                    ext_blk.elems.push(elem.clone());
-                }
-            });
-
-        // finalize new header avail block.  equates to
-        //     head.next = second
-        hdr_blk.next_block = new_blk_ofs;
-
-        // finalize new extension avail block, linked-to by header block
-        // as with any linked list insertion at-head, our 'next' equates to
-        //     second.next = head.next
-        ext_blk.next_block = self.header.avail.next_block;
-
-        // update avail block in header (deferred write)
-        self.header.avail = hdr_blk;
-        self.header.dirty = true;
+        let (header_elems, new_elems) = avail::partition_elems(&self.header.avail.elems);
 
         // write extension block to storage (immediately)
-        self.f.seek(SeekFrom::Start(new_blk_ofs))?;
-        ext_blk.serialize(self.header.alignment(), self.header.endian(), &mut self.f)?;
+        let new_blk_ofs = {
+            let block = AvailBlock::new(
+                new_elems.len() as u32,
+                self.header.avail.next_block,
+                new_elems,
+            );
+            let offset = self.allocate_record(block.extent())?;
+            self.f.seek(SeekFrom::Start(offset))?;
+            block.serialize(self.header.alignment(), self.header.endian(), &mut self.f)?;
+            offset
+        };
+
+        self.header.avail = AvailBlock::new(self.header.avail.sz, new_blk_ofs, header_elems);
+        self.header.dirty = true;
+
+        Ok(())
+    }
+
+    // pops a block of the avail block list into the header block, only if it can accommodate it
+    fn pop_avail_block(&mut self) -> io::Result<()> {
+        let next_addr = self.header.avail.next_block;
+
+        let next = {
+            self.f.seek(SeekFrom::Start(self.header.avail.next_block))?;
+            AvailBlock::from_reader(self.header.alignment(), self.header.endian(), &mut self.f)?
+        };
+
+        if let Some(block) = self.header.avail.merge(&next) {
+            self.header.avail = block;
+            self.header.dirty = true;
+
+            // free the block we just merged
+            self.free_record(next_addr, GDBM_AVAIL_HDR_SZ + next.sz * GDBM_AVAIL_ELEM_SZ)?;
+        }
 
         Ok(())
     }
@@ -711,26 +711,6 @@ impl Gdbm {
         }
 
         Ok(elem.map(|elem| (elem.addr, elem.sz)))
-    }
-
-    // pops a block of the avail block list into the header block, only if it can accommodate it
-    fn pop_avail_block(&mut self) -> io::Result<()> {
-        let next_addr = self.header.avail.next_block;
-
-        let next = {
-            self.f.seek(SeekFrom::Start(self.header.avail.next_block))?;
-            AvailBlock::from_reader(self.header.alignment(), self.header.endian(), &mut self.f)?
-        };
-
-        if let Some(block) = self.header.avail.merge(&next) {
-            self.header.avail = block;
-            self.header.dirty = true;
-
-            // free the block we just merged
-            self.free_record(next_addr, GDBM_AVAIL_HDR_SZ + next.sz * GDBM_AVAIL_ELEM_SZ)?;
-        }
-
-        Ok(())
     }
 
     fn allocate_record(&mut self, size: u32) -> io::Result<u64> {

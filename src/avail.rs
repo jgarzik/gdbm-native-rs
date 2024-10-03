@@ -11,6 +11,7 @@
 use std::io::{self, Read, Write};
 
 use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
+use crate::{GDBM_AVAIL_ELEM_SZ, GDBM_AVAIL_HDR_SZ};
 
 #[derive(Default, Debug, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct AvailElem {
@@ -72,11 +73,11 @@ pub struct AvailBlock {
 }
 
 impl AvailBlock {
-    pub fn new(sz: u32) -> AvailBlock {
-        AvailBlock {
+    pub fn new(sz: u32, next_block: u64, elems: Vec<AvailElem>) -> Self {
+        Self {
             sz,
-            next_block: 0,
-            elems: Vec::new(),
+            next_block,
+            elems,
         }
     }
 
@@ -176,6 +177,11 @@ impl AvailBlock {
             elems,
         })
     }
+
+    // extent returns the size of this block when serialized
+    pub fn extent(&self) -> u32 {
+        GDBM_AVAIL_HDR_SZ + self.elems.len() as u32 * GDBM_AVAIL_ELEM_SZ
+    }
 }
 
 pub fn remove_elem(elems: &mut Vec<AvailElem>, size: u32) -> Option<AvailElem> {
@@ -183,6 +189,13 @@ pub fn remove_elem(elems: &mut Vec<AvailElem>, size: u32) -> Option<AvailElem> {
         .iter()
         .position(|elem| elem.sz >= size)
         .map(|index| elems.remove(index))
+}
+
+pub fn partition_elems(elems: &[AvailElem]) -> (Vec<AvailElem>, Vec<AvailElem>) {
+    let one = elems.iter().step_by(2).cloned().collect::<Vec<_>>();
+    let two = elems.iter().skip(1).step_by(2).cloned().collect::<Vec<_>>();
+
+    (one, two)
 }
 
 #[cfg(test)]
@@ -242,7 +255,6 @@ mod tests {
 
     #[test]
     fn test_merge_block() {
-        #[derive(PartialEq)]
         struct Test<'a> {
             name: &'a str,
             first: super::AvailBlock,
@@ -301,6 +313,65 @@ mod tests {
                 panic!(
                     "test \"{}\" failed: expected:\n{:?}\ngot:\n{:?}",
                     test.name, test.expected, merged
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn test_partition_elements() {
+        use super::AvailElem;
+        struct Test<'a> {
+            name: &'a str,
+            elements: Vec<AvailElem>,
+            expected: (Vec<AvailElem>, Vec<AvailElem>),
+        }
+
+        [
+            Test {
+                name: "empty",
+                elements: vec![],
+                expected: (vec![], vec![]),
+            },
+            Test {
+                name: "one",
+                elements: vec![AvailElem { addr: 0, sz: 0 }],
+                expected: (vec![AvailElem { addr: 0, sz: 0 }], vec![]),
+            },
+            Test {
+                name: "two",
+                elements: vec![AvailElem { addr: 0, sz: 0 }, AvailElem { addr: 1, sz: 1 }],
+                expected: (
+                    vec![AvailElem { addr: 0, sz: 0 }],
+                    vec![AvailElem { addr: 1, sz: 1 }],
+                ),
+            },
+            Test {
+                name: "five",
+                elements: vec![
+                    AvailElem { addr: 0, sz: 0 },
+                    AvailElem { addr: 1, sz: 1 },
+                    AvailElem { addr: 2, sz: 2 },
+                    AvailElem { addr: 3, sz: 3 },
+                    AvailElem { addr: 4, sz: 4 },
+                ],
+                expected: (
+                    vec![
+                        AvailElem { addr: 0, sz: 0 },
+                        AvailElem { addr: 2, sz: 2 },
+                        AvailElem { addr: 4, sz: 4 },
+                    ],
+                    vec![AvailElem { addr: 1, sz: 1 }, AvailElem { addr: 3, sz: 3 }],
+                ),
+            },
+        ]
+        .into_iter()
+        .for_each(|test| {
+            let partitioned = super::partition_elems(&test.elements);
+            if partitioned != test.expected {
+                panic!(
+                    "test \"{}\" failed: expected:\n{:?}\ngot:\n{:?}",
+                    test.name, test.expected, partitioned
                 );
             }
         });
