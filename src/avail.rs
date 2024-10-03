@@ -64,7 +64,7 @@ impl AvailElem {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct AvailBlock {
     pub sz: u32,
     pub next_block: u64,
@@ -132,6 +132,50 @@ impl AvailBlock {
 
         Ok(())
     }
+
+    // Merge elements from self and other and retuen a new AvailableBlock.
+    // Retuns Some(block) if combined elements fit in bolck, otherwise None.
+    pub fn merge(&self, other: &Self) -> Option<Self> {
+        // gather offsets and length from both blocks
+        let mut offsets_and_lengths = self
+            .elems
+            .iter()
+            .chain(other.elems.iter())
+            .map(|AvailElem { sz, addr }| (*addr, *sz))
+            .collect::<Vec<_>>();
+
+        // sort by offsets
+        offsets_and_lengths.sort();
+
+        // fold resulting regions whilst joining adjacent regions
+        let mut elems = offsets_and_lengths.into_iter().fold(
+            Vec::new(),
+            |mut elems: Vec<AvailElem>, (addr, sz)| {
+                let last = elems.pop();
+                match last {
+                    None => vec![AvailElem { addr, sz }],
+                    Some(last) if last.addr + last.sz as u64 == addr => {
+                        vec![AvailElem {
+                            addr: last.addr,
+                            sz: last.sz + sz,
+                        }]
+                    }
+                    Some(last) => vec![last, AvailElem { addr, sz }],
+                }
+                .into_iter()
+                .for_each(|elem| elems.push(elem));
+                elems
+            },
+        );
+
+        elems.sort();
+
+        (elems.len() as u32 <= self.sz).then_some(AvailBlock {
+            sz: self.sz,
+            next_block: other.next_block,
+            elems,
+        })
+    }
 }
 
 pub fn remove_elem(elems: &mut Vec<AvailElem>, size: u32) -> Option<AvailElem> {
@@ -194,5 +238,71 @@ mod tests {
         assert_eq!(remove_elem(&mut elems, 4), None);
 
         assert_eq!(elems, vec![]);
+    }
+
+    #[test]
+    fn test_merge_block() {
+        #[derive(PartialEq)]
+        struct Test<'a> {
+            name: &'a str,
+            first: super::AvailBlock,
+            second: super::AvailBlock,
+            expected: Option<super::AvailBlock>,
+        }
+
+        fn block(elems: &[(u64, u32)], sz: u32, next_block: u64) -> super::AvailBlock {
+            super::AvailBlock {
+                sz,
+                next_block,
+                elems: elems
+                    .iter()
+                    .copied()
+                    .map(|(addr, sz)| super::AvailElem { addr, sz })
+                    .collect(),
+            }
+        }
+
+        [
+            Test {
+                name: "sorts",
+                first: block(&[(40, 5), (0, 12)], 12, 0),
+                second: block(&[(20, 10)], 10, 42),
+                expected: Some(block(&[(40, 5), (20, 10), (0, 12)], 12, 42)),
+            },
+            Test {
+                name: "combines blocks",
+                first: block(&[(40, 5), (0, 10)], 2, 0),
+                second: block(&[(10, 30)], 10, 42),
+                expected: Some(block(&[(0, 45)], 2, 42)),
+            },
+            Test {
+                name: "fails",
+                first: block(&[(40, 5), (0, 12)], 2, 0),
+                second: block(&[(20, 10)], 10, 42),
+                expected: None,
+            },
+            Test {
+                name: "empty self",
+                first: block(&[], 10, 0),
+                second: block(&[(20, 10)], 10, 42),
+                expected: Some(block(&[(20, 10)], 10, 42)),
+            },
+            Test {
+                name: "empty other",
+                first: block(&[(20, 10)], 10, 0),
+                second: block(&[], 10, 42),
+                expected: Some(block(&[(20, 10)], 10, 42)),
+            },
+        ]
+        .into_iter()
+        .for_each(|test| {
+            let merged = test.first.merge(&test.second);
+            if merged != test.expected {
+                panic!(
+                    "test \"{}\" failed: expected:\n{:?}\ngot:\n{:?}",
+                    test.name, test.expected, merged
+                );
+            }
+        });
     }
 }

@@ -300,7 +300,6 @@ impl Gdbm {
     fn current_bucket_mut(&mut self) -> &mut Bucket {
         // note: assumes will be called following cache_load_bucket() to cache
         // assignment of dir[0] to cur_bucket at Gdbm{} creation not sufficient.
-        self.bucket_cache.dirty(self.cur_bucket_ofs);
         let bucket = self
             .bucket_cache
             .bucket_map
@@ -467,37 +466,23 @@ impl Gdbm {
     }
 
     // virtually allocate N blocks of data, at end of db file (no I/O)
-    fn new_block(&mut self, new_sz: usize) -> AvailElem {
-        let mut elem = AvailElem {
-            sz: self.header.block_sz,
-            addr: self.header.next_block,
-        };
+    fn extend(&mut self, size: u32) -> io::Result<(u64, u32)> {
+        let offset = self.header.next_block;
+        let length = match size % self.header.block_sz {
+            0 => size / self.header.block_sz,
+            _ => size / self.header.block_sz + 1,
+        } * self.header.block_sz;
 
-        while (elem.sz as usize) < new_sz {
-            elem.sz += self.header.block_sz;
-        }
-
-        self.header.next_block += elem.sz as u64;
-
+        self.header.next_block += length as u64;
         self.header.dirty = true;
 
-        elem
+        Ok((offset, length))
     }
 
     // Free list is full.  Split in half, and store 1/2 in new list block.
     fn push_avail_block(&mut self) -> io::Result<()> {
-        let new_blk_sz =
-            (((self.header.avail.sz * GDBM_AVAIL_ELEM_SZ) / 2) + GDBM_AVAIL_HDR_SZ) as usize;
-
-        // having calculated size of 1st extension block (new_blk_sz),
-        // - look in free list for that amount of space
-        // - if not, get new space from end of file
-        let mut ext_elem = match self.header.avail.remove_elem(new_blk_sz as u32) {
-            Some(elem) => elem,
-            None => self.new_block(new_blk_sz),
-        };
-
-        let new_blk_ofs = ext_elem.addr;
+        let new_blk_sz = ((self.header.avail.sz * GDBM_AVAIL_ELEM_SZ) / 2) + GDBM_AVAIL_HDR_SZ;
+        let new_blk_ofs = self.allocate_record(new_blk_sz)?;
 
         let mut hdr_blk = AvailBlock::new(self.header.avail.sz);
         let mut ext_blk = AvailBlock::new(self.header.avail.sz);
@@ -526,18 +511,6 @@ impl Gdbm {
         //     second.next = head.next
         ext_blk.next_block = self.header.avail.next_block;
 
-        // size allocation may have allocated more space than we needed.
-        // gdbm calls self.free_record(), which may call
-        // self.push_avail_block() recurively.  We choose the alternative,
-        // adding the space to the header block as a simplfication.
-        ext_elem.sz -= new_blk_sz as u32;
-        ext_elem.addr += new_blk_sz as u64;
-        if ext_elem.sz > IGNORE_SMALL as u32 {
-            // insert, sorted by size
-            let pos = hdr_blk.elems.binary_search(&ext_elem).unwrap_or_else(|e| e);
-            hdr_blk.elems.insert(pos, ext_elem);
-        }
-
         // update avail block in header (deferred write)
         self.header.avail = hdr_blk;
         self.header.dirty = true;
@@ -565,6 +538,7 @@ impl Gdbm {
             // insort into bucket avail vector, sorted by size
             let pos = bucket.avail.binary_search(&elem).unwrap_or_else(|e| e);
             self.current_bucket_mut().avail.insert(pos, elem);
+            self.bucket_cache.dirty(self.cur_bucket_ofs);
 
             // success (and no I/O performed)
             return Ok(());
@@ -680,6 +654,7 @@ impl Gdbm {
         let (mut elem_ofs, data) = get_opt.unwrap();
 
         let bucket_elems = self.header.bucket_elems as usize;
+        self.bucket_cache.dirty(self.cur_bucket_ofs);
         let bucket = self.current_bucket_mut();
 
         // remember element to be removed
@@ -713,7 +688,65 @@ impl Gdbm {
         Ok(Some(data))
     }
 
-    // API: reset iterator state
+    fn allocate_from_bucket(&mut self, size: u32) -> Option<(u64, u32)> {
+        let bucket = self.current_bucket_mut();
+        let elem = avail::remove_elem(&mut bucket.avail, size);
+
+        if elem.is_some() {
+            self.bucket_cache.dirty(self.cur_bucket_ofs);
+        }
+
+        elem.map(|elem| (elem.addr, elem.sz))
+    }
+
+    fn allocate_from_header(&mut self, size: u32) -> io::Result<Option<(u64, u32)>> {
+        if self.header.avail.elems.len() as u32 > self.header.avail.sz / 2 {
+            self.pop_avail_block()?;
+        }
+
+        let elem = self.header.avail.remove_elem(size);
+
+        if elem.is_some() {
+            self.header.dirty = true;
+        }
+
+        Ok(elem.map(|elem| (elem.addr, elem.sz)))
+    }
+
+    // pops a block of the avail block list into the header block, only if it can accommodate it
+    fn pop_avail_block(&mut self) -> io::Result<()> {
+        let next_addr = self.header.avail.next_block;
+
+        let next = {
+            self.f.seek(SeekFrom::Start(self.header.avail.next_block))?;
+            AvailBlock::from_reader(self.header.alignment(), self.header.endian(), &mut self.f)?
+        };
+
+        if let Some(block) = self.header.avail.merge(&next) {
+            self.header.avail = block;
+            self.header.dirty = true;
+
+            // free the block we just merged
+            self.free_record(next_addr, GDBM_AVAIL_HDR_SZ + next.sz * GDBM_AVAIL_ELEM_SZ)?;
+        }
+
+        Ok(())
+    }
+
+    fn allocate_record(&mut self, size: u32) -> io::Result<u64> {
+        let (offset, length) = match self.allocate_from_bucket(size) {
+            Some((offset, length)) => (offset, length),
+            None => match self.allocate_from_header(size)? {
+                Some((offset, length)) => (offset, length),
+                None => self.extend(size)?,
+            },
+        };
+
+        self.free_record(offset + size as u64, length - size)?;
+
+        Ok(offset)
+    }
+
     pub fn iter_reset(&mut self) {
         self.iter_key = None;
     }
