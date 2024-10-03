@@ -710,7 +710,9 @@ impl Gdbm {
     }
 
     fn split_bucket(&mut self) -> io::Result<()> {
-        // TODO: extend directory
+        if self.current_bucket().bits == self.header.dir_bits {
+            self.extend_directory()?;
+        }
 
         // allocate space for new bucket in an aligned block at the end of file
         let new_bucket_ofs = {
@@ -743,6 +745,28 @@ impl Gdbm {
         (!self.cfg.readonly)
             .then_some(())
             .ok_or_else(|| Error::new(ErrorKind::Other, "write to readonly db"))
+    }
+
+    // Extends the directory by duplicating each bucket offset.
+    // Old storage is freed and new storage is allocated.
+    // The maximum number of hash_bits represented by each element is increased by 1.
+    // The header is updated with new offset, size and bits.
+    // Both the directory and header are marked dirty, but not written.
+    fn extend_directory(&mut self) -> io::Result<()> {
+        let directory = self.dir.extend();
+        let size = directory.extent(self.header.alignment());
+        let offset = self.allocate_record(size)?;
+
+        self.free_record(self.header.dir_ofs, self.header.dir_sz)?;
+        self.header.dir_bits += 1;
+        self.header.dir_ofs = offset;
+        self.header.dir_sz = size;
+        self.cur_bucket_dir <<= 1;
+        self.header.dirty = true;
+
+        self.dir = directory;
+
+        Ok(())
     }
 }
 
