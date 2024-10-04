@@ -13,7 +13,7 @@ use std::io::{self, Read, Write};
 use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
 use crate::{GDBM_AVAIL_ELEM_SZ, GDBM_AVAIL_HDR_SZ};
 
-#[derive(Default, Debug, Clone, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Default, Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct AvailElem {
     pub sz: u32,
     pub addr: u64,
@@ -192,8 +192,8 @@ pub fn remove_elem(elems: &mut Vec<AvailElem>, size: u32) -> Option<AvailElem> {
 }
 
 pub fn partition_elems(elems: &[AvailElem]) -> (Vec<AvailElem>, Vec<AvailElem>) {
-    let one = elems.iter().step_by(2).cloned().collect::<Vec<_>>();
-    let two = elems.iter().skip(1).step_by(2).cloned().collect::<Vec<_>>();
+    let one = elems.iter().step_by(2).copied().collect::<Vec<_>>();
+    let two = elems.iter().skip(1).step_by(2).copied().collect::<Vec<_>>();
 
     (one, two)
 }
