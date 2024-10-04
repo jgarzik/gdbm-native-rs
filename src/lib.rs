@@ -411,7 +411,8 @@ impl Gdbm {
 
     // retrieve record data, and element offset in bucket, for given key
     fn int_get(&mut self, key: &[u8]) -> io::Result<Option<(usize, Vec<u8>)>> {
-        let (key_hash, bucket_dir, elem_ofs) = key_loc(&self.header, key);
+        let (key_hash, bucket_dir, elem_ofs) =
+            key_loc(self.header.dir_bits, self.header.bucket_elems, key);
         let key_start = PartialKey::new(key);
 
         println!("has: {}, key: {:?}", key_hash, key);
