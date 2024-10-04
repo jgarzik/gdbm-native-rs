@@ -70,4 +70,19 @@ impl Directory {
                 .collect::<io::Result<Vec<_>>>()?,
         })
     }
+
+    // serialized size of this instance
+    pub fn extent(&self, alignment: Alignment) -> u32 {
+        match alignment {
+            Alignment::Align32 => self.dir.len() as u32 * 4,
+            Alignment::Align64 => self.dir.len() as u32 * 8,
+        }
+    }
+
+    // validate all buckets are inside file
+    pub fn validate(&self, start: u64, end: u64, bucket_size: u32) -> bool {
+        self.dir
+            .iter()
+            .all(|&offset| offset >= start && offset + bucket_size as u64 <= end)
+    }
 }

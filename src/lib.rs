@@ -103,6 +103,15 @@ impl Gdbm {
         f.seek(SeekFrom::Start(header.dir_ofs))?;
         let dir =
             Directory::from_reader(header.alignment(), header.endian(), header.dir_sz, &mut f)?;
+
+        // ensure all bucket offsets are reasonable
+        if !dir.validate(header.block_sz as u64, header.next_block, header.block_sz) {
+            return Err(Error::new(
+                ErrorKind::Other,
+                "corruption: bucket offset outside of file",
+            ))?;
+        }
+
         let cur_bucket_dir: usize = 0;
         let cur_bucket_ofs = dir.dir[cur_bucket_dir];
 
@@ -240,47 +249,18 @@ impl Gdbm {
         Ok(())
     }
 
-    // validate directory entry index.  currently just a bounds check.
-    fn dirent_valid(&self, idx: usize) -> bool {
-        idx < self.dir.len() // && self.dir.dir[idx] >= (self.header.block_sz as u64)
-    }
-
     // read bucket into bucket cache.
-    fn cache_load_bucket(&mut self, bucket_dir: usize) -> io::Result<bool> {
-        if !self.dirent_valid(bucket_dir) {
-            return Err(Error::new(ErrorKind::Other, "invalid bucket idx"));
-        }
-
-        let bucket_ofs = self.dir.dir[bucket_dir];
-        println!("bucket ofs = {}", bucket_ofs);
-
-        // already in cache
-        if self.bucket_cache.contains(bucket_ofs) {
-            self.cur_bucket_ofs = bucket_ofs;
-            self.cur_bucket_dir = bucket_dir;
-            return Ok(true);
-        }
-
-        // empty bucket
-        if bucket_ofs < (self.header.block_sz as u64) {
-            self.cur_bucket_ofs = bucket_ofs;
-            self.cur_bucket_dir = bucket_dir;
-            return Ok(false);
-        }
-
-        // seek to bucket and read it
-        let pos = self.f.seek(SeekFrom::Start(bucket_ofs))?;
-        println!("seek'd to {}", pos);
-
-        let new_bucket = Bucket::from_reader(&self.header, &mut self.f)?;
-        // println!("new_bucket={:?}", new_bucket);
-
-        // add to bucket cache
-        self.bucket_cache.insert(bucket_ofs, new_bucket);
-        self.cur_bucket_ofs = bucket_ofs;
+    fn cache_load_bucket(&mut self, bucket_dir: usize) -> io::Result<()> {
         self.cur_bucket_dir = bucket_dir;
+        self.cur_bucket_ofs = self.dir.dir[bucket_dir];
 
-        Ok(true)
+        if !self.bucket_cache.contains(self.cur_bucket_ofs) {
+            self.f.seek(SeekFrom::Start(self.cur_bucket_ofs))?;
+            let bucket = Bucket::from_reader(&self.header, &mut self.f)?;
+            self.bucket_cache.insert(self.cur_bucket_ofs, bucket);
+        }
+
+        Ok(())
     }
 
     // return a reference to the current bucket
@@ -415,11 +395,7 @@ impl Gdbm {
             key_loc(self.header.dir_bits, self.header.bucket_elems, key);
         let key_start = PartialKey::new(key);
 
-        println!("has: {}, key: {:?}", key_hash, key);
-
-        if !self.cache_load_bucket(bucket_dir)? {
-            return Ok(None);
-        } // bucket not found -> key not found
+        self.cache_load_bucket(bucket_dir)?;
 
         let bucket_entries = (0..self.header.bucket_elems)
             .map(|index| ((index + elem_ofs) % self.header.bucket_elems) as usize)
