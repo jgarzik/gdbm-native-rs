@@ -677,7 +677,7 @@ impl Gdbm {
         if get_opt.is_none() {
             return Ok(None);
         }
-        let (mut elem_ofs, data) = get_opt.unwrap();
+        let (elem_ofs, data) = get_opt.unwrap();
 
         let bucket_elems = self.header.bucket_elems as usize;
         let bucket = self.current_bucket_mut();
@@ -691,13 +691,13 @@ impl Gdbm {
 
         // move other elements to fill gap
         let mut last_ofs = elem_ofs;
+        let mut elem_ofs = (elem_ofs + 1) % bucket_elems;
         while elem_ofs != last_ofs && bucket.tab[elem_ofs].hash != 0xffffffff {
             let home = (bucket.tab[elem_ofs].hash as usize) % bucket_elems;
             if (last_ofs < elem_ofs && (home <= last_ofs || home > elem_ofs))
                 || (last_ofs > elem_ofs && home <= last_ofs && home > elem_ofs)
             {
-                bucket.tab[last_ofs] = bucket.tab[elem_ofs].clone();
-                bucket.tab[elem_ofs].hash = 0xffffffff;
+                bucket.tab.swap(elem_ofs, last_ofs);
                 last_ofs = elem_ofs;
             }
 
