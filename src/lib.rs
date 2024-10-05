@@ -23,7 +23,7 @@ mod header;
 mod magic;
 mod ser;
 use avail::{AvailBlock, AvailElem};
-use bucket::{Bucket, BucketCache, BUCKET_AVAIL};
+use bucket::{Bucket, BucketCache};
 use dir::Directory;
 use hashutil::{key_loc, PartialKey};
 use header::Header;
@@ -32,14 +32,6 @@ use ser::{write32, write64, Alignment, Endian};
 // Our claimed GDBM lib version compatibility.  Appears in dump files.
 const COMPAT_GDBM_VERSION: &str = "1.23";
 
-const GDBM_HASH_BITS: u32 = 31;
-
-const GDBM_HDR_SZ: u32 = 72; // todo: all this varies on 32/64bit, LE/BE...
-const GDBM_HASH_BUCKET_SZ: u32 = 136;
-const GDBM_BUCKET_ELEM_SZ: u32 = 24;
-const GDBM_AVAIL_HDR_SZ: u32 = 16;
-const GDBM_AVAIL_ELEM_SZ: u32 = 16;
-const KEY_SMALL: usize = 4;
 const IGNORE_SMALL: usize = 4;
 
 pub enum ExportBinMode {
@@ -463,7 +455,7 @@ impl Gdbm {
                 self.header.avail.next_block,
                 new_elems,
             );
-            let offset = self.allocate_record(block.extent())?;
+            let offset = self.allocate_record(block.extent(self.header.alignment()))?;
             self.f.seek(SeekFrom::Start(offset))?;
             block.serialize(self.header.alignment(), self.header.endian(), &mut self.f)?;
             offset
@@ -489,7 +481,11 @@ impl Gdbm {
             self.header.dirty = true;
 
             // free the block we just merged
-            self.free_record(next_addr, GDBM_AVAIL_HDR_SZ + next.sz * GDBM_AVAIL_ELEM_SZ)?;
+            self.free_record(
+                next_addr,
+                AvailBlock::sizeof(self.header.alignment())
+                    + next.sz * AvailElem::sizeof(self.header.alignment()),
+            )?;
         }
 
         Ok(())
@@ -507,7 +503,7 @@ impl Gdbm {
 
         // smaller items go into bucket avail list
         let bucket = self.current_bucket();
-        if sz < self.header.block_sz && bucket.avail.len() < BUCKET_AVAIL {
+        if sz < self.header.block_sz && (bucket.avail.len() as u32) < Bucket::AVAIL {
             // insort into bucket avail vector, sorted by size
             let pos = bucket.avail.binary_search(&elem).unwrap_or_else(|e| e);
             self.current_bucket_mut().avail.insert(pos, elem);

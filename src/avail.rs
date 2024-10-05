@@ -11,7 +11,6 @@
 use std::io::{self, Read, Write};
 
 use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
-use crate::{GDBM_AVAIL_ELEM_SZ, GDBM_AVAIL_HDR_SZ};
 
 #[derive(Default, Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct AvailElem {
@@ -20,6 +19,13 @@ pub struct AvailElem {
 }
 
 impl AvailElem {
+    pub fn sizeof(alignment: Alignment) -> u32 {
+        match alignment {
+            Alignment::Align32 => 12,
+            Alignment::Align64 => 16,
+        }
+    }
+
     pub fn from_reader(
         alignment: Alignment,
         endian: Endian,
@@ -73,6 +79,13 @@ pub struct AvailBlock {
 }
 
 impl AvailBlock {
+    pub fn sizeof(alignment: Alignment) -> u32 {
+        match alignment {
+            Alignment::Align32 => 12,
+            Alignment::Align64 => 16,
+        }
+    }
+
     pub fn new(sz: u32, next_block: u64, elems: Vec<AvailElem>) -> Self {
         Self {
             sz,
@@ -179,8 +192,8 @@ impl AvailBlock {
     }
 
     // extent returns the size of this block when serialized
-    pub fn extent(&self) -> u32 {
-        GDBM_AVAIL_HDR_SZ + self.elems.len() as u32 * GDBM_AVAIL_ELEM_SZ
+    pub fn extent(&self, alignment: Alignment) -> u32 {
+        Self::sizeof(alignment) + self.elems.len() as u32 * AvailElem::sizeof(alignment)
     }
 }
 

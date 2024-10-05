@@ -10,14 +10,14 @@
 
 use std::io::{self, Read, Write};
 
+use crate::hashutil::HASH_BITS;
 use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
-use crate::GDBM_HASH_BITS;
 
 pub fn build_dir_size(block_sz: u32) -> (u32, u32) {
     let mut dir_size = 8 * 8; // fixme: 8==off_t==vary on is_lfs
     let mut dir_bits = 3;
 
-    while dir_size < block_sz && dir_bits < GDBM_HASH_BITS - 3 {
+    while dir_size < block_sz && dir_bits < HASH_BITS - 3 {
         dir_size <<= 1;
         dir_bits += 1;
     }
