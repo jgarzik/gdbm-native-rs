@@ -47,7 +47,7 @@ fn api_remove() {
             let res = db
                 .contains_key(key1.as_bytes())
                 .expect("GDBM contains-key failed");
-            assert_eq!(res, false);
+            assert!(!res);
 
             // Cleanup
             fs::remove_file(newdb_fn).expect("Test file remove failed");
