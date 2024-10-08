@@ -23,9 +23,9 @@ mod header;
 mod magic;
 mod ser;
 use avail::{AvailBlock, AvailElem};
-use bucket::{Bucket, BucketCache};
+use bucket::{Bucket, BucketCache, BucketElement};
 use dir::Directory;
-use hashutil::{key_loc, PartialKey};
+use hashutil::{bucket_dir, key_loc, PartialKey};
 use header::Header;
 use ser::{write32, write64, Alignment, Endian};
 
@@ -669,6 +669,39 @@ impl Gdbm {
         Ok(offset)
     }
 
+    fn int_insert(&mut self, key: &[u8], data: &[u8]) -> io::Result<()> {
+        let offset = self.allocate_record((key.len() + data.len()) as u32)?;
+        self.f.seek(SeekFrom::Start(offset))?;
+        self.f.write_all(key)?;
+        self.f.write_all(data)?;
+
+        let bucket_elem = BucketElement::new(key, data, offset);
+        self.cache_load_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash))?;
+
+        // TODO: split bucket
+
+        self.current_bucket_mut().insert(bucket_elem);
+        self.bucket_cache.dirty(self.cur_bucket_ofs);
+
+        Ok(())
+    }
+
+    pub fn insert(&mut self, key: &[u8], data: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        self.writeable()
+            .and_then(|_| self.remove(key))
+            .and_then(|oldkey| self.int_insert(key, data).map(|_| oldkey))
+    }
+
+    pub fn try_insert(&mut self, key: &[u8], data: &[u8]) -> io::Result<(bool, Option<Vec<u8>>)> {
+        self.writeable()
+            .and_then(|_| self.get(key))
+            .and_then(|olddata| match olddata {
+                Some(_) => Ok((false, olddata)),
+                _ => self.int_insert(key, data).map(|_| (true, None)),
+            })
+    }
+
+    // API: reset iterator state
     pub fn iter_reset(&mut self) {
         self.iter_key = None;
     }
