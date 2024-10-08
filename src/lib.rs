@@ -338,7 +338,7 @@ impl Gdbm {
 
             // any valid hash will do
             let elem = &self.current_bucket().tab[elem_ofs];
-            found = (elem.hash != 0xffffffff).then_some((elem.data_ofs, elem.key_size));
+            found = elem.is_occupied().then_some((elem.data_ofs, elem.key_size));
 
             elem_ofs += 1;
         }
@@ -392,7 +392,7 @@ impl Gdbm {
         let bucket_entries = (0..self.header.bucket_elems)
             .map(|index| ((index + elem_ofs) % self.header.bucket_elems) as usize)
             .map(|offset| (offset, self.current_bucket().tab[offset]))
-            .take_while(|(_, elem)| elem.hash != 0xffffffff)
+            .take_while(|(_, elem)| elem.is_occupied())
             .filter(|(_, elem)| {
                 elem.hash == key_hash
                     && elem.key_size == key.len() as u32

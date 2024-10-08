@@ -85,6 +85,10 @@ impl BucketElement {
     }
 
     pub const SIZEOF: u32 = 24;
+
+    pub fn is_occupied(&self) -> bool {
+        self.hash != 0xffffffff
+    }
 }
 
 #[derive(Debug, Clone)]
