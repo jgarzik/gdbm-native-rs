@@ -391,7 +391,7 @@ impl Gdbm {
 
         let bucket_entries = (0..self.header.bucket_elems)
             .map(|index| ((index + elem_ofs) % self.header.bucket_elems) as usize)
-            .map(|offset| (offset, self.current_bucket().tab[offset].clone()))
+            .map(|offset| (offset, self.current_bucket().tab[offset]))
             .take_while(|(_, elem)| elem.hash != 0xffffffff)
             .filter(|(_, elem)| {
                 elem.hash == key_hash
@@ -623,7 +623,7 @@ impl Gdbm {
         let bucket = self.current_bucket_mut();
 
         // remember element to be removed
-        let elem = bucket.tab[elem_ofs].clone();
+        let elem = bucket.tab[elem_ofs];
 
         // remove element from table
         bucket.tab[elem_ofs].hash = 0xffffffff;
@@ -637,7 +637,7 @@ impl Gdbm {
             if (last_ofs < elem_ofs && (home <= last_ofs || home > elem_ofs))
                 || (last_ofs > elem_ofs && home <= last_ofs && home > elem_ofs)
             {
-                bucket.tab[last_ofs] = bucket.tab[elem_ofs].clone();
+                bucket.tab[last_ofs] = bucket.tab[elem_ofs];
                 bucket.tab[elem_ofs].hash = 0xffffffff;
                 last_ofs = elem_ofs;
             }

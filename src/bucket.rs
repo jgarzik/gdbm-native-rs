@@ -15,13 +15,25 @@ use crate::hashutil::PartialKey;
 use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
 use crate::{AvailElem, Header};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct BucketElement {
     pub hash: u32,
     pub key_start: PartialKey,
     pub data_ofs: u64,
     pub key_size: u32,
     pub data_size: u32,
+}
+
+impl Default for BucketElement {
+    fn default() -> Self {
+        Self {
+            hash: 0xffffffff,
+            key_start: PartialKey::default(),
+            data_ofs: 0,
+            key_size: 0,
+            data_size: 0,
+        }
+    }
 }
 
 impl BucketElement {

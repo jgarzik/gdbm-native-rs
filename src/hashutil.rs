@@ -13,7 +13,7 @@ use std::iter::repeat;
 
 pub const HASH_BITS: u32 = 31;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct PartialKey([u8; PartialKey::SIZEOF as usize]);
 
 impl PartialKey {
