@@ -600,9 +600,7 @@ impl Gdbm {
 
     // API: ensure database is flushed to stable storage
     pub fn sync(&mut self) -> io::Result<()> {
-        if self.cfg.readonly {
-            return Err(Error::new(ErrorKind::Other, "Writable op on read-only db"));
-        }
+        self.writeable()?;
 
         self.write_dirty()?;
         self.f.sync_data()?;
@@ -612,9 +610,7 @@ impl Gdbm {
 
     // API: remove a key/value pair from db, given a key
     pub fn remove(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
-        if self.cfg.readonly {
-            return Err(Error::new(ErrorKind::Other, "Writable op on read-only db"));
-        }
+        self.writeable()?;
 
         let get_opt = self.int_get(key)?;
         if get_opt.is_none() {
@@ -699,6 +695,13 @@ impl Gdbm {
 
     pub fn iter_reset(&mut self) {
         self.iter_key = None;
+    }
+
+    // Convenience function to convert readonly flag into an error if we want to write
+    fn writeable(&self) -> io::Result<()> {
+        (!self.cfg.readonly)
+            .then_some(())
+            .ok_or_else(|| Error::new(ErrorKind::Other, "write to readonly db"))
     }
 }
 
