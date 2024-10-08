@@ -85,4 +85,25 @@ impl Directory {
             .iter()
             .all(|&offset| offset >= start && offset + bucket_size as u64 <= end)
     }
+
+    // update_bucket_split is called after a bucket is split.
+    // It finds the range of dir entries matching the one at offset,
+    // based on dir_bits and bucket_bits.
+    // It then replaces the second half of those offsets with the new bucket offset.
+    pub fn update_bucket_split(
+        &mut self,
+        dir_bits: u32,
+        bucket_bits: u32,
+        offset: usize,
+        bucket_offset: u64,
+    ) {
+        let num_entries = (1 << dir_bits) >> (bucket_bits - 1);
+        let range_start = offset / num_entries * num_entries;
+
+        // replace offsets in second half of the range with the new offset.
+        (range_start + (num_entries >> 1)..range_start + num_entries)
+            .for_each(|index| self.dir[index] = bucket_offset);
+
+        self.dirty = true;
+    }
 }
