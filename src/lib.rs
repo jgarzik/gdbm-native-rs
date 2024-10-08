@@ -618,32 +618,8 @@ impl Gdbm {
         }
         let (elem_ofs, data) = get_opt.unwrap();
 
-        let bucket_elems = self.header.bucket_elems as usize;
+        let elem = self.current_bucket_mut().remove(elem_ofs);
         self.bucket_cache.dirty(self.cur_bucket_ofs);
-        let bucket = self.current_bucket_mut();
-
-        // remember element to be removed
-        let elem = bucket.tab[elem_ofs];
-
-        // remove element from table
-        bucket.tab[elem_ofs].hash = 0xffffffff;
-        bucket.count -= 1;
-
-        // move other elements to fill gap
-        let mut last_ofs = elem_ofs;
-        let mut elem_ofs = (elem_ofs + 1) % bucket_elems;
-        while elem_ofs != last_ofs && bucket.tab[elem_ofs].hash != 0xffffffff {
-            let home = (bucket.tab[elem_ofs].hash as usize) % bucket_elems;
-            if (last_ofs < elem_ofs && (home <= last_ofs || home > elem_ofs))
-                || (last_ofs > elem_ofs && home <= last_ofs && home > elem_ofs)
-            {
-                bucket.tab[last_ofs] = bucket.tab[elem_ofs];
-                bucket.tab[elem_ofs].hash = 0xffffffff;
-                last_ofs = elem_ofs;
-            }
-
-            elem_ofs = (elem_ofs + 1) % bucket_elems;
-        }
 
         // release record bytes to available-space pool
         self.free_record(elem.data_ofs, elem.key_size + elem.data_size)?;

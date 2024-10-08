@@ -197,6 +197,40 @@ impl Bucket {
                 Alignment::Align64 => 16,
             }
     }
+
+    // remove an element - we assume there's an element
+    pub fn remove(&mut self, offset: usize) -> BucketElement {
+        let elem = self.tab[offset];
+        let len = self.tab.len();
+
+        // remove element from table
+        self.tab[offset] = BucketElement::default();
+        self.count -= 1;
+
+        // Compile a list of all elements between the removed element and
+        // the next empty one, that aren't in their home position.
+        let possible_moves = (1..len)
+            .map(|i| offset + i)
+            .take_while(|offset| self.tab[offset % len].is_occupied())
+            .filter_map(|offset| {
+                let index = offset % len;
+                let home = self.tab[index].hash as usize % len;
+                (index != home).then_some((offset, home))
+            })
+            .collect::<Vec<_>>();
+
+        // Move any of the out-of-place elements downwards into the
+        // hole if the hole is between them and their home.
+        let mut hole = offset;
+        possible_moves.into_iter().for_each(|(offset, home)| {
+            if hole >= home {
+                self.tab.swap(offset % len, hole % len);
+                hole = offset;
+            }
+        });
+
+        elem
+    }
 }
 
 #[derive(Debug)]
@@ -237,5 +271,98 @@ impl BucketCache {
 
     pub fn insert(&mut self, bucket_ofs: u64, bucket: Bucket) {
         self.bucket_map.insert(bucket_ofs, bucket);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn bucket_remove() {
+        struct Test<'a> {
+            name: &'a str,
+            hashes: [u32; 4],
+            offset: usize,
+            expected: [u32; 4],
+        }
+
+        [
+            Test {
+                name: "first and only",
+                hashes: [0, 0xffffffff, 0xffffffff, 0xffffffff],
+                offset: 0,
+                expected: [0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff],
+            },
+            Test {
+                name: "last and only",
+                hashes: [0xffffffff, 0xffffffff, 0xffffffff, 1],
+                offset: 3,
+                expected: [0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff],
+            },
+            Test {
+                name: "dup hash",
+                hashes: [0, 0, 0xffffffff, 0xffffffff],
+                offset: 0,
+                expected: [0, 0xffffffff, 0xffffffff, 0xffffffff],
+            },
+            Test {
+                name: "dup hash, non-sequential",
+                hashes: [0, 1, 0, 0xffffffff],
+                offset: 0,
+                expected: [0, 1, 0xffffffff, 0xffffffff],
+            },
+            Test {
+                name: "dup hash, wrapped",
+                hashes: [3, 1, 2, 3],
+                offset: 3,
+                expected: [0xffffffff, 1, 2, 3],
+            },
+            Test {
+                name: "dup hash, wrapped, non-sequential",
+                hashes: [2, 2, 2, 3],
+                offset: 2,
+                expected: [2, 0xffffffff, 2, 3],
+            },
+        ]
+        .into_iter()
+        .try_for_each(
+            |Test {
+                 name,
+                 hashes,
+                 offset,
+                 expected,
+             }| {
+                let tab = hashes
+                    .iter()
+                    .map(|&hash| match hash {
+                        0xffffffff => BucketElement::default(),
+                        hash => BucketElement {
+                            hash,
+                            ..Default::default()
+                        },
+                    })
+                    .collect::<Vec<_>>();
+
+                let mut bucket = Bucket {
+                    avail: vec![],
+                    bits: 0, /* unused */
+                    count: tab.iter().filter(|elem| elem.is_occupied()).count() as u32,
+                    tab,
+                };
+
+                bucket.remove(offset);
+
+                let got = bucket.tab.iter().map(|elem| elem.hash).collect::<Vec<_>>();
+                (got == expected).then_some(()).ok_or_else(|| {
+                    format!(
+                        "  failed: {}\nexpected: {:?}\n     got: {:?}",
+                        name, expected, got
+                    )
+                })
+            },
+        )
+        .map_err(|e| println!("{}", e))
+        .unwrap()
     }
 }
