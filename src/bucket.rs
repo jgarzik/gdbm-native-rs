@@ -197,6 +197,33 @@ impl Bucket {
                 Alignment::Align64 => 16,
             }
     }
+
+    // remove an element - we assume there's an element
+    pub fn remove(&mut self, offset: usize) -> BucketElement {
+        let elem = self.tab[offset];
+        let len = self.tab.len();
+
+        // remove element from table
+        self.tab[offset] = BucketElement::default();
+        self.count -= 1;
+
+        let mut last_ofs = offset;
+        let mut elem_ofs = (offset + 1) % len;
+        while elem_ofs != last_ofs && self.tab[elem_ofs].is_occupied() {
+            let home = (self.tab[elem_ofs].hash as usize) % len;
+            if (last_ofs < elem_ofs && (home <= last_ofs || home > elem_ofs))
+                || (last_ofs > elem_ofs && home <= last_ofs && home > elem_ofs)
+            {
+                self.tab[last_ofs] = self.tab[elem_ofs];
+                self.tab[elem_ofs] = BucketElement::default();
+                last_ofs = elem_ofs;
+            }
+
+            elem_ofs = (elem_ofs + 1) % len;
+        }
+
+        elem
+    }
 }
 
 #[derive(Debug)]
@@ -237,5 +264,98 @@ impl BucketCache {
 
     pub fn insert(&mut self, bucket_ofs: u64, bucket: Bucket) {
         self.bucket_map.insert(bucket_ofs, bucket);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn bucket_remove() {
+        struct Test<'a> {
+            name: &'a str,
+            hashes: [u32; 4],
+            offset: usize,
+            expected: [u32; 4],
+        }
+
+        [
+            Test {
+                name: "first and only",
+                hashes: [0, 0xffffffff, 0xffffffff, 0xffffffff],
+                offset: 0,
+                expected: [0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff],
+            },
+            Test {
+                name: "last and only",
+                hashes: [0xffffffff, 0xffffffff, 0xffffffff, 1],
+                offset: 3,
+                expected: [0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff],
+            },
+            Test {
+                name: "dup hash",
+                hashes: [0, 0, 0xffffffff, 0xffffffff],
+                offset: 0,
+                expected: [0, 0xffffffff, 0xffffffff, 0xffffffff],
+            },
+            Test {
+                name: "dup hash, non-sequential",
+                hashes: [0, 1, 0, 0xffffffff],
+                offset: 0,
+                expected: [0, 1, 0xffffffff, 0xffffffff],
+            },
+            Test {
+                name: "dup hash, wrapped",
+                hashes: [3, 1, 2, 3],
+                offset: 3,
+                expected: [0xffffffff, 1, 2, 3],
+            },
+            Test {
+                name: "dup hash, wrapped, non-sequential",
+                hashes: [2, 2, 2, 3],
+                offset: 2,
+                expected: [2, 0xffffffff, 2, 3],
+            },
+        ]
+        .into_iter()
+        .try_for_each(
+            |Test {
+                 name,
+                 hashes,
+                 offset,
+                 expected,
+             }| {
+                let tab = hashes
+                    .iter()
+                    .map(|&hash| match hash {
+                        0xffffffff => BucketElement::default(),
+                        hash => BucketElement {
+                            hash,
+                            ..Default::default()
+                        },
+                    })
+                    .collect::<Vec<_>>();
+
+                let mut bucket = Bucket {
+                    avail: vec![],
+                    bits: 0, /* unused */
+                    count: tab.iter().filter(|elem| elem.is_occupied()).count() as u32,
+                    tab,
+                };
+
+                bucket.remove(offset);
+
+                let got = bucket.tab.iter().map(|elem| elem.hash).collect::<Vec<_>>();
+                (got == expected).then_some(()).ok_or_else(|| {
+                    format!(
+                        "  failed: {}\nexpected: {:?}\n     got: {:?}",
+                        name, expected, got
+                    )
+                })
+            },
+        )
+        .map_err(|e| println!("{}", e))
+        .unwrap()
     }
 }
