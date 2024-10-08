@@ -678,7 +678,10 @@ impl Gdbm {
         let bucket_elem = BucketElement::new(key, data, offset);
         self.cache_load_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash))?;
 
-        // TODO: split bucket
+        while self.current_bucket().count == self.header.bucket_elems {
+            self.split_bucket()?;
+            self.cache_load_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash))?;
+        }
 
         self.current_bucket_mut().insert(bucket_elem);
         self.bucket_cache.dirty(self.cur_bucket_ofs);
@@ -704,6 +707,35 @@ impl Gdbm {
     // API: reset iterator state
     pub fn iter_reset(&mut self) {
         self.iter_key = None;
+    }
+
+    fn split_bucket(&mut self) -> io::Result<()> {
+        // TODO: extend directory
+
+        // allocate space for new bucket in an aligned block at the end of file
+        let new_bucket_ofs = {
+            let (offset, size) = self.extend(self.header.bucket_sz)?;
+            self.free_record(
+                offset + self.header.bucket_sz as u64,
+                size - self.header.bucket_sz,
+            )?;
+            offset
+        };
+
+        let (bucket0, bucket1) = self.current_bucket().split();
+        self.bucket_cache.insert(self.cur_bucket_ofs, bucket0);
+        self.bucket_cache.dirty(self.cur_bucket_ofs);
+        self.bucket_cache.insert(new_bucket_ofs, bucket1);
+        self.bucket_cache.dirty(new_bucket_ofs);
+
+        self.dir.update_bucket_split(
+            self.header.dir_bits,
+            self.current_bucket().bits,
+            self.cur_bucket_dir,
+            new_bucket_ofs,
+        );
+
+        Ok(())
     }
 
     // Convenience function to convert readonly flag into an error if we want to write

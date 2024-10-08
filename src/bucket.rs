@@ -11,9 +11,10 @@
 use std::collections::HashMap;
 use std::io::{self, Error, ErrorKind, Read, Write};
 
+use crate::avail::{self, AvailElem};
 use crate::hashutil::{hash_key, PartialKey};
+use crate::header::Header;
 use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
-use crate::{AvailElem, Header};
 
 #[derive(Debug, Copy, Clone)]
 pub struct BucketElement {
@@ -112,6 +113,21 @@ pub struct Bucket {
 
 impl Bucket {
     pub const AVAIL: u32 = 6;
+
+    fn new(bits: u32, len: usize, avail: Vec<AvailElem>, elements: Vec<BucketElement>) -> Self {
+        elements.into_iter().fold(
+            Self {
+                avail,
+                bits,
+                count: 0,
+                tab: vec![BucketElement::default(); len],
+            },
+            |mut bucket, elem| {
+                bucket.insert(elem);
+                bucket
+            },
+        )
+    }
 
     pub fn from_reader(header: &Header, reader: &mut impl Read) -> io::Result<Self> {
         // read avail section
@@ -245,6 +261,22 @@ impl Bucket {
         }
 
         elem
+    }
+
+    pub fn split(&self) -> (Bucket, Bucket) {
+        let mask = 0x80_00_00_00 >> (self.bits + 1);
+        let (elems0, elems1) = self
+            .tab
+            .iter()
+            .copied()
+            .partition::<Vec<_>, _>(|elem| elem.hash & mask == 0);
+
+        let (avail0, avail1) = avail::partition_elems(&self.avail);
+
+        (
+            Bucket::new(self.bits + 1, self.tab.len(), avail0, elems0),
+            Bucket::new(self.bits + 1, self.tab.len(), avail1, elems1),
+        )
     }
 }
 
