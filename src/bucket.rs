@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::io::{self, Error, ErrorKind, Read, Write};
 
-use crate::hashutil::PartialKey;
+use crate::hashutil::{hash_key, PartialKey};
 use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
 use crate::{AvailElem, Header};
 
@@ -37,6 +37,16 @@ impl Default for BucketElement {
 }
 
 impl BucketElement {
+    pub fn new(key: &[u8], data: &[u8], offset: u64) -> Self {
+        Self {
+            hash: hash_key(key),
+            key_start: PartialKey::new(key),
+            data_ofs: offset,
+            key_size: key.len() as u32,
+            data_size: data.len() as u32,
+        }
+    }
+
     pub fn from_reader(
         alignment: Alignment,
         endian: Endian,
@@ -196,6 +206,18 @@ impl Bucket {
                 Alignment::Align32 => 12,
                 Alignment::Align64 => 16,
             }
+    }
+
+    // insert an element - we assume there's space
+    pub fn insert(&mut self, element: BucketElement) {
+        self.count += 1;
+
+        let index = (element.hash..)
+            .map(|index| index as usize % self.tab.len())
+            .find(|&index| !self.tab[index].is_occupied())
+            .unwrap();
+
+        self.tab[index] = element;
     }
 
     // remove an element - we assume there's an element
