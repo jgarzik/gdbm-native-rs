@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::io::{self, Error, ErrorKind, Read, Write};
 
-use crate::hashutil::{hash_key, PartialKey};
+use crate::hashutil::PartialKey;
 use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
 use crate::{AvailElem, Header};
 
@@ -27,16 +27,6 @@ pub struct BucketElement {
 }
 
 impl BucketElement {
-    pub fn new(key: &[u8], data: &[u8], offset: u64) -> Self {
-        Self {
-            hash: hash_key(key),
-            key_start: PartialKey::new(key),
-            data_ofs: offset,
-            key_size: key.len() as u32,
-            data_size: data.len() as u32,
-        }
-    }
-
     pub fn from_reader(
         alignment: Alignment,
         endian: Endian,
