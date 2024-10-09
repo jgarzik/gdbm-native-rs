@@ -10,12 +10,11 @@
 
 use std::io::{self, Error, ErrorKind, Read, Write};
 
+use crate::avail::{AvailBlock, AvailElem};
+use crate::bucket::{Bucket, BucketElement};
 use crate::dir::build_dir_size;
 use crate::magic::Magic;
 use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
-use crate::{
-    AvailBlock, GDBM_AVAIL_ELEM_SZ, GDBM_BUCKET_ELEM_SZ, GDBM_HASH_BUCKET_SZ, GDBM_HDR_SZ,
-};
 
 #[derive(Debug)]
 pub struct Header {
@@ -35,11 +34,11 @@ pub struct Header {
     pub dirty: bool,
 }
 
-pub fn bucket_count(bucket_sz: u32) -> u32 {
-    (bucket_sz - GDBM_HASH_BUCKET_SZ) / GDBM_BUCKET_ELEM_SZ + 1
-}
-
 impl Header {
+    pub fn sizeof(alignment: Alignment) -> u32 {
+        40 + AvailBlock::sizeof(alignment) + AvailElem::sizeof(alignment)
+    }
+
     pub fn from_reader(metadata: &std::fs::Metadata, reader: &mut impl Read) -> io::Result<Self> {
         let file_sz = metadata.len();
 
@@ -55,7 +54,9 @@ impl Header {
         let next_block = read64(magic.endian(), reader)?;
         let avail = AvailBlock::from_reader(magic.alignment(), magic.endian(), reader)?;
 
-        if !(block_sz > GDBM_HDR_SZ && block_sz - GDBM_HDR_SZ >= GDBM_AVAIL_ELEM_SZ) {
+        if !(block_sz > Self::sizeof(magic.alignment())
+            && block_sz - Self::sizeof(magic.alignment()) >= AvailElem::sizeof(magic.alignment()))
+        {
             return Err(Error::new(ErrorKind::Other, "bad header: blksz"));
         }
 
@@ -78,11 +79,11 @@ impl Header {
             return Err(Error::new(ErrorKind::Other, "bad header: dir bits"));
         }
 
-        if bucket_sz <= GDBM_HASH_BUCKET_SZ {
+        if bucket_sz <= Bucket::sizeof(magic.alignment()) {
             return Err(Error::new(ErrorKind::Other, "bad header: bucket sz"));
         }
 
-        if bucket_elems != bucket_count(bucket_sz) {
+        if bucket_elems != (bucket_sz - Bucket::sizeof(magic.alignment())) / BucketElement::SIZEOF {
             return Err(Error::new(ErrorKind::Other, "bad header: bucket elem"));
         }
 
@@ -94,7 +95,9 @@ impl Header {
             return Err(Error::new(ErrorKind::Other, "bad header: avail el"));
         }
 
-        if ((block_sz - GDBM_HDR_SZ) / GDBM_AVAIL_ELEM_SZ + 1) != avail.sz {
+        if ((block_sz - Self::sizeof(magic.alignment())) / AvailElem::sizeof(magic.alignment()) + 1)
+            != avail.sz
+        {
             return Err(Error::new(ErrorKind::Other, "bad header: avail sz"));
         }
 

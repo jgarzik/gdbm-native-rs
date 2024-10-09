@@ -15,8 +15,6 @@ use crate::hashutil::PartialKey;
 use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
 use crate::{AvailElem, Header};
 
-pub const BUCKET_AVAIL: usize = 6;
-
 #[derive(Debug, Clone)]
 pub struct BucketElement {
     pub hash: u32,
@@ -73,6 +71,8 @@ impl BucketElement {
 
         Ok(())
     }
+
+    pub const SIZEOF: u32 = 24;
 }
 
 #[derive(Debug, Clone)]
@@ -85,12 +85,16 @@ pub struct Bucket {
 }
 
 impl Bucket {
+    pub const AVAIL: u32 = 6;
+
     pub fn from_reader(header: &Header, reader: &mut impl Read) -> io::Result<Self> {
         // read avail section
-        let av_count = read32(header.endian(), reader)? as usize;
+        let av_count = read32(header.endian(), reader)?;
 
-        // always padding here
-        read32(header.endian(), reader)?;
+        // paddding
+        if header.alignment().is64() {
+            read32(header.endian(), reader)?;
+        }
 
         // read av_count entries from bucket_avail[]
         let avail = (0..av_count)
@@ -98,7 +102,7 @@ impl Bucket {
             .collect::<io::Result<Vec<_>>>()?;
 
         // read remaining to-be-ignored entries from bucket_avail[]
-        (av_count..BUCKET_AVAIL).try_for_each(|_| {
+        (av_count..Self::AVAIL).try_for_each(|_| {
             AvailElem::from_reader(header.alignment(), header.endian(), reader).map(|_| ())
         })?;
 
@@ -131,14 +135,18 @@ impl Bucket {
         endian: Endian,
         writer: &mut impl Write,
     ) -> io::Result<()> {
-        assert!(self.avail.len() <= BUCKET_AVAIL);
+        assert!(self.avail.len() as u32 <= Self::AVAIL);
 
         //
         // avail section
         //
 
         write32(endian, writer, self.avail.len() as u32)?;
-        write32(endian, writer, 0)?;
+
+        // padding
+        if alignment.is64() {
+            write32(endian, writer, 0)?;
+        }
 
         // valid avail elements
         self.avail
@@ -146,7 +154,7 @@ impl Bucket {
             .try_for_each(|elem| elem.serialize(alignment, endian, writer))?;
 
         // dummy avail elements
-        (self.avail.len()..BUCKET_AVAIL)
+        (self.avail.len() as u32..Self::AVAIL)
             .try_for_each(|_| AvailElem::default().serialize(alignment, endian, writer))?;
 
         //
@@ -163,6 +171,15 @@ impl Bucket {
             .try_for_each(|elem| elem.serialize(alignment, endian, writer))?;
 
         Ok(())
+    }
+
+    pub fn sizeof(alignment: Alignment) -> u32 {
+        // 4 bytes each for bits, count and av_count + padding
+        Self::AVAIL * AvailElem::sizeof(alignment)
+            + match alignment {
+                Alignment::Align32 => 12,
+                Alignment::Align64 => 16,
+            }
     }
 }
 

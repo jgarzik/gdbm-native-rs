@@ -8,16 +8,16 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
-use std::io::{self, Seek, SeekFrom, Write};
+use std::io::{self, Read, Write};
 
+use crate::hashutil::HASH_BITS;
 use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
-use crate::{Header, GDBM_HASH_BITS};
 
 pub fn build_dir_size(block_sz: u32) -> (u32, u32) {
     let mut dir_size = 8 * 8; // fixme: 8==off_t==vary on is_lfs
     let mut dir_bits = 3;
 
-    while dir_size < block_sz && dir_bits < GDBM_HASH_BITS - 3 {
+    while dir_size < block_sz && dir_bits < HASH_BITS - 3 {
         dir_size <<= 1;
         dir_bits += 1;
     }
@@ -28,6 +28,7 @@ pub fn build_dir_size(block_sz: u32) -> (u32, u32) {
 #[derive(Debug)]
 pub struct Directory {
     pub dir: Vec<u64>,
+    pub dirty: bool,
 }
 
 impl Directory {
@@ -47,22 +48,41 @@ impl Directory {
             Alignment::Align64 => write64(endian, writer, *ofs),
         })
     }
-}
 
-pub fn dirent_elem_size(alignment: Alignment) -> usize {
-    match alignment {
-        Alignment::Align32 => 4,
-        Alignment::Align64 => 8,
-    }
-}
-
-// Read C-struct-based bucket directory (a vector of storage offsets)
-pub fn dir_reader(f: &mut std::fs::File, header: &Header) -> io::Result<Vec<u64>> {
-    f.seek(SeekFrom::Start(header.dir_ofs))?;
-    (0..header.dir_sz as usize / dirent_elem_size(header.alignment()))
-        .map(|_| match header.alignment() {
-            Alignment::Align32 => read32(header.endian(), f).map(|v| v as u64),
-            Alignment::Align64 => read64(header.endian(), f),
+    pub fn from_reader(
+        alignment: Alignment,
+        endian: Endian,
+        extent: u32,
+        reader: &mut impl Read,
+    ) -> io::Result<Self> {
+        let count = extent
+            / match alignment {
+                Alignment::Align32 => 4,
+                Alignment::Align64 => 8,
+            };
+        Ok(Self {
+            dirty: false,
+            dir: (0..count)
+                .map(|_| match alignment {
+                    Alignment::Align32 => read32(endian, reader).map(|v| v as u64),
+                    Alignment::Align64 => read64(endian, reader),
+                })
+                .collect::<io::Result<Vec<_>>>()?,
         })
-        .collect::<io::Result<Vec<_>>>()
+    }
+
+    // serialized size of this instance
+    pub fn extent(&self, alignment: Alignment) -> u32 {
+        match alignment {
+            Alignment::Align32 => self.dir.len() as u32 * 4,
+            Alignment::Align64 => self.dir.len() as u32 * 8,
+        }
+    }
+
+    // validate all buckets are inside file
+    pub fn validate(&self, start: u64, end: u64, bucket_size: u32) -> bool {
+        self.dir
+            .iter()
+            .all(|&offset| offset >= start && offset + bucket_size as u64 <= end)
+    }
 }

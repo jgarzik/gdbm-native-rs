@@ -11,19 +11,20 @@
 use std::io::{self, Read, Write};
 use std::iter::repeat;
 
-use crate::header::Header;
-use crate::{GDBM_HASH_BITS, KEY_SMALL};
+pub const HASH_BITS: u32 = 31;
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct PartialKey([u8; KEY_SMALL]);
+pub struct PartialKey([u8; PartialKey::SIZEOF as usize]);
 
 impl PartialKey {
+    pub const SIZEOF: u32 = 4;
+
     pub fn new(key: &[u8]) -> Self {
         Self(
             key.iter()
                 .cloned()
                 .chain(repeat(0))
-                .take(KEY_SMALL)
+                .take(Self::SIZEOF as usize)
                 .collect::<Vec<_>>()
                 .try_into()
                 .unwrap(),
@@ -31,7 +32,7 @@ impl PartialKey {
     }
 
     pub fn from_reader(reader: &mut impl Read) -> io::Result<Self> {
-        let mut buf = [0; KEY_SMALL];
+        let mut buf = [0; Self::SIZEOF as usize];
         reader.read_exact(&mut buf)?;
         Ok(Self(buf))
     }
@@ -55,15 +56,15 @@ pub fn hash_key(key: &[u8]) -> u32 {
 }
 
 // hash-to-bucket lookup
-pub fn bucket_dir(header: &Header, hash: u32) -> usize {
-    (hash as usize) >> (GDBM_HASH_BITS - header.dir_bits)
+pub fn bucket_dir(dir_bits: u32, hash: u32) -> usize {
+    (hash as usize) >> (HASH_BITS - dir_bits)
 }
 
 // derives hash and bucket metadata from key
-pub fn key_loc(header: &Header, key: &[u8]) -> (u32, usize, u32) {
+pub fn key_loc(dir_bits: u32, bucket_elems: u32, key: &[u8]) -> (u32, usize, u32) {
     let hash = hash_key(key);
-    let bucket = bucket_dir(header, hash);
-    let ofs = hash % header.bucket_elems;
+    let bucket = bucket_dir(dir_bits, hash);
+    let ofs = hash % bucket_elems;
 
     (hash, bucket, ofs)
 }

@@ -23,8 +23,8 @@ mod header;
 mod magic;
 mod ser;
 use avail::{AvailBlock, AvailElem};
-use bucket::{Bucket, BucketCache, BUCKET_AVAIL};
-use dir::{dir_reader, dirent_elem_size, Directory};
+use bucket::{Bucket, BucketCache};
+use dir::Directory;
 use hashutil::{key_loc, PartialKey};
 use header::Header;
 use ser::{write32, write64, Alignment, Endian};
@@ -32,14 +32,6 @@ use ser::{write32, write64, Alignment, Endian};
 // Our claimed GDBM lib version compatibility.  Appears in dump files.
 const COMPAT_GDBM_VERSION: &str = "1.23";
 
-const GDBM_HASH_BITS: u32 = 31;
-
-const GDBM_HDR_SZ: u32 = 72; // todo: all this varies on 32/64bit, LE/BE...
-const GDBM_HASH_BUCKET_SZ: u32 = 136;
-const GDBM_BUCKET_ELEM_SZ: u32 = 24;
-const GDBM_AVAIL_HDR_SZ: u32 = 16;
-const GDBM_AVAIL_ELEM_SZ: u32 = 16;
-const KEY_SMALL: usize = 4;
 const IGNORE_SMALL: usize = 4;
 
 pub enum ExportBinMode {
@@ -73,7 +65,6 @@ pub struct Gdbm {
     f: std::fs::File,
     pub header: Header,
     pub dir: Directory,
-    dir_dirty: bool,
     bucket_cache: BucketCache,
     cur_bucket_ofs: u64,
     cur_bucket_dir: usize,
@@ -101,9 +92,20 @@ impl Gdbm {
         println!("{:?}", header);
 
         // read gdbm hash directory
-        let dir = dir_reader(&mut f, &header)?;
+        f.seek(SeekFrom::Start(header.dir_ofs))?;
+        let dir =
+            Directory::from_reader(header.alignment(), header.endian(), header.dir_sz, &mut f)?;
+
+        // ensure all bucket offsets are reasonable
+        if !dir.validate(header.block_sz as u64, header.next_block, header.block_sz) {
+            return Err(Error::new(
+                ErrorKind::Other,
+                "corruption: bucket offset outside of file",
+            ))?;
+        }
+
         let cur_bucket_dir: usize = 0;
-        let cur_bucket_ofs = dir[cur_bucket_dir];
+        let cur_bucket_ofs = dir.dir[cur_bucket_dir];
 
         // success; create new Gdbm object
         Ok(Gdbm {
@@ -111,8 +113,7 @@ impl Gdbm {
             cfg: *dbcfg,
             f,
             header,
-            dir: Directory { dir },
-            dir_dirty: false,
+            dir,
             bucket_cache: BucketCache::new(),
             cur_bucket_ofs,
             cur_bucket_dir,
@@ -240,47 +241,18 @@ impl Gdbm {
         Ok(())
     }
 
-    // validate directory entry index.  currently just a bounds check.
-    fn dirent_valid(&self, idx: usize) -> bool {
-        idx < self.dir.len() // && self.dir.dir[idx] >= (self.header.block_sz as u64)
-    }
-
     // read bucket into bucket cache.
-    fn cache_load_bucket(&mut self, bucket_dir: usize) -> io::Result<bool> {
-        if !self.dirent_valid(bucket_dir) {
-            return Err(Error::new(ErrorKind::Other, "invalid bucket idx"));
-        }
-
-        let bucket_ofs = self.dir.dir[bucket_dir];
-        println!("bucket ofs = {}", bucket_ofs);
-
-        // already in cache
-        if self.bucket_cache.contains(bucket_ofs) {
-            self.cur_bucket_ofs = bucket_ofs;
-            self.cur_bucket_dir = bucket_dir;
-            return Ok(true);
-        }
-
-        // empty bucket
-        if bucket_ofs < (self.header.block_sz as u64) {
-            self.cur_bucket_ofs = bucket_ofs;
-            self.cur_bucket_dir = bucket_dir;
-            return Ok(false);
-        }
-
-        // seek to bucket and read it
-        let pos = self.f.seek(SeekFrom::Start(bucket_ofs))?;
-        println!("seek'd to {}", pos);
-
-        let new_bucket = Bucket::from_reader(&self.header, &mut self.f)?;
-        // println!("new_bucket={:?}", new_bucket);
-
-        // add to bucket cache
-        self.bucket_cache.insert(bucket_ofs, new_bucket);
-        self.cur_bucket_ofs = bucket_ofs;
+    fn cache_load_bucket(&mut self, bucket_dir: usize) -> io::Result<()> {
         self.cur_bucket_dir = bucket_dir;
+        self.cur_bucket_ofs = self.dir.dir[bucket_dir];
 
-        Ok(true)
+        if !self.bucket_cache.contains(self.cur_bucket_ofs) {
+            self.f.seek(SeekFrom::Start(self.cur_bucket_ofs))?;
+            let bucket = Bucket::from_reader(&self.header, &mut self.f)?;
+            self.bucket_cache.insert(self.cur_bucket_ofs, bucket);
+        }
+
+        Ok(())
     }
 
     // return a reference to the current bucket
@@ -300,7 +272,6 @@ impl Gdbm {
     fn current_bucket_mut(&mut self) -> &mut Bucket {
         // note: assumes will be called following cache_load_bucket() to cache
         // assignment of dir[0] to cur_bucket at Gdbm{} creation not sufficient.
-        self.bucket_cache.dirty(self.cur_bucket_ofs);
         let bucket = self
             .bucket_cache
             .bucket_map
@@ -310,14 +281,10 @@ impl Gdbm {
         bucket
     }
 
-    fn dir_max_elem(&self) -> usize {
-        self.header.dir_sz as usize / dirent_elem_size(self.header.alignment())
-    }
-
     // since one bucket dir entry may duplicate another,
     // this function returns the next non-dup bucket dir
     fn next_bucket_dir(&self, bucket_dir_in: usize) -> usize {
-        let dir_max_elem = self.dir_max_elem();
+        let dir_max_elem = self.dir.dir.len();
         if bucket_dir_in >= dir_max_elem {
             return dir_max_elem;
         }
@@ -337,7 +304,7 @@ impl Gdbm {
     pub fn len(&mut self) -> io::Result<usize> {
         let mut len: usize = 0;
         let mut cur_dir: usize = 0;
-        let dir_max_elem = self.dir_max_elem();
+        let dir_max_elem = self.dir.dir.len();
         while cur_dir < dir_max_elem {
             self.cache_load_bucket(cur_dir)?;
             let bucket = self.current_bucket();
@@ -416,14 +383,11 @@ impl Gdbm {
 
     // retrieve record data, and element offset in bucket, for given key
     fn int_get(&mut self, key: &[u8]) -> io::Result<Option<(usize, Vec<u8>)>> {
-        let (key_hash, bucket_dir, elem_ofs) = key_loc(&self.header, key);
+        let (key_hash, bucket_dir, elem_ofs) =
+            key_loc(self.header.dir_bits, self.header.bucket_elems, key);
         let key_start = PartialKey::new(key);
 
-        println!("has: {}, key: {:?}", key_hash, key);
-
-        if !self.cache_load_bucket(bucket_dir)? {
-            return Ok(None);
-        } // bucket not found -> key not found
+        self.cache_load_bucket(bucket_dir)?;
 
         let bucket_entries = (0..self.header.bucket_elems)
             .map(|index| ((index + elem_ofs) % self.header.bucket_elems) as usize)
@@ -467,84 +431,62 @@ impl Gdbm {
     }
 
     // virtually allocate N blocks of data, at end of db file (no I/O)
-    fn new_block(&mut self, new_sz: usize) -> AvailElem {
-        let mut elem = AvailElem {
-            sz: self.header.block_sz,
-            addr: self.header.next_block,
-        };
+    fn extend(&mut self, size: u32) -> io::Result<(u64, u32)> {
+        let offset = self.header.next_block;
+        let length = match size % self.header.block_sz {
+            0 => size / self.header.block_sz,
+            _ => size / self.header.block_sz + 1,
+        } * self.header.block_sz;
 
-        while (elem.sz as usize) < new_sz {
-            elem.sz += self.header.block_sz;
-        }
-
-        self.header.next_block += elem.sz as u64;
-
+        self.header.next_block += length as u64;
         self.header.dirty = true;
 
-        elem
+        Ok((offset, length))
     }
 
     // Free list is full.  Split in half, and store 1/2 in new list block.
     fn push_avail_block(&mut self) -> io::Result<()> {
-        let new_blk_sz =
-            (((self.header.avail.sz * GDBM_AVAIL_ELEM_SZ) / 2) + GDBM_AVAIL_HDR_SZ) as usize;
-
-        // having calculated size of 1st extension block (new_blk_sz),
-        // - look in free list for that amount of space
-        // - if not, get new space from end of file
-        let mut ext_elem = self
-            .header
-            .avail
-            .remove_elem(new_blk_sz as u32)
-            .unwrap_or(self.new_block(new_blk_sz));
-        let new_blk_ofs = ext_elem.addr;
-
-        let mut hdr_blk = AvailBlock::new(self.header.avail.sz);
-        let mut ext_blk = AvailBlock::new(self.header.avail.sz);
-
-        // divide avail into 2 vectors.  elements are sorted by size,
-        // so we perform A/B push, rather than simply slice first 1/2 of vec
-        self.header
-            .avail
-            .elems
-            .iter()
-            .enumerate()
-            .for_each(|(index, elem)| {
-                if index & 0x1 == 0 {
-                    hdr_blk.elems.push(elem.clone());
-                } else {
-                    ext_blk.elems.push(elem.clone());
-                }
-            });
-
-        // finalize new header avail block.  equates to
-        //     head.next = second
-        hdr_blk.next_block = new_blk_ofs;
-
-        // finalize new extension avail block, linked-to by header block
-        // as with any linked list insertion at-head, our 'next' equates to
-        //     second.next = head.next
-        ext_blk.next_block = self.header.avail.next_block;
-
-        // size allocation may have allocated more space than we needed.
-        // gdbm calls self.free_record(), which may call
-        // self.push_avail_block() recurively.  We choose the alternative,
-        // adding the space to the header block as a simplfication.
-        ext_elem.sz -= new_blk_sz as u32;
-        ext_elem.addr += new_blk_sz as u64;
-        if ext_elem.sz > IGNORE_SMALL as u32 {
-            // insert, sorted by size
-            let pos = hdr_blk.elems.binary_search(&ext_elem).unwrap_or_else(|e| e);
-            hdr_blk.elems.insert(pos, ext_elem);
-        }
-
-        // update avail block in header (deferred write)
-        self.header.avail = hdr_blk;
-        self.header.dirty = true;
+        let (header_elems, new_elems) = avail::partition_elems(&self.header.avail.elems);
 
         // write extension block to storage (immediately)
-        self.f.seek(SeekFrom::Start(new_blk_ofs))?;
-        ext_blk.serialize(self.header.alignment(), self.header.endian(), &mut self.f)?;
+        let new_blk_ofs = {
+            let block = AvailBlock::new(
+                new_elems.len() as u32,
+                self.header.avail.next_block,
+                new_elems,
+            );
+            let offset = self.allocate_record(block.extent(self.header.alignment()))?;
+            self.f.seek(SeekFrom::Start(offset))?;
+            block.serialize(self.header.alignment(), self.header.endian(), &mut self.f)?;
+            offset
+        };
+
+        self.header.avail = AvailBlock::new(self.header.avail.sz, new_blk_ofs, header_elems);
+        self.header.dirty = true;
+
+        Ok(())
+    }
+
+    // pops a block of the avail block list into the header block, only if it can accommodate it
+    fn pop_avail_block(&mut self) -> io::Result<()> {
+        let next_addr = self.header.avail.next_block;
+
+        let next = {
+            self.f.seek(SeekFrom::Start(self.header.avail.next_block))?;
+            AvailBlock::from_reader(self.header.alignment(), self.header.endian(), &mut self.f)?
+        };
+
+        if let Some(block) = self.header.avail.merge(&next) {
+            self.header.avail = block;
+            self.header.dirty = true;
+
+            // free the block we just merged
+            self.free_record(
+                next_addr,
+                AvailBlock::sizeof(self.header.alignment())
+                    + next.sz * AvailElem::sizeof(self.header.alignment()),
+            )?;
+        }
 
         Ok(())
     }
@@ -561,10 +503,11 @@ impl Gdbm {
 
         // smaller items go into bucket avail list
         let bucket = self.current_bucket();
-        if sz < self.header.block_sz && bucket.avail.len() < BUCKET_AVAIL {
+        if sz < self.header.block_sz && (bucket.avail.len() as u32) < Bucket::AVAIL {
             // insort into bucket avail vector, sorted by size
             let pos = bucket.avail.binary_search(&elem).unwrap_or_else(|e| e);
             self.current_bucket_mut().avail.insert(pos, elem);
+            self.bucket_cache.dirty(self.cur_bucket_ofs);
 
             // success (and no I/O performed)
             return Ok(());
@@ -619,7 +562,7 @@ impl Gdbm {
 
     // write out any cached, not-yet-written metadata and data to storage
     fn write_dir(&mut self) -> io::Result<()> {
-        if !self.dir_dirty {
+        if !self.dir.dirty {
             return Ok(());
         }
 
@@ -627,7 +570,7 @@ impl Gdbm {
         self.dir
             .serialize(self.header.alignment(), self.header.endian(), &mut self.f)?;
 
-        self.dir_dirty = false;
+        self.dir.dirty = false;
 
         Ok(())
     }
@@ -680,6 +623,7 @@ impl Gdbm {
         let (elem_ofs, data) = get_opt.unwrap();
 
         let bucket_elems = self.header.bucket_elems as usize;
+        self.bucket_cache.dirty(self.cur_bucket_ofs);
         let bucket = self.current_bucket_mut();
 
         // remember element to be removed
@@ -714,7 +658,45 @@ impl Gdbm {
         Ok(Some(data))
     }
 
-    // API: reset iterator state
+    fn allocate_from_bucket(&mut self, size: u32) -> Option<(u64, u32)> {
+        let bucket = self.current_bucket_mut();
+        let elem = avail::remove_elem(&mut bucket.avail, size);
+
+        if elem.is_some() {
+            self.bucket_cache.dirty(self.cur_bucket_ofs);
+        }
+
+        elem.map(|elem| (elem.addr, elem.sz))
+    }
+
+    fn allocate_from_header(&mut self, size: u32) -> io::Result<Option<(u64, u32)>> {
+        if self.header.avail.elems.len() as u32 > self.header.avail.sz / 2 {
+            self.pop_avail_block()?;
+        }
+
+        let elem = self.header.avail.remove_elem(size);
+
+        if elem.is_some() {
+            self.header.dirty = true;
+        }
+
+        Ok(elem.map(|elem| (elem.addr, elem.sz)))
+    }
+
+    fn allocate_record(&mut self, size: u32) -> io::Result<u64> {
+        let (offset, length) = match self.allocate_from_bucket(size) {
+            Some((offset, length)) => (offset, length),
+            None => match self.allocate_from_header(size)? {
+                Some((offset, length)) => (offset, length),
+                None => self.extend(size)?,
+            },
+        };
+
+        self.free_record(offset + size as u64, length - size)?;
+
+        Ok(offset)
+    }
+
     pub fn iter_reset(&mut self) {
         self.iter_key = None;
     }
