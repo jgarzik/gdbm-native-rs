@@ -15,6 +15,7 @@ mod common;
 use common::init_tests;
 use gdbm_native::Gdbm;
 use std::fs;
+use tempfile::NamedTempFile;
 
 #[test]
 fn api_remove() {
@@ -53,4 +54,76 @@ fn api_remove() {
             fs::remove_file(newdb_fn).expect("Test file remove failed");
         }
     }
+}
+
+#[test]
+fn api_insert() {
+    let testcfg = init_tests();
+
+    testcfg
+        .tests
+        .iter()
+        .filter_map(|test_file| (!test_file.is_basic).then_some(test_file.db_path.clone()))
+        .try_for_each(|filename| {
+            let file = NamedTempFile::new().unwrap();
+            let test_filename = file.path();
+            fs::copy(filename, test_filename).unwrap();
+
+            let mut db = Gdbm::open(test_filename.to_str().unwrap(), &testcfg.def_rw_cfg)
+                .map_err(|e| e.to_string())?;
+
+            // insert items
+            (0..10000).try_for_each(|n| {
+                let key = format!("key {}", n);
+                let value = format!("value {}", n);
+
+                db.insert(key.as_bytes(), value.as_bytes())
+                    .map_err(|e| {
+                        format!("inserting key \"{}\" with value \"{}\": {}", key, value, e)
+                    })
+                    .map(|_| ())
+            })?;
+
+            // reopen the database
+            db.sync().map_err(|e| e.to_string())?;
+            drop(db);
+            let mut db = Gdbm::open(test_filename.to_str().unwrap(), &testcfg.def_rw_cfg)
+                .map_err(|e| e.to_string())?;
+
+            // try_insert again (all should fail)
+            (0..10000).try_for_each(|n| {
+                let key = format!("key {}", n);
+                let value = format!("value {}", n);
+
+                db.try_insert(key.as_bytes(), value.as_bytes())
+                    .map_err(|e| {
+                        format!("inserting key \"{}\" with value \"{}\": {}", key, value, e)
+                    })
+                    .and_then(|(success, _)| {
+                        (!success)
+                            .then_some(())
+                            .ok_or_else(|| format!("overwriting key \"{}\"", key))
+                    })
+            })?;
+
+            // make sure we can get them all
+            (0..10000).try_for_each(|n| {
+                let key = format!("key {}", n);
+                let value = format!("value {}", n);
+
+                db.get(key.as_bytes())
+                    .map_err(|e| format!("getting key \"{}\": {}", key, e))
+                    .and_then(|v| match v {
+                        None => Err(format!("no value for key \"{}\"", key)),
+                        Some(v) if v != value.into_bytes() => {
+                            Err(format!("wrong value for key \"{}\"", key))
+                        }
+                        _ => Ok(()),
+                    })
+            })?;
+
+            Ok(())
+        })
+        .map_err(|e: String| println!("{}", e))
+        .unwrap()
 }
