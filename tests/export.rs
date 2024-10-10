@@ -19,7 +19,7 @@ use gdbm_native::{ExportBinMode, Gdbm};
 
 #[test]
 fn api_export_bin() {
-    const EXPORT_FN: &'static str = "./export.bin";
+    const EXPORT_FN: &str = "./export.bin";
 
     let testcfg = init_tests();
 
@@ -29,10 +29,11 @@ fn api_export_bin() {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .open(EXPORT_FN)
             .unwrap();
 
-        let _iores = db.export_bin(&mut outf, ExportBinMode::ExpNative).unwrap();
+        db.export_bin(&mut outf, ExportBinMode::ExpNative).unwrap();
         fs::remove_file(EXPORT_FN).unwrap();
 
         // TODO: once Store is implemented, import the exported data
@@ -42,7 +43,7 @@ fn api_export_bin() {
 
 #[test]
 fn api_export_ascii() {
-    const EXPORT_FN: &'static str = "./export.txt";
+    const EXPORT_FN: &str = "./export.txt";
 
     let testcfg = init_tests();
 
@@ -52,10 +53,11 @@ fn api_export_ascii() {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .open(EXPORT_FN)
             .unwrap();
 
-        let _iores = db.export_ascii(&mut outf).unwrap();
+        db.export_ascii(&mut outf).unwrap();
         fs::remove_file(EXPORT_FN).unwrap();
 
         // TODO: once Store is implemented, import the exported data

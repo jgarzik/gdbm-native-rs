@@ -25,7 +25,7 @@ pub fn build_dir_size(block_sz: u32) -> (u32, u32) {
     (dir_size, dir_bits)
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Directory {
     pub dir: Vec<u64>,
     pub dirty: bool,
@@ -71,6 +71,19 @@ impl Directory {
         })
     }
 
+    // double the dir size by duplicating every element
+    pub fn extend(&self) -> Self {
+        Self {
+            dir: self
+                .dir
+                .iter()
+                .cloned()
+                .flat_map(|offset| std::iter::repeat(offset).take(2))
+                .collect(),
+            dirty: true,
+        }
+    }
+
     // serialized size of this instance
     pub fn extent(&self, alignment: Alignment) -> u32 {
         match alignment {
@@ -84,5 +97,86 @@ impl Directory {
         self.dir
             .iter()
             .all(|&offset| offset >= start && offset + bucket_size as u64 <= end)
+    }
+
+    // update_bucket_split is called after a bucket is split.
+    // It finds the range of dir entries matching the one at offset,
+    // based on dir_bits and bucket_bits.
+    // It then replaces the second half of those offsets with the new bucket offset.
+    pub fn update_bucket_split(
+        &mut self,
+        dir_bits: u32,
+        bucket_bits: u32,
+        offset: usize,
+        bucket_offset: u64,
+    ) {
+        let num_entries = (1 << dir_bits) >> (bucket_bits - 1);
+        let range_start = offset / num_entries * num_entries;
+
+        // replace offsets in second half of the range with the new offset.
+        (range_start + (num_entries >> 1)..range_start + num_entries)
+            .for_each(|index| self.dir[index] = bucket_offset);
+
+        self.dirty = true;
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::Directory;
+
+    #[test]
+    fn test_extend() {
+        struct Test<'a> {
+            name: &'a str,
+            dir: Directory,
+            expected: Directory,
+        }
+
+        [
+            Test {
+                name: "empty",
+                dir: Directory {
+                    dir: vec![],
+                    dirty: false,
+                },
+                expected: Directory {
+                    dir: vec![],
+                    dirty: true,
+                },
+            },
+            Test {
+                name: "one",
+                dir: Directory {
+                    dir: vec![1],
+                    dirty: false,
+                },
+                expected: Directory {
+                    dir: vec![1, 1],
+                    dirty: true,
+                },
+            },
+            Test {
+                name: "two",
+                dir: Directory {
+                    dir: vec![1, 2],
+                    dirty: false,
+                },
+                expected: Directory {
+                    dir: vec![1, 1, 2, 2],
+                    dirty: true,
+                },
+            },
+        ]
+        .into_iter()
+        .for_each(|test| {
+            let got = test.dir.extend();
+            if got != test.expected {
+                panic!(
+                    "test: {}\nexpected: {:?}\ngot: {:?}",
+                    test.name, test.expected, got
+                );
+            }
+        })
     }
 }

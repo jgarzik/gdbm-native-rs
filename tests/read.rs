@@ -22,13 +22,11 @@ fn api_exists_not() {
 
     for testdb in &testcfg.tests {
         let mut db = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
-        let res = db.contains_key(b"dummy").unwrap();
-        assert_eq!(res, false);
+        assert!(!db.contains_key(b"dummy").unwrap());
 
         if testdb.is_basic {
             db = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
-            let res = db.contains_key(b"key -111").unwrap();
-            assert_eq!(res, false);
+            assert!(!db.contains_key(b"key -111").unwrap());
         }
     }
 }
@@ -43,8 +41,7 @@ fn api_exists() {
 
             for n in 0..10001 {
                 let keystr = format!("key {}", n);
-                let res = db.contains_key(keystr.as_bytes()).unwrap();
-                assert_eq!(res, true);
+                assert!(db.contains_key(keystr.as_bytes()).unwrap());
             }
         }
     }
@@ -72,21 +69,8 @@ fn api_get() {
 
             for n in 0..10001 {
                 let keystr = format!("key {}", n);
-                let res = db.get(keystr.as_bytes());
-                match res {
-                    Ok(opt) => match opt {
-                        None => {
-                            assert!(false);
-                        }
-                        Some(val) => {
-                            let valstr = format!("value {}", n);
-                            assert_eq!(val, valstr.as_bytes());
-                        }
-                    },
-                    Err(_e) => {
-                        assert!(false);
-                    }
-                }
+                let valstr = format!("value {}", n).into_bytes();
+                assert_eq!(db.get(keystr.as_bytes()).unwrap(), Some(valstr));
             }
         }
     }
@@ -113,7 +97,7 @@ fn api_first_next_key() {
 
             // iterate through each key in db
             let mut key_res = db.first_key().unwrap();
-            while key_res != None {
+            while key_res.is_some() {
                 let key = key_res.unwrap();
 
                 // remove iteration key from internal map
