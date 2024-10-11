@@ -18,14 +18,13 @@ use std::collections::HashMap;
 
 #[test]
 fn api_exists_not() {
-    let testcfg = init_tests();
+    let tests = init_tests();
 
-    for testdb in &testcfg.tests {
-        let mut db = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
+    for testdb in tests {
+        let mut db = Gdbm::open(&testdb.db_path, &testdb.ro_cfg()).unwrap();
         assert!(!db.contains_key(b"dummy").unwrap());
 
         if testdb.is_basic {
-            db = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
             assert!(!db.contains_key(b"key -111").unwrap());
         }
     }
@@ -33,11 +32,11 @@ fn api_exists_not() {
 
 #[test]
 fn api_exists() {
-    let testcfg = init_tests();
+    let tests = init_tests();
 
-    for testdb in &testcfg.tests {
+    for testdb in tests {
         if testdb.is_basic {
-            let mut db = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
+            let mut db = Gdbm::open(&testdb.db_path, &testdb.ro_cfg()).unwrap();
 
             for n in 0..10001 {
                 let keystr = format!("key {}", n);
@@ -49,11 +48,11 @@ fn api_exists() {
 
 #[test]
 fn api_get_not() {
-    let testcfg = init_tests();
+    let tests = init_tests();
 
-    for testdb in &testcfg.tests {
+    for testdb in tests {
         let keystr = String::from("This key does not exist.");
-        let mut db = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
+        let mut db = Gdbm::open(&testdb.db_path, &testdb.ro_cfg()).unwrap();
         let res = db.get(keystr.as_bytes()).unwrap();
         assert_eq!(res, None);
     }
@@ -61,11 +60,11 @@ fn api_get_not() {
 
 #[test]
 fn api_get() {
-    let testcfg = init_tests();
+    let tests = init_tests();
 
-    for testdb in &testcfg.tests {
+    for testdb in tests {
         if testdb.is_basic {
-            let mut db = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
+            let mut db = Gdbm::open(&testdb.db_path, &testdb.ro_cfg()).unwrap();
 
             for n in 0..10001 {
                 let keystr = format!("key {}", n);
@@ -78,9 +77,9 @@ fn api_get() {
 
 #[test]
 fn api_first_next_key() {
-    let testcfg = init_tests();
+    let tests = init_tests();
 
-    for testdb in &testcfg.tests {
+    for testdb in tests {
         if testdb.is_basic {
             // build internal map of keys expected to be present in basic.db
             let mut keys_remaining: HashMap<Vec<u8>, bool> = HashMap::new();
@@ -93,7 +92,7 @@ fn api_first_next_key() {
             assert_eq!(keys_remaining.len(), testdb.n_records);
 
             // open basic.db
-            let mut db = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
+            let mut db = Gdbm::open(&testdb.db_path, &testdb.ro_cfg()).unwrap();
 
             // iterate through each key in db
             let mut key_res = db.first_key().unwrap();
@@ -114,20 +113,20 @@ fn api_first_next_key() {
 
 #[test]
 fn api_open_close() {
-    let testcfg = init_tests();
+    let tests = init_tests();
 
-    for testdb in &testcfg.tests {
-        let _res = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
+    for testdb in tests {
+        let _res = Gdbm::open(&testdb.db_path, &testdb.ro_cfg()).unwrap();
         // implicit close when scope closes
     }
 }
 
 #[test]
 fn api_len() {
-    let testcfg = init_tests();
+    let tests = init_tests();
 
-    for testdb in &testcfg.tests {
-        let mut db = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
+    for testdb in tests {
+        let mut db = Gdbm::open(&testdb.db_path, &testdb.ro_cfg()).unwrap();
         let res = db.len().unwrap();
         assert_eq!(res, testdb.n_records);
     }

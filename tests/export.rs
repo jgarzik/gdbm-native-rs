@@ -21,10 +21,10 @@ use gdbm_native::{ExportBinMode, Gdbm};
 fn api_export_bin() {
     const EXPORT_FN: &str = "./export.bin";
 
-    let testcfg = init_tests();
+    let tests = init_tests();
 
-    for testdb in &testcfg.tests {
-        let mut db = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
+    for testdb in tests {
+        let mut db = Gdbm::open(&testdb.db_path, &testdb.ro_cfg()).unwrap();
         let mut outf = OpenOptions::new()
             .read(true)
             .write(true)
@@ -45,10 +45,10 @@ fn api_export_bin() {
 fn api_export_ascii() {
     const EXPORT_FN: &str = "./export.txt";
 
-    let testcfg = init_tests();
+    let tests = init_tests();
 
-    for testdb in &testcfg.tests {
-        let mut db = Gdbm::open(&testdb.db_path, &testcfg.def_ro_cfg).unwrap();
+    for testdb in tests {
+        let mut db = Gdbm::open(&testdb.db_path, &testdb.ro_cfg()).unwrap();
         let mut outf = OpenOptions::new()
             .read(true)
             .write(true)

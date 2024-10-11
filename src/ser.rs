@@ -10,12 +10,14 @@
 
 use std::io::{self, Read, Write};
 
-/// Field alignment of DB file
+/// Struct field alignment of DB file
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Alignment {
-    /// File offset fields are 32bit
+    /// All fields aligned on 4byte boundaries.
+    /// Struct sizes are multiple of 4.
     Align32,
-    /// File offset fields are 64bit
+    /// Fields larger than 4byte aligned on 8byte boundaries.
+    /// Struct sizes are multiple of 8.
     Align64,
 }
 
@@ -30,6 +32,23 @@ impl Alignment {
 pub enum Endian {
     Little,
     Big,
+}
+
+/// Offset types: LFS (64bit) or Small (32bit)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Offset {
+    // Offset fields are 32bit.
+    Small,
+    // Offset fields are 64bit.
+    LFS,
+}
+
+/// Container for layout possibilities.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Layout {
+    pub alignment: Alignment,
+    pub endian: Endian,
+    pub offset: Offset,
 }
 
 pub fn read32(endian: Endian, reader: &mut impl Read) -> io::Result<u32> {

@@ -14,7 +14,7 @@ use std::io::{self, Error, ErrorKind, Read, Write};
 use crate::avail::{self, AvailElem};
 use crate::hashutil::{hash_key, PartialKey};
 use crate::header::Header;
-use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
+use crate::ser::{read32, read64, write32, write64, Alignment, Layout, Offset};
 
 #[derive(Debug, Copy, Clone)]
 pub struct BucketElement {
@@ -38,6 +38,13 @@ impl Default for BucketElement {
 }
 
 impl BucketElement {
+    pub fn sizeof(layout: &Layout) -> u32 {
+        match layout.offset {
+            Offset::Small => 20,
+            Offset::LFS => 24,
+        }
+    }
+
     pub fn new(key: &[u8], data: &[u8], offset: u64) -> Self {
         Self {
             hash: hash_key(key),
@@ -48,22 +55,18 @@ impl BucketElement {
         }
     }
 
-    pub fn from_reader(
-        alignment: Alignment,
-        endian: Endian,
-        reader: &mut impl Read,
-    ) -> io::Result<Self> {
-        let hash = read32(endian, reader)?;
+    pub fn from_reader(layout: &Layout, reader: &mut impl Read) -> io::Result<Self> {
+        let hash = read32(layout.endian, reader)?;
 
         let key_start = PartialKey::from_reader(reader)?;
 
-        let data_ofs = match alignment {
-            Alignment::Align32 => (read32(endian, reader)?) as u64,
-            Alignment::Align64 => read64(endian, reader)?,
+        let data_ofs = match layout.offset {
+            Offset::Small => (read32(layout.endian, reader)?) as u64,
+            Offset::LFS => read64(layout.endian, reader)?,
         };
 
-        let key_size = read32(endian, reader)?;
-        let data_size = read32(endian, reader)?;
+        let key_size = read32(layout.endian, reader)?;
+        let data_size = read32(layout.endian, reader)?;
 
         Ok(BucketElement {
             hash,
@@ -74,28 +77,21 @@ impl BucketElement {
         })
     }
 
-    pub fn serialize(
-        &self,
-        alignment: Alignment,
-        endian: Endian,
-        writer: &mut impl Write,
-    ) -> io::Result<()> {
-        write32(endian, writer, self.hash)?;
+    pub fn serialize(&self, layout: &Layout, writer: &mut impl Write) -> io::Result<()> {
+        write32(layout.endian, writer, self.hash)?;
 
         self.key_start.serialize(writer)?;
 
-        match alignment {
-            Alignment::Align32 => write32(endian, writer, self.data_ofs as u32)?,
-            Alignment::Align64 => write64(endian, writer, self.data_ofs)?,
+        match layout.offset {
+            Offset::Small => write32(layout.endian, writer, self.data_ofs as u32)?,
+            Offset::LFS => write64(layout.endian, writer, self.data_ofs)?,
         }
 
-        write32(endian, writer, self.key_size)?;
-        write32(endian, writer, self.data_size)?;
+        write32(layout.endian, writer, self.key_size)?;
+        write32(layout.endian, writer, self.data_size)?;
 
         Ok(())
     }
-
-    pub const SIZEOF: u32 = 24;
 
     pub fn is_occupied(&self) -> bool {
         self.hash != 0xffffffff
@@ -129,30 +125,33 @@ impl Bucket {
         )
     }
 
-    pub fn from_reader(header: &Header, reader: &mut impl Read) -> io::Result<Self> {
+    pub fn from_reader(
+        header: &Header,
+        layout: &Layout,
+        reader: &mut impl Read,
+    ) -> io::Result<Self> {
         // read avail section
-        let av_count = read32(header.endian(), reader)?;
+        let av_count = read32(layout.endian, reader)?;
 
         // paddding
-        if header.alignment().is64() {
-            read32(header.endian(), reader)?;
+        if layout.alignment.is64() {
+            read32(layout.endian, reader)?;
         }
 
         // read av_count entries from bucket_avail[]
         let avail = (0..av_count)
-            .map(|_| AvailElem::from_reader(header.alignment(), header.endian(), reader))
+            .map(|_| AvailElem::from_reader(layout, reader))
             .collect::<io::Result<Vec<_>>>()?;
 
         // read remaining to-be-ignored entries from bucket_avail[]
-        (av_count..Self::AVAIL).try_for_each(|_| {
-            AvailElem::from_reader(header.alignment(), header.endian(), reader).map(|_| ())
-        })?;
+        (av_count..Self::AVAIL)
+            .try_for_each(|_| AvailElem::from_reader(layout, reader).map(|_| ()))?;
 
         // todo: validate and assure-sorted avail[]
 
         // read misc. section
-        let bits = read32(header.endian(), reader)?;
-        let count = read32(header.endian(), reader)?;
+        let bits = read32(layout.endian, reader)?;
+        let count = read32(layout.endian, reader)?;
 
         if !(count <= header.bucket_elems && bits <= header.dir_bits) {
             return Err(Error::new(ErrorKind::Other, "invalid bucket c/b"));
@@ -160,7 +159,7 @@ impl Bucket {
 
         // read bucket elements section
         let tab = (0..header.bucket_elems)
-            .map(|_| BucketElement::from_reader(header.alignment(), header.endian(), reader))
+            .map(|_| BucketElement::from_reader(layout, reader))
             .collect::<io::Result<Vec<_>>>()?;
 
         Ok(Bucket {
@@ -171,54 +170,49 @@ impl Bucket {
         })
     }
 
-    pub fn serialize(
-        &self,
-        alignment: Alignment,
-        endian: Endian,
-        writer: &mut impl Write,
-    ) -> io::Result<()> {
+    pub fn serialize(&self, layout: &Layout, writer: &mut impl Write) -> io::Result<()> {
         assert!(self.avail.len() as u32 <= Self::AVAIL);
 
         //
         // avail section
         //
 
-        write32(endian, writer, self.avail.len() as u32)?;
+        write32(layout.endian, writer, self.avail.len() as u32)?;
 
         // padding
-        if alignment.is64() {
-            write32(endian, writer, 0)?;
+        if layout.alignment.is64() {
+            write32(layout.endian, writer, 0)?;
         }
 
         // valid avail elements
         self.avail
             .iter()
-            .try_for_each(|elem| elem.serialize(alignment, endian, writer))?;
+            .try_for_each(|elem| elem.serialize(layout, writer))?;
 
         // dummy avail elements
         (self.avail.len() as u32..Self::AVAIL)
-            .try_for_each(|_| AvailElem::default().serialize(alignment, endian, writer))?;
+            .try_for_each(|_| AvailElem::default().serialize(layout, writer))?;
 
         //
         // misc section
         //
-        write32(endian, writer, self.bits)?;
-        write32(endian, writer, self.count)?;
+        write32(layout.endian, writer, self.bits)?;
+        write32(layout.endian, writer, self.count)?;
 
         //
         // bucket elements section
         //
         self.tab
             .iter()
-            .try_for_each(|elem| elem.serialize(alignment, endian, writer))?;
+            .try_for_each(|elem| elem.serialize(layout, writer))?;
 
         Ok(())
     }
 
-    pub fn sizeof(alignment: Alignment) -> u32 {
+    pub fn sizeof(layout: &Layout) -> u32 {
         // 4 bytes each for bits, count and av_count + padding
-        Self::AVAIL * AvailElem::sizeof(alignment)
-            + match alignment {
+        Self::AVAIL * AvailElem::sizeof(layout)
+            + match layout.alignment {
                 Alignment::Align32 => 12,
                 Alignment::Align64 => 16,
             }
