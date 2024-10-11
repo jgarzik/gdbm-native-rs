@@ -10,7 +10,7 @@
 
 use std::io::{self, Read, Write};
 
-use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
+use crate::ser::{read32, read64, write32, write64, Alignment, Layout, Offset};
 
 #[derive(Default, Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct AvailElem {
@@ -19,28 +19,25 @@ pub struct AvailElem {
 }
 
 impl AvailElem {
-    pub fn sizeof(alignment: Alignment) -> u32 {
-        match alignment {
-            Alignment::Align32 => 12,
-            Alignment::Align64 => 16,
+    pub fn sizeof(layout: &Layout) -> u32 {
+        match (layout.alignment, layout.offset) {
+            (Alignment::Align32, Offset::LFS) => 12,
+            (Alignment::Align64, Offset::LFS) => 16,
+            _ => 8,
         }
     }
 
-    pub fn from_reader(
-        alignment: Alignment,
-        endian: Endian,
-        reader: &mut impl Read,
-    ) -> io::Result<Self> {
-        let elem_sz = read32(endian, reader)?;
+    pub fn from_reader(layout: &Layout, reader: &mut impl Read) -> io::Result<Self> {
+        let elem_sz = read32(layout.endian, reader)?;
 
         // skip padding
-        if alignment.is64() {
-            read32(endian, reader)?;
+        if layout.alignment.is64() {
+            read32(layout.endian, reader)?;
         }
 
-        let elem_ofs = match alignment {
-            Alignment::Align32 => (read32(endian, reader)?) as u64,
-            Alignment::Align64 => read64(endian, reader)?,
+        let elem_ofs = match layout.offset {
+            Offset::Small => (read32(layout.endian, reader)?) as u64,
+            Offset::LFS => read64(layout.endian, reader)?,
         };
 
         Ok(AvailElem {
@@ -49,22 +46,17 @@ impl AvailElem {
         })
     }
 
-    pub fn serialize(
-        &self,
-        alignment: Alignment,
-        endian: Endian,
-        writer: &mut impl Write,
-    ) -> io::Result<()> {
-        write32(endian, writer, self.sz)?;
+    pub fn serialize(&self, layout: &Layout, writer: &mut impl Write) -> io::Result<()> {
+        write32(layout.endian, writer, self.sz)?;
 
         // insert padding
-        if alignment.is64() {
-            write32(endian, writer, 0)?;
+        if layout.alignment.is64() {
+            write32(layout.endian, writer, 0)?;
         }
 
-        match alignment {
-            Alignment::Align32 => write32(endian, writer, self.addr as u32)?,
-            Alignment::Align64 => write64(endian, writer, self.addr)?,
+        match layout.offset {
+            Offset::Small => write32(layout.endian, writer, self.addr as u32)?,
+            Offset::LFS => write64(layout.endian, writer, self.addr)?,
         }
 
         Ok(())
@@ -79,11 +71,12 @@ pub struct AvailBlock {
 }
 
 impl AvailBlock {
-    pub fn sizeof(alignment: Alignment) -> u32 {
-        match alignment {
-            Alignment::Align32 => 12,
-            Alignment::Align64 => 16,
-        }
+    pub fn sizeof(layout: &Layout, elems: u32) -> u32 {
+        elems * AvailElem::sizeof(layout)
+            + match layout.alignment {
+                Alignment::Align32 => 12,
+                Alignment::Align64 => 16,
+            }
     }
 
     pub fn new(sz: u32, next_block: u64, elems: Vec<AvailElem>) -> Self {
@@ -94,21 +87,17 @@ impl AvailBlock {
         }
     }
 
-    pub fn from_reader(
-        alignment: Alignment,
-        endian: Endian,
-        reader: &mut impl Read,
-    ) -> io::Result<Self> {
-        let sz = read32(endian, reader)?;
-        let count = read32(endian, reader)?;
+    pub fn from_reader(layout: &Layout, reader: &mut impl Read) -> io::Result<Self> {
+        let sz = read32(layout.endian, reader)?;
+        let count = read32(layout.endian, reader)?;
 
-        let next_block = match alignment {
-            Alignment::Align32 => (read32(endian, reader)?) as u64,
-            Alignment::Align64 => read64(endian, reader)?,
+        let next_block = match layout.offset {
+            Offset::Small => (read32(layout.endian, reader)?) as u64,
+            Offset::LFS => read64(layout.endian, reader)?,
         };
 
         let mut elems = (0..count)
-            .map(|_| AvailElem::from_reader(alignment, endian, reader))
+            .map(|_| AvailElem::from_reader(layout, reader))
             .collect::<io::Result<Vec<_>>>()?;
 
         // maintain intrinsic: avail is always sorted by size
@@ -127,22 +116,17 @@ impl AvailBlock {
         remove_elem(&mut self.elems, sz)
     }
 
-    pub fn serialize(
-        &self,
-        alignment: Alignment,
-        endian: Endian,
-        writer: &mut impl Write,
-    ) -> io::Result<()> {
-        write32(endian, writer, self.sz)?;
-        write32(endian, writer, self.elems.len() as u32)?;
-        match alignment {
-            Alignment::Align32 => write32(endian, writer, self.next_block as u32)?,
-            Alignment::Align64 => write64(endian, writer, self.next_block)?,
+    pub fn serialize(&self, layout: &Layout, writer: &mut impl Write) -> io::Result<()> {
+        write32(layout.endian, writer, self.sz)?;
+        write32(layout.endian, writer, self.elems.len() as u32)?;
+        match layout.offset {
+            Offset::Small => write32(layout.endian, writer, self.next_block as u32)?,
+            Offset::LFS => write64(layout.endian, writer, self.next_block)?,
         }
 
         self.elems
             .iter()
-            .try_for_each(|elem| elem.serialize(alignment, endian, writer))?;
+            .try_for_each(|elem| elem.serialize(layout, writer))?;
 
         Ok(())
     }
@@ -192,8 +176,8 @@ impl AvailBlock {
     }
 
     // extent returns the size of this block when serialized
-    pub fn extent(&self, alignment: Alignment) -> u32 {
-        Self::sizeof(alignment) + self.elems.len() as u32 * AvailElem::sizeof(alignment)
+    pub fn extent(&self, layout: &Layout) -> u32 {
+        Self::sizeof(layout, self.elems.len() as u32)
     }
 }
 

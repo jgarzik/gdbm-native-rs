@@ -1,7 +1,7 @@
 use std::fmt;
 use std::io::{Error, ErrorKind, Result};
 
-use crate::ser::{Alignment, Endian};
+use crate::ser::{Alignment, Endian, Offset};
 
 const GDBM_OMAGIC_LE: [u8; 4] = [0xce, 0x9a, 0x57, 0x13];
 const GDBM_OMAGIC_BE: [u8; 4] = [0x13, 0x57, 0x9a, 0xce];
@@ -42,9 +42,16 @@ impl Magic {
         }
     }
 
-    pub fn alignment(&self) -> Alignment {
+    pub fn offset(&self) -> Offset {
         match self {
-            Magic::LE64 | Magic::BE64 => Alignment::Align64,
+            Magic::LE64 | Magic::BE64 => Offset::LFS,
+            _ => Offset::Small,
+        }
+    }
+
+    pub fn default_alignment(&self) -> Alignment {
+        match self {
+            Magic::BE64 | Magic::LE64 => Alignment::Align64,
             _ => Alignment::Align32,
         }
     }

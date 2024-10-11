@@ -19,9 +19,9 @@ use tempfile::NamedTempFile;
 
 #[test]
 fn api_remove() {
-    let testcfg = init_tests();
+    let tests = init_tests();
 
-    for testdb in &testcfg.tests {
+    for testdb in tests {
         if testdb.is_basic {
             // Create temporary filename for writable db
             let newdb_fn = String::from(&testdb.db_path) + ".rmtest";
@@ -30,7 +30,7 @@ fn api_remove() {
             fs::copy(&testdb.db_path, &newdb_fn).expect("DB File copy failed");
 
             // Open database for testing
-            let mut db = Gdbm::open(&newdb_fn, &testcfg.def_rw_cfg).expect("GDBM open failed");
+            let mut db = Gdbm::open(&newdb_fn, &testdb.rw_cfg()).expect("GDBM open failed");
 
             // Test: remove non-existent key
             let keystr = String::from("This key does not exist.");
@@ -58,19 +58,18 @@ fn api_remove() {
 
 #[test]
 fn api_insert() {
-    let testcfg = init_tests();
+    let tests = init_tests();
 
-    testcfg
-        .tests
+    tests
         .iter()
-        .filter_map(|test_file| (!test_file.is_basic).then_some(test_file.db_path.clone()))
-        .try_for_each(|filename| {
+        .filter_map(|test| (!test.is_basic).then_some((test.db_path.clone(), test.rw_cfg())))
+        .try_for_each(|(filename, cfg)| {
             let file = NamedTempFile::new().unwrap();
             let test_filename = file.path();
             fs::copy(filename, test_filename).unwrap();
 
-            let mut db = Gdbm::open(test_filename.to_str().unwrap(), &testcfg.def_rw_cfg)
-                .map_err(|e| e.to_string())?;
+            let mut db =
+                Gdbm::open(test_filename.to_str().unwrap(), &cfg).map_err(|e| e.to_string())?;
 
             // insert items
             (0..10000).try_for_each(|n| {
@@ -87,8 +86,8 @@ fn api_insert() {
             // reopen the database
             db.sync().map_err(|e| e.to_string())?;
             drop(db);
-            let mut db = Gdbm::open(test_filename.to_str().unwrap(), &testcfg.def_rw_cfg)
-                .map_err(|e| e.to_string())?;
+            let mut db =
+                Gdbm::open(test_filename.to_str().unwrap(), &cfg).map_err(|e| e.to_string())?;
 
             // try_insert again (all should fail)
             (0..10000).try_for_each(|n| {

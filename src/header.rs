@@ -10,16 +10,16 @@
 
 use std::io::{self, Error, ErrorKind, Read, Write};
 
-use crate::avail::{AvailBlock, AvailElem};
+use crate::avail::AvailBlock;
 use crate::bucket::{Bucket, BucketElement};
 use crate::dir::build_dir_size;
 use crate::magic::Magic;
-use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
+use crate::ser::{read32, read64, write32, write64, Alignment, Layout, Offset};
 
 #[derive(Debug)]
 pub struct Header {
     // on-disk gdbm database file header
-    magic: Magic,
+    pub magic: Magic,
     pub block_sz: u32,
     pub dir_ofs: u64,
     pub dir_sz: u32,
@@ -32,14 +32,19 @@ pub struct Header {
 
     // following fields are calculated, not stored
     pub dirty: bool,
+    pub layout: Layout,
 }
 
 impl Header {
-    pub fn sizeof(alignment: Alignment) -> u32 {
-        40 + AvailBlock::sizeof(alignment) + AvailElem::sizeof(alignment)
+    pub fn sizeof(layout: &Layout, avail_elems: u32) -> u32 {
+        40 + AvailBlock::sizeof(layout, avail_elems)
     }
 
-    pub fn from_reader(metadata: &std::fs::Metadata, reader: &mut impl Read) -> io::Result<Self> {
+    pub fn from_reader(
+        alignment: &Option<Alignment>,
+        metadata: &std::fs::Metadata,
+        reader: &mut impl Read,
+    ) -> io::Result<Self> {
         let file_sz = metadata.len();
 
         // fixme: read u32, not u64, if is_lfs
@@ -52,11 +57,17 @@ impl Header {
         let bucket_sz = read32(magic.endian(), reader)?;
         let bucket_elems = read32(magic.endian(), reader)?;
         let next_block = read64(magic.endian(), reader)?;
-        let avail = AvailBlock::from_reader(magic.alignment(), magic.endian(), reader)?;
 
-        if !(block_sz > Self::sizeof(magic.alignment())
-            && block_sz - Self::sizeof(magic.alignment()) >= AvailElem::sizeof(magic.alignment()))
-        {
+        let layout = Layout {
+            offset: magic.offset(),
+            endian: magic.endian(),
+            alignment: alignment.unwrap_or(magic.default_alignment()),
+        };
+
+        let avail = AvailBlock::from_reader(&layout, reader)?;
+
+        // Block must be big enough for header and avail table with one element.
+        if block_sz < Self::sizeof(&layout, 1) {
             return Err(Error::new(ErrorKind::Other, "bad header: blksz"));
         }
 
@@ -69,21 +80,21 @@ impl Header {
             return Err(Error::new(ErrorKind::Other, "bad header: dir"));
         }
 
-        let (ck_dir_sz, _ck_dir_bits) = build_dir_size(block_sz);
+        let (ck_dir_sz, _ck_dir_bits) = build_dir_size(&layout, block_sz);
         if dir_sz < ck_dir_sz {
             return Err(Error::new(ErrorKind::Other, "bad header: dir sz"));
         }
 
-        let (_ck_dir_sz, ck_dir_bits) = build_dir_size(dir_sz);
+        let (_ck_dir_sz, ck_dir_bits) = build_dir_size(&layout, dir_sz);
         if dir_bits != ck_dir_bits {
             return Err(Error::new(ErrorKind::Other, "bad header: dir bits"));
         }
 
-        if bucket_sz <= Bucket::sizeof(magic.alignment()) {
+        if bucket_sz <= Bucket::sizeof(&layout) {
             return Err(Error::new(ErrorKind::Other, "bad header: bucket sz"));
         }
 
-        if bucket_elems != (bucket_sz - Bucket::sizeof(magic.alignment())) / BucketElement::SIZEOF {
+        if bucket_elems != (bucket_sz - Bucket::sizeof(&layout)) / BucketElement::sizeof(&layout) {
             return Err(Error::new(ErrorKind::Other, "bad header: bucket elem"));
         }
 
@@ -95,9 +106,7 @@ impl Header {
             return Err(Error::new(ErrorKind::Other, "bad header: avail el"));
         }
 
-        if ((block_sz - Self::sizeof(magic.alignment())) / AvailElem::sizeof(magic.alignment()) + 1)
-            != avail.sz
-        {
+        if block_sz < Self::sizeof(&layout, avail.sz) {
             return Err(Error::new(ErrorKind::Other, "bad header: avail sz"));
         }
 
@@ -118,40 +127,32 @@ impl Header {
             next_block,
             avail,
             dirty: false,
+            layout,
         })
     }
 
-    pub fn serialize(&self, writer: &mut impl Write) -> io::Result<()> {
+    pub fn serialize(&self, layout: &Layout, writer: &mut impl Write) -> io::Result<()> {
         writer.write_all(self.magic.as_bytes())?;
 
-        write32(self.endian(), writer, self.block_sz)?;
+        write32(layout.endian, writer, self.block_sz)?;
 
-        match self.alignment() {
-            Alignment::Align32 => write32(self.endian(), writer, self.dir_ofs as u32)?,
-            Alignment::Align64 => write64(self.endian(), writer, self.dir_ofs)?,
+        match layout.offset {
+            Offset::Small => write32(layout.endian, writer, self.dir_ofs as u32)?,
+            Offset::LFS => write64(layout.endian, writer, self.dir_ofs)?,
         }
 
-        write32(self.endian(), writer, self.dir_sz)?;
-        write32(self.endian(), writer, self.dir_bits)?;
-        write32(self.endian(), writer, self.bucket_sz)?;
-        write32(self.endian(), writer, self.bucket_elems)?;
+        write32(layout.endian, writer, self.dir_sz)?;
+        write32(layout.endian, writer, self.dir_bits)?;
+        write32(layout.endian, writer, self.bucket_sz)?;
+        write32(layout.endian, writer, self.bucket_elems)?;
 
-        match self.alignment() {
-            Alignment::Align32 => write32(self.endian(), writer, self.next_block as u32)?,
-            Alignment::Align64 => write64(self.endian(), writer, self.next_block)?,
+        match layout.offset {
+            Offset::Small => write32(layout.endian, writer, self.next_block as u32)?,
+            Offset::LFS => write64(layout.endian, writer, self.next_block)?,
         }
 
-        self.avail
-            .serialize(self.alignment(), self.endian(), writer)?;
+        self.avail.serialize(layout, writer)?;
 
         Ok(())
-    }
-
-    pub fn endian(&self) -> Endian {
-        self.magic.endian()
-    }
-
-    pub fn alignment(&self) -> Alignment {
-        self.magic.alignment()
     }
 }

@@ -11,10 +11,13 @@
 use std::io::{self, Read, Write};
 
 use crate::hashutil::HASH_BITS;
-use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
+use crate::ser::{read32, read64, write32, write64, Layout, Offset};
 
-pub fn build_dir_size(block_sz: u32) -> (u32, u32) {
-    let mut dir_size = 8 * 8; // fixme: 8==off_t==vary on is_lfs
+pub fn build_dir_size(layout: &Layout, block_sz: u32) -> (u32, u32) {
+    let mut dir_size = 8 * match layout.offset {
+        Offset::Small => 4,
+        Offset::LFS => 8,
+    };
     let mut dir_bits = 3;
 
     while dir_size < block_sz && dir_bits < HASH_BITS - 3 {
@@ -37,37 +40,24 @@ impl Directory {
         self.dir.len()
     }
 
-    pub fn serialize(
-        &self,
-        alignment: Alignment,
-        endian: Endian,
-        writer: &mut impl Write,
-    ) -> io::Result<()> {
-        self.dir.iter().try_for_each(|ofs| match alignment {
-            Alignment::Align32 => write32(endian, writer, *ofs as u32),
-            Alignment::Align64 => write64(endian, writer, *ofs),
+    pub fn serialize(&self, layout: &Layout, writer: &mut impl Write) -> io::Result<()> {
+        self.dir.iter().try_for_each(|ofs| match layout.offset {
+            Offset::Small => write32(layout.endian, writer, *ofs as u32),
+            Offset::LFS => write64(layout.endian, writer, *ofs),
         })
     }
 
-    pub fn from_reader(
-        alignment: Alignment,
-        endian: Endian,
-        extent: u32,
-        reader: &mut impl Read,
-    ) -> io::Result<Self> {
-        let count = extent
-            / match alignment {
-                Alignment::Align32 => 4,
-                Alignment::Align64 => 8,
-            };
+    pub fn from_reader(layout: &Layout, extent: u32, reader: &mut impl Read) -> io::Result<Self> {
         Ok(Self {
             dirty: false,
-            dir: (0..count)
-                .map(|_| match alignment {
-                    Alignment::Align32 => read32(endian, reader).map(|v| v as u64),
-                    Alignment::Align64 => read64(endian, reader),
-                })
-                .collect::<io::Result<Vec<_>>>()?,
+            dir: match layout.offset {
+                Offset::Small => (0..extent / 4)
+                    .map(|_| read32(layout.endian, reader).map(|v| v as u64))
+                    .collect::<io::Result<Vec<_>>>(),
+                Offset::LFS => (0..extent / 8)
+                    .map(|_| read64(layout.endian, reader))
+                    .collect::<io::Result<Vec<_>>>(),
+            }?,
         })
     }
 
@@ -85,10 +75,10 @@ impl Directory {
     }
 
     // serialized size of this instance
-    pub fn extent(&self, alignment: Alignment) -> u32 {
-        match alignment {
-            Alignment::Align32 => self.dir.len() as u32 * 4,
-            Alignment::Align64 => self.dir.len() as u32 * 8,
+    pub fn extent(&self, layout: &Layout) -> u32 {
+        match layout.offset {
+            Offset::Small => self.dir.len() as u32 * 4,
+            Offset::LFS => self.dir.len() as u32 * 8,
         }
     }
 

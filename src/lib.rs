@@ -21,7 +21,7 @@ pub mod dir;
 mod hashutil;
 mod header;
 mod magic;
-mod ser;
+pub mod ser;
 use avail::{AvailBlock, AvailElem};
 use bucket::{Bucket, BucketCache, BucketElement};
 use dir::Directory;
@@ -53,6 +53,7 @@ fn read_ofs(f: &mut std::fs::File, ofs: u64, total_size: usize) -> io::Result<Ve
 
 #[derive(Copy, Clone)]
 pub struct GdbmOptions {
+    pub alignment: Option<Alignment>,
     pub readonly: bool,
     pub creat: bool,
 }
@@ -88,13 +89,12 @@ impl Gdbm {
         let metadata = f.metadata()?;
 
         // read gdbm global header
-        let header = Header::from_reader(&metadata, &mut f)?;
+        let header = Header::from_reader(&dbcfg.alignment, &metadata, &mut f)?;
         println!("{:?}", header);
 
         // read gdbm hash directory
         f.seek(SeekFrom::Start(header.dir_ofs))?;
-        let dir =
-            Directory::from_reader(header.alignment(), header.endian(), header.dir_sz, &mut f)?;
+        let dir = Directory::from_reader(&header.layout, header.dir_sz, &mut f)?;
 
         // ensure all bucket offsets are reasonable
         if !dir.validate(header.block_sz as u64, header.next_block, header.block_sz) {
@@ -231,7 +231,7 @@ impl Gdbm {
     // API: export database to binary dump file
     pub fn export_bin(&mut self, outf: &mut std::fs::File, mode: ExportBinMode) -> io::Result<()> {
         let alignment = match mode {
-            ExportBinMode::ExpNative => self.header.alignment(),
+            ExportBinMode::ExpNative => self.header.layout.alignment,
             ExportBinMode::Exp32 => Alignment::Align32,
             ExportBinMode::Exp64 => Alignment::Align64,
         };
@@ -248,7 +248,7 @@ impl Gdbm {
 
         if !self.bucket_cache.contains(self.cur_bucket_ofs) {
             self.f.seek(SeekFrom::Start(self.cur_bucket_ofs))?;
-            let bucket = Bucket::from_reader(&self.header, &mut self.f)?;
+            let bucket = Bucket::from_reader(&self.header, &self.header.layout, &mut self.f)?;
             self.bucket_cache.insert(self.cur_bucket_ofs, bucket);
         }
 
@@ -455,9 +455,9 @@ impl Gdbm {
                 self.header.avail.next_block,
                 new_elems,
             );
-            let offset = self.allocate_record(block.extent(self.header.alignment()))?;
+            let offset = self.allocate_record(block.extent(&self.header.layout))?;
             self.f.seek(SeekFrom::Start(offset))?;
-            block.serialize(self.header.alignment(), self.header.endian(), &mut self.f)?;
+            block.serialize(&self.header.layout, &mut self.f)?;
             offset
         };
 
@@ -473,7 +473,7 @@ impl Gdbm {
 
         let next = {
             self.f.seek(SeekFrom::Start(self.header.avail.next_block))?;
-            AvailBlock::from_reader(self.header.alignment(), self.header.endian(), &mut self.f)?
+            AvailBlock::from_reader(&self.header.layout, &mut self.f)?
         };
 
         if let Some(block) = self.header.avail.merge(&next) {
@@ -481,11 +481,7 @@ impl Gdbm {
             self.header.dirty = true;
 
             // free the block we just merged
-            self.free_record(
-                next_addr,
-                AvailBlock::sizeof(self.header.alignment())
-                    + next.sz * AvailElem::sizeof(self.header.alignment()),
-            )?;
+            self.free_record(next_addr, AvailBlock::sizeof(&self.header.layout, next.sz))?;
         }
 
         Ok(())
@@ -537,7 +533,7 @@ impl Gdbm {
 
     fn write_bucket(&mut self, bucket_ofs: u64, bucket: &Bucket) -> io::Result<()> {
         self.f.seek(SeekFrom::Start(bucket_ofs))?;
-        bucket.serialize(self.header.alignment(), self.header.endian(), &mut self.f)?;
+        bucket.serialize(&self.header.layout, &mut self.f)?;
 
         Ok(())
     }
@@ -567,8 +563,7 @@ impl Gdbm {
         }
 
         self.f.seek(SeekFrom::Start(self.header.dir_ofs))?;
-        self.dir
-            .serialize(self.header.alignment(), self.header.endian(), &mut self.f)?;
+        self.dir.serialize(&self.header.layout, &mut self.f)?;
 
         self.dir.dirty = false;
 
@@ -582,7 +577,7 @@ impl Gdbm {
         }
 
         self.f.seek(SeekFrom::Start(0))?;
-        self.header.serialize(&mut self.f)?;
+        self.header.serialize(&self.header.layout, &mut self.f)?;
 
         self.header.dirty = false;
 
@@ -754,7 +749,7 @@ impl Gdbm {
     // Both the directory and header are marked dirty, but not written.
     fn extend_directory(&mut self) -> io::Result<()> {
         let directory = self.dir.extend();
-        let size = directory.extent(self.header.alignment());
+        let size = directory.extent(&self.header.layout);
         let offset = self.allocate_record(size)?;
 
         self.free_record(self.header.dir_ofs, self.header.dir_sz)?;
