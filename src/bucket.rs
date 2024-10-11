@@ -11,11 +11,12 @@
 use std::collections::HashMap;
 use std::io::{self, Error, ErrorKind, Read, Write};
 
-use crate::hashutil::PartialKey;
+use crate::avail::{self, AvailElem};
+use crate::hashutil::{hash_key, PartialKey};
+use crate::header::Header;
 use crate::ser::{read32, read64, write32, write64, Alignment, Endian};
-use crate::{AvailElem, Header};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct BucketElement {
     pub hash: u32,
     pub key_start: PartialKey,
@@ -24,7 +25,29 @@ pub struct BucketElement {
     pub data_size: u32,
 }
 
+impl Default for BucketElement {
+    fn default() -> Self {
+        Self {
+            hash: 0xffffffff,
+            key_start: PartialKey::default(),
+            data_ofs: 0,
+            key_size: 0,
+            data_size: 0,
+        }
+    }
+}
+
 impl BucketElement {
+    pub fn new(key: &[u8], data: &[u8], offset: u64) -> Self {
+        Self {
+            hash: hash_key(key),
+            key_start: PartialKey::new(key),
+            data_ofs: offset,
+            key_size: key.len() as u32,
+            data_size: data.len() as u32,
+        }
+    }
+
     pub fn from_reader(
         alignment: Alignment,
         endian: Endian,
@@ -73,6 +96,10 @@ impl BucketElement {
     }
 
     pub const SIZEOF: u32 = 24;
+
+    pub fn is_occupied(&self) -> bool {
+        self.hash != 0xffffffff
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +113,21 @@ pub struct Bucket {
 
 impl Bucket {
     pub const AVAIL: u32 = 6;
+
+    fn new(bits: u32, len: usize, avail: Vec<AvailElem>, elements: Vec<BucketElement>) -> Self {
+        elements.into_iter().fold(
+            Self {
+                avail,
+                bits,
+                count: 0,
+                tab: vec![BucketElement::default(); len],
+            },
+            |mut bucket, elem| {
+                bucket.insert(elem);
+                bucket
+            },
+        )
+    }
 
     pub fn from_reader(header: &Header, reader: &mut impl Read) -> io::Result<Self> {
         // read avail section
@@ -181,6 +223,61 @@ impl Bucket {
                 Alignment::Align64 => 16,
             }
     }
+
+    // insert an element - we assume there's space
+    pub fn insert(&mut self, element: BucketElement) {
+        self.count += 1;
+
+        let index = (element.hash..)
+            .map(|index| index as usize % self.tab.len())
+            .find(|&index| !self.tab[index].is_occupied())
+            .unwrap();
+
+        self.tab[index] = element;
+    }
+
+    // remove an element - we assume there's an element
+    pub fn remove(&mut self, offset: usize) -> BucketElement {
+        let elem = self.tab[offset];
+        let len = self.tab.len();
+
+        // remove element from table
+        self.tab[offset] = BucketElement::default();
+        self.count -= 1;
+
+        let mut last_ofs = offset;
+        let mut elem_ofs = (offset + 1) % len;
+        while elem_ofs != last_ofs && self.tab[elem_ofs].is_occupied() {
+            let home = (self.tab[elem_ofs].hash as usize) % len;
+            if (last_ofs < elem_ofs && (home <= last_ofs || home > elem_ofs))
+                || (last_ofs > elem_ofs && home <= last_ofs && home > elem_ofs)
+            {
+                self.tab[last_ofs] = self.tab[elem_ofs];
+                self.tab[elem_ofs] = BucketElement::default();
+                last_ofs = elem_ofs;
+            }
+
+            elem_ofs = (elem_ofs + 1) % len;
+        }
+
+        elem
+    }
+
+    pub fn split(&self) -> (Bucket, Bucket) {
+        let mask = 0x80_00_00_00 >> (self.bits + 1);
+        let (elems0, elems1) = self
+            .tab
+            .iter()
+            .copied()
+            .partition::<Vec<_>, _>(|elem| elem.hash & mask == 0);
+
+        let (avail0, avail1) = avail::partition_elems(&self.avail);
+
+        (
+            Bucket::new(self.bits + 1, self.tab.len(), avail0, elems0),
+            Bucket::new(self.bits + 1, self.tab.len(), avail1, elems1),
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -221,5 +318,98 @@ impl BucketCache {
 
     pub fn insert(&mut self, bucket_ofs: u64, bucket: Bucket) {
         self.bucket_map.insert(bucket_ofs, bucket);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn bucket_remove() {
+        struct Test<'a> {
+            name: &'a str,
+            hashes: [u32; 4],
+            offset: usize,
+            expected: [u32; 4],
+        }
+
+        [
+            Test {
+                name: "first and only",
+                hashes: [0, 0xffffffff, 0xffffffff, 0xffffffff],
+                offset: 0,
+                expected: [0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff],
+            },
+            Test {
+                name: "last and only",
+                hashes: [0xffffffff, 0xffffffff, 0xffffffff, 1],
+                offset: 3,
+                expected: [0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff],
+            },
+            Test {
+                name: "dup hash",
+                hashes: [0, 0, 0xffffffff, 0xffffffff],
+                offset: 0,
+                expected: [0, 0xffffffff, 0xffffffff, 0xffffffff],
+            },
+            Test {
+                name: "dup hash, non-sequential",
+                hashes: [0, 1, 0, 0xffffffff],
+                offset: 0,
+                expected: [0, 1, 0xffffffff, 0xffffffff],
+            },
+            Test {
+                name: "dup hash, wrapped",
+                hashes: [3, 1, 2, 3],
+                offset: 3,
+                expected: [0xffffffff, 1, 2, 3],
+            },
+            Test {
+                name: "dup hash, wrapped, non-sequential",
+                hashes: [2, 2, 2, 3],
+                offset: 2,
+                expected: [2, 0xffffffff, 2, 3],
+            },
+        ]
+        .into_iter()
+        .try_for_each(
+            |Test {
+                 name,
+                 hashes,
+                 offset,
+                 expected,
+             }| {
+                let tab = hashes
+                    .iter()
+                    .map(|&hash| match hash {
+                        0xffffffff => BucketElement::default(),
+                        hash => BucketElement {
+                            hash,
+                            ..Default::default()
+                        },
+                    })
+                    .collect::<Vec<_>>();
+
+                let mut bucket = Bucket {
+                    avail: vec![],
+                    bits: 0, /* unused */
+                    count: tab.iter().filter(|elem| elem.is_occupied()).count() as u32,
+                    tab,
+                };
+
+                bucket.remove(offset);
+
+                let got = bucket.tab.iter().map(|elem| elem.hash).collect::<Vec<_>>();
+                (got == expected).then_some(()).ok_or_else(|| {
+                    format!(
+                        "  failed: {}\nexpected: {:?}\n     got: {:?}",
+                        name, expected, got
+                    )
+                })
+            },
+        )
+        .map_err(|e| println!("{}", e))
+        .unwrap()
     }
 }

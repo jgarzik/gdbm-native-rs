@@ -23,9 +23,9 @@ mod header;
 mod magic;
 mod ser;
 use avail::{AvailBlock, AvailElem};
-use bucket::{Bucket, BucketCache};
+use bucket::{Bucket, BucketCache, BucketElement};
 use dir::Directory;
-use hashutil::{key_loc, PartialKey};
+use hashutil::{bucket_dir, key_loc, PartialKey};
 use header::Header;
 use ser::{write32, write64, Alignment, Endian};
 
@@ -338,7 +338,7 @@ impl Gdbm {
 
             // any valid hash will do
             let elem = &self.current_bucket().tab[elem_ofs];
-            found = (elem.hash != 0xffffffff).then_some((elem.data_ofs, elem.key_size));
+            found = elem.is_occupied().then_some((elem.data_ofs, elem.key_size));
 
             elem_ofs += 1;
         }
@@ -391,8 +391,8 @@ impl Gdbm {
 
         let bucket_entries = (0..self.header.bucket_elems)
             .map(|index| ((index + elem_ofs) % self.header.bucket_elems) as usize)
-            .map(|offset| (offset, self.current_bucket().tab[offset].clone()))
-            .take_while(|(_, elem)| elem.hash != 0xffffffff)
+            .map(|offset| (offset, self.current_bucket().tab[offset]))
+            .take_while(|(_, elem)| elem.is_occupied())
             .filter(|(_, elem)| {
                 elem.hash == key_hash
                     && elem.key_size == key.len() as u32
@@ -600,9 +600,7 @@ impl Gdbm {
 
     // API: ensure database is flushed to stable storage
     pub fn sync(&mut self) -> io::Result<()> {
-        if self.cfg.readonly {
-            return Err(Error::new(ErrorKind::Other, "Writable op on read-only db"));
-        }
+        self.writeable()?;
 
         self.write_dirty()?;
         self.f.sync_data()?;
@@ -612,9 +610,7 @@ impl Gdbm {
 
     // API: remove a key/value pair from db, given a key
     pub fn remove(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
-        if self.cfg.readonly {
-            return Err(Error::new(ErrorKind::Other, "Writable op on read-only db"));
-        }
+        self.writeable()?;
 
         let get_opt = self.int_get(key)?;
         if get_opt.is_none() {
@@ -622,32 +618,8 @@ impl Gdbm {
         }
         let (elem_ofs, data) = get_opt.unwrap();
 
-        let bucket_elems = self.header.bucket_elems as usize;
+        let elem = self.current_bucket_mut().remove(elem_ofs);
         self.bucket_cache.dirty(self.cur_bucket_ofs);
-        let bucket = self.current_bucket_mut();
-
-        // remember element to be removed
-        let elem = bucket.tab[elem_ofs].clone();
-
-        // remove element from table
-        bucket.tab[elem_ofs].hash = 0xffffffff;
-        bucket.count -= 1;
-
-        // move other elements to fill gap
-        let mut last_ofs = elem_ofs;
-        let mut elem_ofs = (elem_ofs + 1) % bucket_elems;
-        while elem_ofs != last_ofs && bucket.tab[elem_ofs].hash != 0xffffffff {
-            let home = (bucket.tab[elem_ofs].hash as usize) % bucket_elems;
-            if (last_ofs < elem_ofs && (home <= last_ofs || home > elem_ofs))
-                || (last_ofs > elem_ofs && home <= last_ofs && home > elem_ofs)
-            {
-                bucket.tab[last_ofs] = bucket.tab[elem_ofs].clone();
-                bucket.tab[elem_ofs].hash = 0xffffffff;
-                last_ofs = elem_ofs;
-            }
-
-            elem_ofs = (elem_ofs + 1) % bucket_elems;
-        }
 
         // release record bytes to available-space pool
         self.free_record(elem.data_ofs, elem.key_size + elem.data_size)?;
@@ -697,8 +669,104 @@ impl Gdbm {
         Ok(offset)
     }
 
+    fn int_insert(&mut self, key: &[u8], data: &[u8]) -> io::Result<()> {
+        let offset = self.allocate_record((key.len() + data.len()) as u32)?;
+        self.f.seek(SeekFrom::Start(offset))?;
+        self.f.write_all(key)?;
+        self.f.write_all(data)?;
+
+        let bucket_elem = BucketElement::new(key, data, offset);
+        self.cache_load_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash))?;
+
+        while self.current_bucket().count == self.header.bucket_elems {
+            self.split_bucket()?;
+            self.cache_load_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash))?;
+        }
+
+        self.current_bucket_mut().insert(bucket_elem);
+        self.bucket_cache.dirty(self.cur_bucket_ofs);
+
+        Ok(())
+    }
+
+    pub fn insert(&mut self, key: &[u8], data: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        self.writeable()
+            .and_then(|_| self.remove(key))
+            .and_then(|oldkey| self.int_insert(key, data).map(|_| oldkey))
+    }
+
+    pub fn try_insert(&mut self, key: &[u8], data: &[u8]) -> io::Result<(bool, Option<Vec<u8>>)> {
+        self.writeable()
+            .and_then(|_| self.get(key))
+            .and_then(|olddata| match olddata {
+                Some(_) => Ok((false, olddata)),
+                _ => self.int_insert(key, data).map(|_| (true, None)),
+            })
+    }
+
+    // API: reset iterator state
     pub fn iter_reset(&mut self) {
         self.iter_key = None;
+    }
+
+    fn split_bucket(&mut self) -> io::Result<()> {
+        if self.current_bucket().bits == self.header.dir_bits {
+            self.extend_directory()?;
+        }
+
+        // allocate space for new bucket in an aligned block at the end of file
+        let new_bucket_ofs = {
+            let (offset, size) = self.extend(self.header.bucket_sz)?;
+            self.free_record(
+                offset + self.header.bucket_sz as u64,
+                size - self.header.bucket_sz,
+            )?;
+            offset
+        };
+
+        let (bucket0, bucket1) = self.current_bucket().split();
+        self.bucket_cache.insert(self.cur_bucket_ofs, bucket0);
+        self.bucket_cache.dirty(self.cur_bucket_ofs);
+        self.bucket_cache.insert(new_bucket_ofs, bucket1);
+        self.bucket_cache.dirty(new_bucket_ofs);
+
+        self.dir.update_bucket_split(
+            self.header.dir_bits,
+            self.current_bucket().bits,
+            self.cur_bucket_dir,
+            new_bucket_ofs,
+        );
+
+        Ok(())
+    }
+
+    // Convenience function to convert readonly flag into an error if we want to write
+    fn writeable(&self) -> io::Result<()> {
+        (!self.cfg.readonly)
+            .then_some(())
+            .ok_or_else(|| Error::new(ErrorKind::Other, "write to readonly db"))
+    }
+
+    // Extends the directory by duplicating each bucket offset.
+    // Old storage is freed and new storage is allocated.
+    // The maximum number of hash_bits represented by each element is increased by 1.
+    // The header is updated with new offset, size and bits.
+    // Both the directory and header are marked dirty, but not written.
+    fn extend_directory(&mut self) -> io::Result<()> {
+        let directory = self.dir.extend();
+        let size = directory.extent(self.header.alignment());
+        let offset = self.allocate_record(size)?;
+
+        self.free_record(self.header.dir_ofs, self.header.dir_sz)?;
+        self.header.dir_bits += 1;
+        self.header.dir_ofs = offset;
+        self.header.dir_sz = size;
+        self.cur_bucket_dir <<= 1;
+        self.header.dirty = true;
+
+        self.dir = directory;
+
+        Ok(())
     }
 }
 
