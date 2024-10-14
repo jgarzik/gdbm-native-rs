@@ -10,11 +10,11 @@
 
 use std::io::{self, Error, ErrorKind, Read, Write};
 
-use crate::avail::AvailBlock;
+use crate::avail::{AvailBlock, AvailElem};
 use crate::bucket::{Bucket, BucketElement};
 use crate::dir::build_dir_size;
 use crate::magic::Magic;
-use crate::ser::{read32, read64, write32, write64, Alignment, Layout, Offset};
+use crate::ser::{read32, read64, write32, write64, Alignment, Endian, Layout, Offset};
 
 #[derive(Debug)]
 pub struct Header {
@@ -27,6 +27,7 @@ pub struct Header {
     pub bucket_sz: u32,
     pub bucket_elems: u32,
     pub next_block: u64,
+    numsync: Option<u32>,
 
     pub avail: AvailBlock,
 
@@ -36,8 +37,12 @@ pub struct Header {
 }
 
 impl Header {
-    pub fn sizeof(layout: &Layout, avail_elems: u32) -> u32 {
-        40 + AvailBlock::sizeof(layout, avail_elems)
+    fn sizeof(layout: &Layout, is_numsync: bool, avail_elems: u32) -> u32 {
+        if is_numsync {
+            40 + 32 + AvailBlock::sizeof(layout, avail_elems)
+        } else {
+            40 + AvailBlock::sizeof(layout, avail_elems)
+        }
     }
 
     pub fn from_reader(
@@ -57,6 +62,10 @@ impl Header {
         let bucket_sz = read32(magic.endian(), reader)?;
         let bucket_elems = read32(magic.endian(), reader)?;
         let next_block = read64(magic.endian(), reader)?;
+        let numsync = magic
+            .is_numsync()
+            .then(|| read_numsync(magic.endian(), reader))
+            .transpose()?;
 
         let layout = Layout {
             offset: magic.offset(),
@@ -67,7 +76,7 @@ impl Header {
         let avail = AvailBlock::from_reader(&layout, reader)?;
 
         // Block must be big enough for header and avail table with one element.
-        if block_sz < Self::sizeof(&layout, 1) {
+        if block_sz < Self::sizeof(&layout, magic.is_numsync(), 1) {
             return Err(Error::new(ErrorKind::Other, "bad header: blksz"));
         }
 
@@ -106,7 +115,7 @@ impl Header {
             return Err(Error::new(ErrorKind::Other, "bad header: avail el"));
         }
 
-        if block_sz < Self::sizeof(&layout, avail.sz) {
+        if block_sz < Self::sizeof(&layout, magic.is_numsync(), avail.sz) {
             return Err(Error::new(ErrorKind::Other, "bad header: avail sz"));
         }
 
@@ -128,6 +137,7 @@ impl Header {
             avail,
             dirty: false,
             layout,
+            numsync,
         })
     }
 
@@ -151,8 +161,71 @@ impl Header {
             Offset::LFS => write64(layout.endian, writer, self.next_block)?,
         }
 
+        if self.magic.is_numsync() {
+            write_numsync(
+                layout.endian,
+                writer,
+                self.numsync.expect("numsync should be Some"),
+            )?
+        }
+
         self.avail.serialize(layout, writer)?;
 
         Ok(())
     }
+
+    pub fn increment_numsync(&mut self) {
+        if self.magic.is_numsync() {
+            self.numsync = match self.numsync {
+                Some(n) => Some(n + 1),
+                None => Some(0),
+            };
+
+            self.dirty = true;
+        }
+    }
+
+    // convert_numsync converts the header to numsync and retuns a list of
+    // offset/length pairs that need to be freed (because avail is shortened).
+    pub fn convert_numsync(&mut self, use_numsync: bool) -> io::Result<Vec<(u64, u32)>> {
+        let new_avail_sz = (self.block_sz - Self::sizeof(&self.layout, use_numsync, 0))
+            / AvailElem::sizeof(&self.layout);
+
+        (new_avail_sz > 1)
+            .then(|| {
+                self.avail.sz = new_avail_sz;
+                self.magic = Magic::new(self.magic.endian(), self.magic.offset(), use_numsync);
+                self.numsync = None;
+                self.dirty = true;
+                self.avail
+                    .elems
+                    .drain((self.avail.sz as usize).min(self.avail.elems.len())..)
+                    .map(|elem| (elem.addr, elem.sz))
+                    .collect()
+            })
+            .ok_or_else(|| Error::new(ErrorKind::Other, "blocksize too small for numsync"))
+    }
+}
+
+fn read_numsync(endian: Endian, reader: &mut impl Read) -> io::Result<u32> {
+    (0..8)
+        .map(|_| read32(endian, reader))
+        .collect::<io::Result<Vec<_>>>()
+        .and_then(|ext| match ext[0] {
+            0 => Ok(ext[1]),
+            v => {
+                let s = format!("bad header: unsupported extended header version: {}", v);
+                Err(Error::new(ErrorKind::Other, s))
+            }
+        })
+}
+
+fn write_numsync(endian: Endian, writer: &mut impl Write, numsync: u32) -> io::Result<()> {
+    write32(endian, writer, 0)?;
+    write32(endian, writer, numsync)?;
+    write64(endian, writer, 0)?;
+    write64(endian, writer, 0)?;
+    write64(endian, writer, 0)?;
+
+    Ok(())
 }

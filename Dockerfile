@@ -55,15 +55,23 @@ RUN apt-get install -y --no-install-recommends qemu-system-mips qemu-system-mips
 WORKDIR /tmp
 COPY --from=testgen-x86_64 /tmp/testgen .
 RUN ./testgen -o basic.db.le64 -j basic.json.le64 -p basic && \
-    ./testgen -o empty.db.le64 -j empty.json.le64 -p empty
+    ./testgen -o empty.db.le64 -j empty.json.le64 -p empty && \
+    ./testgen -n -o basic.db.le64.numsync -j /dev/null -p basic && \
+    ./testgen -n -o empty.db.le64.numsync -j /dev/null -p empty
 COPY --from=testgen-i386 /tmp/testgen .
 RUN ./testgen -o basic.db.le32 -j basic.json.le32 -p basic && \
-    ./testgen -o empty.db.le32 -j empty.json.le32 -p empty
+    ./testgen -o empty.db.le32 -j empty.json.le32 -p empty && \
+    ./testgen -n -o basic.db.le32.numsync -j /dev/null -p basic && \
+    ./testgen -n -o empty.db.le32.numsync -j /dev/null -p empty
 COPY --from=testgen-mips64 /tmp/testgen .
 RUN ./testgen -o basic.db.be64 -j basic.json.be64 -p basic && \
-    ./testgen -o empty.db.be64 -j empty.json.be64 -p empty
+    ./testgen -o empty.db.be64 -j empty.json.be64 -p empty && \
+    ./testgen -n -o basic.db.be64.numsync -j /dev/null -p basic && \
+    ./testgen -n -o empty.db.be64.numsync -j /dev/null -p empty
 COPY --from=testgen-mips /tmp/testgen .
 RUN ./testgen -o basic.db.be32 -j basic.json.be32 -p basic && \
-    ./testgen -o empty.db.be32 -j empty.json.be32 -p empty
+    ./testgen -o empty.db.be32 -j empty.json.be32 -p empty && \
+    ./testgen -n -o basic.db.be32.numsync -j /dev/null -p basic && \
+    ./testgen -n -o empty.db.be32.numsync -j /dev/null -p empty
 RUN rm testgen
 ENTRYPOINT ["sh", "-c", "cp /tmp/* /outdir"]

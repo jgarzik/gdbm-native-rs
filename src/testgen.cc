@@ -26,9 +26,9 @@ public:
 	string value;
 };
 
-static int gen_plan_empty(string db_fn, string json_fn)
+static int gen_plan_empty(bool numsync, string db_fn, string json_fn)
 {
-	GDBM_FILE dbf = gdbm_open(db_fn.c_str(), 512, GDBM_NEWDB, 0666, NULL);
+	GDBM_FILE dbf = gdbm_open(db_fn.c_str(), 512, GDBM_NEWDB | (numsync ? GDBM_NUMSYNC : 0), 0666, NULL);
 	if (!dbf) {
 		fprintf(stderr, "gdbm_open failed\n");
 		return 1;
@@ -67,7 +67,7 @@ static int gen_plan_empty(string db_fn, string json_fn)
 	return 0;
 }
 
-static int gen_plan_basic(string db_fn, string json_fn)
+static int gen_plan_basic(bool numsync, string db_fn, string json_fn)
 {
 	vector<kv_pair> data;
 
@@ -84,7 +84,7 @@ static int gen_plan_basic(string db_fn, string json_fn)
 		data.push_back(p);
 	}
 
-	GDBM_FILE dbf = gdbm_open(db_fn.c_str(), 512, GDBM_NEWDB, 0666, NULL);
+	GDBM_FILE dbf = gdbm_open(db_fn.c_str(), 512, GDBM_NEWDB | (numsync ? GDBM_NUMSYNC : 0), 0666, NULL);
 	if (!dbf) {
 		fprintf(stderr, "gdbm_open failed\n");
 		return 1;
@@ -147,6 +147,7 @@ static void usage(const char *progname)
 "Options:\n"
 "\t-p PLAN\tGenerate according to test-plan PLAN\n"
 "\t\t\tAvailable plans: basic, empty\n"
+"\t-n Make DB numsync\n"
 	);
 }
 
@@ -156,8 +157,9 @@ int main (int argc, char *argv[])
 	char *out_fn = NULL;
 	char *out_json = NULL;
 	string plan = "basic";
+  bool numsync = false;
 
-	while ((opt = getopt(argc, argv, "o:j:p:")) != -1) {
+	while ((opt = getopt(argc, argv, "o:j:p:n")) != -1) {
 		switch (opt) {
 		case 'o':
 			out_fn = optarg;
@@ -168,6 +170,9 @@ int main (int argc, char *argv[])
 		case 'p':
 			plan = optarg;
 			break;
+    case 'n':
+      numsync = true;
+      break;
 		default:
 			usage(argv[0]);
 			return 1;
@@ -180,9 +185,9 @@ int main (int argc, char *argv[])
 	}
 
 	if (plan == "basic")
-		return gen_plan_basic(out_fn, out_json);
+		return gen_plan_basic(numsync, out_fn, out_json);
 	if (plan == "empty")
-		return gen_plan_empty(out_fn, out_json);
+		return gen_plan_empty(numsync, out_fn, out_json);
 
 	fprintf(stderr, "Unknown test plan %s\n", plan.c_str());
 	return 1;

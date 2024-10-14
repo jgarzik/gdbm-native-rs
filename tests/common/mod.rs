@@ -5,6 +5,7 @@ use gdbm_native::GdbmOptions;
 use serde::Deserialize;
 use std::fs;
 use std::path::PathBuf;
+use tempfile::NamedTempFile;
 
 #[allow(dead_code)]
 #[derive(Deserialize)]
@@ -68,6 +69,14 @@ impl TestInfo {
             alignment: self.alignment,
         }
     }
+
+    #[allow(dead_code)]
+    pub fn tempfile(&self) -> NamedTempFile {
+        let file = NamedTempFile::new().unwrap();
+        let test_filename = file.path();
+        fs::copy(&self.db_path, test_filename).unwrap();
+        file
+    }
 }
 
 pub fn init_tests() -> Vec<TestInfo> {
@@ -79,14 +88,24 @@ pub fn init_tests() -> Vec<TestInfo> {
     ]
     .into_iter()
     .flat_map(|(flavor, alignment)| {
-        ["empty", "basic"].into_iter().map(move |empty_or_basic| {
-            TestInfo::new(
-                &format!("{}.db.{}", empty_or_basic, flavor),
-                &format!("{}.json.{}", empty_or_basic, flavor),
-                empty_or_basic == "basic",
-                alignment,
-            )
-        })
+        ["empty", "basic"]
+            .into_iter()
+            .map(move |empty_or_basic| {
+                TestInfo::new(
+                    &format!("{}.db.{}", empty_or_basic, flavor),
+                    &format!("{}.json.{}", empty_or_basic, flavor),
+                    empty_or_basic == "basic",
+                    alignment,
+                )
+            })
+            .chain(["empty", "basic"].into_iter().map(move |empty_or_basic| {
+                TestInfo::new(
+                    &format!("{}.db.{}.numsync", empty_or_basic, flavor),
+                    &format!("{}.json.{}", empty_or_basic, flavor),
+                    empty_or_basic == "basic",
+                    alignment,
+                )
+            }))
     })
     .collect()
 }

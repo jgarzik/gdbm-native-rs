@@ -58,6 +58,35 @@ pub struct GdbmOptions {
     pub creat: bool,
 }
 
+#[derive(Copy, Clone, Default, Debug)]
+pub struct ConvertOptions {
+    flags: u32,
+}
+
+impl ConvertOptions {
+    const NUMSYNC: u32 = 0x01;
+
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_numsync(&self) -> Self {
+        Self {
+            flags: self.flags | Self::NUMSYNC,
+        }
+    }
+
+    pub fn without_numsync(&self) -> Self {
+        Self {
+            flags: self.flags & !Self::NUMSYNC,
+        }
+    }
+
+    pub fn numsync(&self) -> bool {
+        self.flags & Self::NUMSYNC != 0
+    }
+}
+
 // #[derive(Debug)]
 pub struct Gdbm {
     pathname: String,
@@ -597,6 +626,7 @@ impl Gdbm {
     pub fn sync(&mut self) -> io::Result<()> {
         self.writeable()?;
 
+        self.header.increment_numsync();
         self.write_dirty()?;
         self.f.sync_data()?;
 
@@ -762,6 +792,14 @@ impl Gdbm {
         self.dir = directory;
 
         Ok(())
+    }
+
+    // API: convert
+    pub fn convert(&mut self, options: &ConvertOptions) -> io::Result<()> {
+        self.writeable()
+            .and_then(|_| self.header.convert_numsync(options.numsync()))?
+            .into_iter()
+            .try_for_each(|(offset, length)| self.free_record(offset, length))
     }
 }
 
