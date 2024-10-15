@@ -175,6 +175,15 @@ impl AvailBlock {
         })
     }
 
+    // resize Self and return a Vec of elements that can no longer be accommodated.
+    pub fn resize(&mut self, size: u32) -> Vec<(u64, u32)> {
+        self.sz = size;
+        self.elems
+            .drain(self.elems.len().min(size as usize)..)
+            .map(|elem| (elem.addr, elem.sz))
+            .collect()
+    }
+
     // extent returns the size of this block when serialized
     pub fn extent(&self, layout: &Layout) -> u32 {
         Self::sizeof(layout, self.elems.len() as u32)

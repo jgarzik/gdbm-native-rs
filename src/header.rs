@@ -193,15 +193,10 @@ impl Header {
 
         (new_avail_sz > 1)
             .then(|| {
-                self.avail.sz = new_avail_sz;
                 self.magic = Magic::new(self.magic.endian(), self.magic.offset(), use_numsync);
                 self.numsync = None;
                 self.dirty = true;
-                self.avail
-                    .elems
-                    .drain((self.avail.sz as usize).min(self.avail.elems.len())..)
-                    .map(|elem| (elem.addr, elem.sz))
-                    .collect()
+                self.avail.resize(new_avail_sz)
             })
             .ok_or_else(|| Error::new(ErrorKind::Other, "blocksize too small for numsync"))
     }
