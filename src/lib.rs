@@ -20,14 +20,19 @@ mod bucket;
 pub mod dir;
 mod hashutil;
 mod header;
-mod magic;
+pub mod magic;
 pub mod ser;
 use avail::{AvailBlock, AvailElem};
 use bucket::{Bucket, BucketCache, BucketElement};
-use dir::Directory;
+use dir::{build_dir_size, Directory};
 use hashutil::{bucket_dir, key_loc, PartialKey};
 use header::Header;
-use ser::{write32, write64, Alignment, Endian};
+use ser::{write32, write64, Alignment, Endian, Layout, Offset};
+
+#[cfg(target_os = "linux")]
+use std::os::linux::fs::MetadataExt;
+#[cfg(target_os = "macos")]
+use std::os::macos::fs::MetadataExt;
 
 // Our claimed GDBM lib version compatibility.  Appears in dump files.
 const COMPAT_GDBM_VERSION: &str = "1.23";
@@ -51,11 +56,29 @@ fn read_ofs(f: &mut std::fs::File, ofs: u64, total_size: usize) -> io::Result<Ve
     Ok(data)
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct GdbmOptions {
+    /// Override default alignement when opening a database.
+    /// Explicitly sel alignment when creating a new DB. Default is 64bit.
     pub alignment: Option<Alignment>,
+    /// Explicitly set offset width when creating a new DB. Default is 64bit (LFS).
+    pub offset: Option<Offset>,
+    /// Explicitly set edianness when creating a new DB. Default is LE.
+    pub endian: Option<Endian>,
+    /// Open readonly, conflicts with creat and newdb.
     pub readonly: bool,
+    /// Create a new database if DB file is non-existent or has 0 length.
+    /// Conflicts with readonly.
     pub creat: bool,
+    /// Force creation of new DB. Conflicts with readonly.
+    pub newdb: bool,
+    /// Explicitly set block size, or use system default.
+    /// If block size is less than 512, the system default is used.
+    pub block_size: Option<u32>,
+    /// Only create DB if exact block_size can be accommodated.
+    pub bsexact: bool,
+    /// use numsync when creating a new DB.
+    pub numsync: bool,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -81,45 +104,79 @@ pub struct Gdbm {
 impl Gdbm {
     // API: open database file, read and validate header
     pub fn open(pathname: &str, dbcfg: &GdbmOptions) -> io::Result<Gdbm> {
-        // derive open options
-        let opt_write: bool = !dbcfg.readonly;
-        let opt_create = if dbcfg.readonly { false } else { dbcfg.creat };
-
-        // open filesystem file
-        let mut f = OpenOptions::new()
-            .read(true)
-            .write(opt_write)
-            .create(opt_create)
-            .open(pathname)?;
-        let metadata = f.metadata()?;
-
-        // read gdbm global header
-        let header = Header::from_reader(&dbcfg.alignment, &metadata, &mut f)?;
-        println!("{:?}", header);
-
-        // read gdbm hash directory
-        f.seek(SeekFrom::Start(header.dir_ofs))?;
-        let dir = Directory::from_reader(&header.layout, header.dir_sz, &mut f)?;
-
-        // ensure all bucket offsets are reasonable
-        if !dir.validate(header.block_sz as u64, header.next_block, header.block_sz) {
-            return Err(Error::new(
+        if dbcfg.readonly && (dbcfg.newdb || dbcfg.creat) {
+            Err(Error::new(
                 ErrorKind::Other,
-                "corruption: bucket offset outside of file",
+                "readonly conflicts with newdb or creat",
             ))?;
         }
+
+        let mut f = OpenOptions::new()
+            .read(true)
+            .write(!dbcfg.readonly)
+            .create(dbcfg.creat | dbcfg.newdb)
+            .truncate(dbcfg.newdb)
+            .open(pathname)?;
+
+        let metadata = f.metadata()?;
+
+        if metadata.len() == 0 && !(dbcfg.creat || dbcfg.newdb) {
+            Err(Error::new(ErrorKind::Other, "empty database"))?;
+        }
+
+        let (header, dir, bucket_cache) = match metadata.len() {
+            0 => {
+                let layout = Layout {
+                    offset: dbcfg.offset.unwrap_or(Offset::LFS),
+                    alignment: dbcfg.alignment.unwrap_or(Alignment::Align64),
+                    endian: dbcfg.endian.unwrap_or(Endian::Little),
+                };
+                let (block_size, dir_bits) = build_dir_size(
+                    layout.offset,
+                    match dbcfg.block_size {
+                        Some(size) if size >= 512 => size,
+                        _ => f.metadata()?.st_blksize() as u32,
+                    },
+                );
+
+                if dbcfg.bsexact && Some(block_size) != dbcfg.block_size {
+                    Err(Error::new(ErrorKind::Other, "no exact blocksize"))?;
+                }
+
+                let header = Header::new(block_size, &layout, dir_bits, dbcfg.numsync);
+                let bucket = Bucket::new(0, header.bucket_elems as usize, vec![], vec![]);
+                let bucket_offset = header.next_block - block_size as u64;
+                let dir = Directory::new(vec![bucket_offset; 1 << header.dir_bits]);
+
+                (header, dir, BucketCache::new(Some((bucket_offset, bucket))))
+            }
+            _ => {
+                let header = Header::from_reader(&dbcfg.alignment, metadata.len(), &mut f)?;
+                f.seek(SeekFrom::Start(header.dir_ofs))?;
+                let dir = Directory::from_reader(&header.layout, header.dir_sz, &mut f)?;
+
+                // ensure all bucket offsets are reasonable
+                if !dir.validate(header.block_sz as u64, header.next_block, header.block_sz) {
+                    return Err(Error::new(
+                        ErrorKind::Other,
+                        "corruption: bucket offset outside of file",
+                    ))?;
+                }
+
+                (header, dir, BucketCache::new(None))
+            }
+        };
 
         let cur_bucket_dir: usize = 0;
         let cur_bucket_ofs = dir.dir[cur_bucket_dir];
 
-        // success; create new Gdbm object
         Ok(Gdbm {
             pathname: pathname.to_string(),
             cfg: *dbcfg,
             f,
             header,
             dir,
-            bucket_cache: BucketCache::new(),
+            bucket_cache,
             cur_bucket_ofs,
             cur_bucket_dir,
             iter_key: None,

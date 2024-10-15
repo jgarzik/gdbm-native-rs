@@ -38,6 +38,5 @@ fn api_convert() {
 
             Ok(())
         })
-        .map_err(|e| println!("{}", e))
-        .unwrap()
+        .unwrap_or_else(|e| panic!("{}", e))
 }

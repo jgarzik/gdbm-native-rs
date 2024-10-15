@@ -58,6 +58,12 @@ impl TestInfo {
             readonly: true,
             creat: false,
             alignment: self.alignment,
+            block_size: None,
+            bsexact: false,
+            endian: None,
+            newdb: false,
+            numsync: false,
+            offset: None,
         }
     }
 
@@ -67,6 +73,12 @@ impl TestInfo {
             readonly: false,
             creat: false,
             alignment: self.alignment,
+            block_size: None,
+            bsexact: false,
+            endian: None,
+            newdb: false,
+            numsync: false,
+            offset: None,
         }
     }
 

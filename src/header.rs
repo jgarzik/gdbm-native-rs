@@ -46,14 +46,32 @@ impl Header {
         }
     }
 
+    pub fn new(block_size: u32, layout: &Layout, dir_bits: u32, numsync: bool) -> Self {
+        let bucket_elems = (block_size - Bucket::sizeof(layout)) / BucketElement::sizeof(layout);
+        let avail_elems =
+            (block_size - Self::sizeof(layout, numsync, 0)) / AvailElem::sizeof(layout);
+        Header {
+            magic: Magic::new(layout.endian, layout.offset, numsync),
+            block_sz: block_size,
+            dir_ofs: block_size as u64,
+            dir_sz: block_size,
+            dir_bits,
+            bucket_sz: Bucket::sizeof(layout) + bucket_elems * BucketElement::sizeof(layout),
+            bucket_elems,
+            next_block: block_size as u64 * 3,
+            avail: AvailBlock::new(avail_elems, 0, vec![]),
+            dirty: true,
+            layout: *layout,
+            numsync: None,
+        }
+    }
+
     pub fn from_reader(
         alignment: &Option<Alignment>,
-        metadata: &std::fs::Metadata,
+        length: u64,
         reader: &mut impl Read,
     ) -> io::Result<Self> {
-        let file_sz = metadata.len();
-
-        // fixme: read u32, not u64, if is_lfs
+        let file_sz = length;
 
         let magic = Magic::from_reader(reader)?;
         let block_sz = read32(magic.endian(), reader)?;
@@ -96,12 +114,12 @@ impl Header {
             return Err(Error::new(ErrorKind::Other, "bad header: dir"));
         }
 
-        let (ck_dir_sz, _ck_dir_bits) = build_dir_size(&layout, block_sz);
+        let (ck_dir_sz, _ck_dir_bits) = build_dir_size(layout.offset, block_sz);
         if dir_sz < ck_dir_sz {
             return Err(Error::new(ErrorKind::Other, "bad header: dir sz"));
         }
 
-        let (_ck_dir_sz, ck_dir_bits) = build_dir_size(&layout, dir_sz);
+        let (_ck_dir_sz, ck_dir_bits) = build_dir_size(layout.offset, dir_sz);
         if dir_bits != ck_dir_bits {
             return Err(Error::new(ErrorKind::Other, "bad header: dir bits"));
         }

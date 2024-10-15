@@ -110,7 +110,7 @@ pub struct Bucket {
 impl Bucket {
     pub const AVAIL: u32 = 6;
 
-    fn new(bits: u32, len: usize, avail: Vec<AvailElem>, elements: Vec<BucketElement>) -> Self {
+    pub fn new(bits: u32, len: usize, avail: Vec<AvailElem>, elements: Vec<BucketElement>) -> Self {
         elements.into_iter().fold(
             Self {
                 avail,
@@ -281,10 +281,10 @@ pub struct BucketCache {
 }
 
 impl BucketCache {
-    pub fn new() -> BucketCache {
+    pub fn new(bucket: Option<(u64, Bucket)>) -> BucketCache {
         BucketCache {
-            bucket_map: HashMap::new(),
-            dirty: HashMap::new(),
+            dirty: bucket.iter().map(|(offset, _)| (*offset, true)).collect(),
+            bucket_map: bucket.into_iter().collect(),
         }
     }
 
