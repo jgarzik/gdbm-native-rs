@@ -75,8 +75,8 @@ impl Header {
 
         let avail = AvailBlock::from_reader(&layout, reader)?;
 
-        // Block must be big enough for header and avail table with one element.
-        if block_sz < Self::sizeof(&layout, magic.is_numsync(), 1) {
+        // Block must be big enough for header and avail table with two elements.
+        if block_sz < Self::sizeof(&layout, magic.is_numsync(), 2) {
             return Err(Error::new(ErrorKind::Other, "bad header: blksz"));
         }
 
