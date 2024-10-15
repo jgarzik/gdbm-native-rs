@@ -12,10 +12,8 @@ fn api_convert() {
         .filter(|test| test.is_basic)
         .try_for_each(|test| -> Result<(), String> {
             let tempfile = test.tempfile();
-            let convert_options = if test.db_path.ends_with("numsync") {
-                ConvertOptions::new().with_numsync()
-            } else {
-                ConvertOptions::new()
+            let convert_options = ConvertOptions {
+                numsync: !test.db_path.ends_with("numsync"),
             };
 
             // open and convert to/from numsync
@@ -32,7 +30,7 @@ fn api_convert() {
             Gdbm::open(tempfile.path().to_str().unwrap(), &test.ro_cfg())
                 .map_err(|e| format!("opening: {}", e))
                 .and_then(|db| {
-                    (db.header.magic.is_numsync() == convert_options.numsync())
+                    (db.header.magic.is_numsync() == convert_options.numsync)
                         .then_some(())
                         .ok_or_else(|| "file is not numsync".to_string())
                 })

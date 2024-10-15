@@ -58,33 +58,9 @@ pub struct GdbmOptions {
     pub creat: bool,
 }
 
-#[derive(Copy, Clone, Default, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct ConvertOptions {
-    flags: u32,
-}
-
-impl ConvertOptions {
-    const NUMSYNC: u32 = 0x01;
-
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_numsync(&self) -> Self {
-        Self {
-            flags: self.flags | Self::NUMSYNC,
-        }
-    }
-
-    pub fn without_numsync(&self) -> Self {
-        Self {
-            flags: self.flags & !Self::NUMSYNC,
-        }
-    }
-
-    pub fn numsync(&self) -> bool {
-        self.flags & Self::NUMSYNC != 0
-    }
+    pub numsync: bool,
 }
 
 // #[derive(Debug)]
@@ -797,7 +773,7 @@ impl Gdbm {
     // API: convert
     pub fn convert(&mut self, options: &ConvertOptions) -> io::Result<()> {
         self.writeable()
-            .and_then(|_| self.header.convert_numsync(options.numsync()))?
+            .and_then(|_| self.header.convert_numsync(options.numsync))?
             .into_iter()
             .try_for_each(|(offset, length)| self.free_record(offset, length))
     }
