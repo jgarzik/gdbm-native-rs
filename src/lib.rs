@@ -21,13 +21,16 @@ mod bucket;
 pub mod dir;
 mod hashutil;
 mod header;
+mod import;
 pub mod magic;
 pub mod ser;
+
 use avail::{AvailBlock, AvailElem};
 use bucket::{Bucket, BucketCache, BucketElement};
 use dir::{build_dir_size, Directory};
 use hashutil::{bucket_dir, key_loc, PartialKey};
 use header::Header;
+use import::ASCIIImportIterator;
 use ser::{write32, write64, Alignment, Endian, Layout, Offset};
 
 #[cfg(target_os = "linux")]
@@ -243,6 +246,13 @@ impl Gdbm {
         let n_written = self.export_ascii_records(outf)?;
         self.export_ascii_footer(outf, n_written)?;
         Ok(())
+    }
+
+    pub fn import_ascii(&mut self, reader: &mut impl Read) -> io::Result<()> {
+        ASCIIImportIterator::new(reader)?.try_for_each(|l| {
+            let (key, value) = l?;
+            self.insert(&key, &value).map(|_| ())
+        })
     }
 
     fn export_bin_header(&self, outf: &mut std::fs::File) -> io::Result<()> {
