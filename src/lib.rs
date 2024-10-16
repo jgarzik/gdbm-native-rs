@@ -10,6 +10,7 @@
 
 extern crate base64;
 
+use base64::Engine;
 use std::{
     fs::OpenOptions,
     io::{self, Error, ErrorKind, Read, Seek, SeekFrom, Write},
@@ -198,7 +199,7 @@ impl Gdbm {
 
         writeln!(outf, "#:len={}", bindata.len())?;
 
-        let mut b64 = base64::encode(bindata);
+        let mut b64 = base64::prelude::BASE64_STANDARD.encode(bindata);
 
         while b64.len() > MAX_DUMP_LINE_LEN {
             let line = &b64[..MAX_DUMP_LINE_LEN];
