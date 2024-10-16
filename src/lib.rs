@@ -837,16 +837,19 @@ impl Gdbm {
 }
 
 impl Iterator for Gdbm {
-    type Item = Vec<u8>;
+    type Item = io::Result<Vec<u8>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let next_key = match self.iter_key.take() {
-            None => self.first_key().expect("DB first_key I/O error"),
-            Some(key) => self.next_key(&key).expect("DB next_key I/O error"),
+            None => self.first_key(),
+            Some(key) => self.next_key(&key),
         };
 
-        self.iter_key.clone_from(&next_key);
+        self.iter_key = match next_key {
+            Ok(ref key) => key.clone(),
+            Err(_) => None,
+        };
 
-        next_key
+        next_key.transpose()
     }
 }
