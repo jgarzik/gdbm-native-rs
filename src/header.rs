@@ -37,11 +37,12 @@ pub struct Header {
 }
 
 impl Header {
-    fn sizeof(layout: &Layout, is_numsync: bool, avail_elems: u32) -> u32 {
-        if is_numsync {
-            40 + 32 + AvailBlock::sizeof(layout, avail_elems)
-        } else {
-            40 + AvailBlock::sizeof(layout, avail_elems)
+    pub fn sizeof(layout: &Layout, is_numsync: bool, avail_elems: u32) -> u32 {
+        match (layout.offset, is_numsync) {
+            (Offset::Small, true) => 32 + 32 + AvailBlock::sizeof(layout, avail_elems),
+            (Offset::Small, false) => 32 + AvailBlock::sizeof(layout, avail_elems),
+            (Offset::LFS, true) => 40 + 32 + AvailBlock::sizeof(layout, avail_elems),
+            (Offset::LFS, false) => 40 + AvailBlock::sizeof(layout, avail_elems),
         }
     }
 
@@ -56,12 +57,18 @@ impl Header {
 
         let magic = Magic::from_reader(reader)?;
         let block_sz = read32(magic.endian(), reader)?;
-        let dir_ofs = read64(magic.endian(), reader)?;
+        let dir_ofs = match magic.offset() {
+            Offset::Small => read32(magic.endian(), reader)? as u64,
+            Offset::LFS => read64(magic.endian(), reader)?,
+        };
         let dir_sz = read32(magic.endian(), reader)?;
         let dir_bits = read32(magic.endian(), reader)?;
         let bucket_sz = read32(magic.endian(), reader)?;
         let bucket_elems = read32(magic.endian(), reader)?;
-        let next_block = read64(magic.endian(), reader)?;
+        let next_block = match magic.offset() {
+            Offset::Small => read32(magic.endian(), reader)? as u64,
+            Offset::LFS => read64(magic.endian(), reader)?,
+        };
         let numsync = magic
             .is_numsync()
             .then(|| read_numsync(magic.endian(), reader))
