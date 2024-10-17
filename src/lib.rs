@@ -10,6 +10,7 @@
 
 extern crate base64;
 
+use base64::Engine;
 use std::{
     fs::OpenOptions,
     io::{self, Error, ErrorKind, Read, Seek, SeekFrom, Write},
@@ -20,13 +21,16 @@ mod bucket;
 pub mod dir;
 mod hashutil;
 mod header;
+mod import;
 pub mod magic;
 pub mod ser;
+
 use avail::{AvailBlock, AvailElem};
 use bucket::{Bucket, BucketCache, BucketElement};
 use dir::{build_dir_size, Directory};
 use hashutil::{bucket_dir, key_loc, PartialKey};
 use header::Header;
+use import::{ASCIIImportIterator, BinaryImportIterator};
 use ser::{write32, write64, Alignment, Endian, Layout, Offset};
 
 #[cfg(target_os = "linux")]
@@ -39,6 +43,7 @@ const COMPAT_GDBM_VERSION: &str = "1.23";
 
 const IGNORE_SMALL: usize = 4;
 
+#[derive(Copy, Clone, Debug)]
 pub enum ExportBinMode {
     ExpNative,
     Exp32,
@@ -198,7 +203,7 @@ impl Gdbm {
 
         writeln!(outf, "#:len={}", bindata.len())?;
 
-        let mut b64 = base64::encode(bindata);
+        let mut b64 = base64::prelude::BASE64_STANDARD.encode(bindata);
 
         while b64.len() > MAX_DUMP_LINE_LEN {
             let line = &b64[..MAX_DUMP_LINE_LEN];
@@ -242,6 +247,13 @@ impl Gdbm {
         let n_written = self.export_ascii_records(outf)?;
         self.export_ascii_footer(outf, n_written)?;
         Ok(())
+    }
+
+    pub fn import_ascii(&mut self, reader: &mut impl Read) -> io::Result<()> {
+        ASCIIImportIterator::new(reader)?.try_for_each(|l| {
+            let (key, value) = l?;
+            self.insert(&key, &value).map(|_| ())
+        })
     }
 
     fn export_bin_header(&self, outf: &mut std::fs::File) -> io::Result<()> {
@@ -301,6 +313,19 @@ impl Gdbm {
         self.export_bin_header(outf)?;
         self.export_bin_records(outf, alignment)?;
         Ok(())
+    }
+
+    pub fn import_bin(&mut self, reader: &mut impl Read, mode: ExportBinMode) -> io::Result<()> {
+        let alignment = match mode {
+            ExportBinMode::ExpNative => self.header.layout.alignment,
+            ExportBinMode::Exp32 => Alignment::Align32,
+            ExportBinMode::Exp64 => Alignment::Align64,
+        };
+
+        BinaryImportIterator::new(alignment, reader)?.try_for_each(|l| {
+            let (key, value) = l?;
+            self.insert(&key, &value).map(|_| ())
+        })
     }
 
     // read bucket into bucket cache.
@@ -837,16 +862,19 @@ impl Gdbm {
 }
 
 impl Iterator for Gdbm {
-    type Item = Vec<u8>;
+    type Item = io::Result<Vec<u8>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let next_key = match self.iter_key.take() {
-            None => self.first_key().expect("DB first_key I/O error"),
-            Some(key) => self.next_key(&key).expect("DB next_key I/O error"),
+            None => self.first_key(),
+            Some(key) => self.next_key(&key),
         };
 
-        self.iter_key.clone_from(&next_key);
+        self.iter_key = match next_key {
+            Ok(ref key) => key.clone(),
+            Err(_) => None,
+        };
 
-        next_key
+        next_key.transpose()
     }
 }

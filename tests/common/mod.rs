@@ -121,3 +121,33 @@ pub fn init_tests() -> Vec<TestInfo> {
     })
     .collect()
 }
+
+#[allow(dead_code)]
+pub fn default_cfg() -> GdbmOptions {
+    GdbmOptions {
+        readonly: true,
+        creat: false,
+        newdb: false,
+        block_size: None,
+        bsexact: false,
+        numsync: true,
+        alignment: None,
+        endian: None,
+        offset: None,
+    }
+}
+
+#[allow(dead_code)]
+pub fn creat_cfg() -> GdbmOptions {
+    GdbmOptions {
+        readonly: false,
+        creat: true,
+        newdb: false,
+        block_size: None,
+        bsexact: false,
+        numsync: true,
+        alignment: None,
+        endian: None,
+        offset: None,
+    }
+}
