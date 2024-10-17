@@ -29,10 +29,10 @@ Major categories of tasks leading to 1.0.0.  View the
 - [x] Remove: Delete record
 - [ ] Reorganize: Not a priority
 - [x] Sync: Write dirty buffers, and fsync(2)
-- [ ] Import:  GDBM ASCII and binary dump formats
+- [x] Import:  GDBM ASCII and binary dump formats
 - [x] Export:  GDBM ASCII and binary dump formats
 - [x] Numsync: New, 3rd generation GDBM file format
-- [ ] Tests:  Healthy test coverage
+- [x] Tests:  Healthy test coverage
 - [ ] Code Cleanup:  Review by rust experts
 
 ## Documentation
