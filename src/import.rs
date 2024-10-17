@@ -2,6 +2,8 @@ use std::io::{self, BufRead, BufReader, Error, ErrorKind, Read};
 
 use base64::Engine;
 
+use crate::ser::Alignment;
+
 pub struct ASCIIImportIterator<'a> {
     buf_reader: BufReader<&'a mut dyn Read>,
 }
@@ -82,6 +84,73 @@ impl<'a> ASCIIImportIterator<'a> {
 }
 
 impl<'a> Iterator for ASCIIImportIterator<'a> {
+    type Item = io::Result<(Vec<u8>, Vec<u8>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.read_datum() {
+            Ok(None) => None,
+            Ok(Some(key)) => match self.read_datum() {
+                Ok(None) => Some(Err(Error::new(ErrorKind::Other, "end of file"))),
+                Ok(Some(value)) => Some(Ok((key, value))),
+                Err(e) => Some(Err(e)),
+            },
+            Err(e) => Some(Err(e)),
+        }
+    }
+}
+
+pub struct BinaryImportIterator<'a> {
+    alignment: Alignment,
+    buf_reader: BufReader<&'a mut dyn Read>,
+}
+
+impl<'a> BinaryImportIterator<'a> {
+    pub fn new(alignment: Alignment, reader: &'a mut dyn Read) -> io::Result<Self> {
+        let mut buf_reader = BufReader::new(reader);
+
+        // skip 4 header lines
+        let mut line = String::new();
+        (0..4).try_for_each(|_| buf_reader.read_line(&mut line).map(|_| ()))?;
+
+        Ok(Self {
+            alignment,
+            buf_reader,
+        })
+    }
+
+    fn read_datum(&mut self) -> io::Result<Option<Vec<u8>>> {
+        let length = self
+            .buf_reader
+            .by_ref()
+            .bytes()
+            .take(match self.alignment {
+                Alignment::Align32 => 4,
+                Alignment::Align64 => 8,
+            })
+            .collect::<io::Result<Vec<_>>>()
+            .and_then(|buf| match (self.alignment, buf.len()) {
+                (_, 0) => Ok(None),
+                (Alignment::Align32, 4) => {
+                    Ok(Some(u32::from_be_bytes(buf.try_into().unwrap()) as usize))
+                }
+                (Alignment::Align64, 8) => {
+                    Ok(Some(u64::from_be_bytes(buf.try_into().unwrap()) as usize))
+                }
+                _ => Err(Error::new(ErrorKind::UnexpectedEof, "partial read")),
+            })?;
+
+        match length {
+            Some(n) => {
+                let mut buf = vec![0; n];
+                self.buf_reader.read_exact(&mut buf)?;
+                Ok(Some(buf))
+            }
+            None => Ok(None),
+        }
+    }
+}
+
+impl<'a> Iterator for BinaryImportIterator<'a> {
     type Item = io::Result<(Vec<u8>, Vec<u8>)>;
 
     fn next(&mut self) -> Option<Self::Item> {

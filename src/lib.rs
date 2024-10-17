@@ -30,7 +30,7 @@ use bucket::{Bucket, BucketCache, BucketElement};
 use dir::{build_dir_size, Directory};
 use hashutil::{bucket_dir, key_loc, PartialKey};
 use header::Header;
-use import::ASCIIImportIterator;
+use import::{ASCIIImportIterator, BinaryImportIterator};
 use ser::{write32, write64, Alignment, Endian, Layout, Offset};
 
 #[cfg(target_os = "linux")]
@@ -43,6 +43,7 @@ const COMPAT_GDBM_VERSION: &str = "1.23";
 
 const IGNORE_SMALL: usize = 4;
 
+#[derive(Copy, Clone, Debug)]
 pub enum ExportBinMode {
     ExpNative,
     Exp32,
@@ -312,6 +313,19 @@ impl Gdbm {
         self.export_bin_header(outf)?;
         self.export_bin_records(outf, alignment)?;
         Ok(())
+    }
+
+    pub fn import_bin(&mut self, reader: &mut impl Read, mode: ExportBinMode) -> io::Result<()> {
+        let alignment = match mode {
+            ExportBinMode::ExpNative => self.header.layout.alignment,
+            ExportBinMode::Exp32 => Alignment::Align32,
+            ExportBinMode::Exp64 => Alignment::Align64,
+        };
+
+        BinaryImportIterator::new(alignment, reader)?.try_for_each(|l| {
+            let (key, value) = l?;
+            self.insert(&key, &value).map(|_| ())
+        })
     }
 
     // read bucket into bucket cache.
