@@ -13,8 +13,8 @@ use std::io::{self, Read, Write};
 use crate::hashutil::HASH_BITS;
 use crate::ser::{read32, read64, write32, write64, Layout, Offset};
 
-pub fn build_dir_size(layout: &Layout, block_sz: u32) -> (u32, u32) {
-    let mut dir_size = 8 * match layout.offset {
+pub fn build_dir_size(offset: Offset, block_sz: u32) -> (u32, u32) {
+    let mut dir_size = 8 * match offset {
         Offset::Small => 4,
         Offset::LFS => 8,
     };
@@ -38,6 +38,13 @@ impl Directory {
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.dir.len()
+    }
+
+    pub fn new(bucket_offsets: Vec<u64>) -> Self {
+        Self {
+            dir: bucket_offsets,
+            dirty: true,
+        }
     }
 
     pub fn serialize(&self, layout: &Layout, writer: &mut impl Write) -> io::Result<()> {

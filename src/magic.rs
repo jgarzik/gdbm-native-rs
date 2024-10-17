@@ -14,7 +14,7 @@ const GDBM_MAGIC_BE_64: [u8; 4] = [0x13, 0x57, 0x9a, 0xcf];
 const GDBM_NUMSYNC_MAGIC_BE_32: [u8; 4] = [0x13, 0x57, 0x9a, 0xd0];
 const GDBM_NUMSYNC_MAGIC_BE_64: [u8; 4] = [0x13, 0x57, 0x9a, 0xd1];
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Magic {
     LE,
     BE,

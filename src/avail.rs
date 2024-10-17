@@ -31,7 +31,7 @@ impl AvailElem {
         let elem_sz = read32(layout.endian, reader)?;
 
         // skip padding
-        if layout.alignment.is64() {
+        if layout.alignment.is64() && layout.offset == Offset::LFS {
             read32(layout.endian, reader)?;
         }
 
@@ -50,7 +50,7 @@ impl AvailElem {
         write32(layout.endian, writer, self.sz)?;
 
         // insert padding
-        if layout.alignment.is64() {
+        if layout.alignment.is64() && layout.offset == Offset::LFS {
             write32(layout.endian, writer, 0)?;
         }
 
@@ -73,9 +73,9 @@ pub struct AvailBlock {
 impl AvailBlock {
     pub fn sizeof(layout: &Layout, elems: u32) -> u32 {
         elems * AvailElem::sizeof(layout)
-            + match layout.alignment {
-                Alignment::Align32 => 12,
-                Alignment::Align64 => 16,
+            + match (layout.alignment, layout.offset) {
+                (Alignment::Align32, Offset::Small) => 12,
+                _ => 16,
             }
     }
 
@@ -95,6 +95,10 @@ impl AvailBlock {
             Offset::Small => (read32(layout.endian, reader)?) as u64,
             Offset::LFS => read64(layout.endian, reader)?,
         };
+
+        if layout.alignment.is64() && layout.offset == Offset::Small {
+            read32(layout.endian, reader)?;
+        }
 
         let mut elems = (0..count)
             .map(|_| AvailElem::from_reader(layout, reader))
@@ -122,6 +126,10 @@ impl AvailBlock {
         match layout.offset {
             Offset::Small => write32(layout.endian, writer, self.next_block as u32)?,
             Offset::LFS => write64(layout.endian, writer, self.next_block)?,
+        }
+
+        if layout.alignment.is64() && layout.offset == Offset::Small {
+            write32(layout.endian, writer, 0)?;
         }
 
         self.elems
@@ -173,6 +181,15 @@ impl AvailBlock {
             next_block: other.next_block,
             elems,
         })
+    }
+
+    // resize Self and return a Vec of elements that can no longer be accommodated.
+    pub fn resize(&mut self, size: u32) -> Vec<(u64, u32)> {
+        self.sz = size;
+        self.elems
+            .drain(self.elems.len().min(size as usize)..)
+            .map(|elem| (elem.addr, elem.sz))
+            .collect()
     }
 
     // extent returns the size of this block when serialized

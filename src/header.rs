@@ -37,31 +37,56 @@ pub struct Header {
 }
 
 impl Header {
-    fn sizeof(layout: &Layout, is_numsync: bool, avail_elems: u32) -> u32 {
-        if is_numsync {
-            40 + 32 + AvailBlock::sizeof(layout, avail_elems)
-        } else {
-            40 + AvailBlock::sizeof(layout, avail_elems)
+    pub fn sizeof(layout: &Layout, is_numsync: bool, avail_elems: u32) -> u32 {
+        match (layout.offset, is_numsync) {
+            (Offset::Small, true) => 32 + 32 + AvailBlock::sizeof(layout, avail_elems),
+            (Offset::Small, false) => 32 + AvailBlock::sizeof(layout, avail_elems),
+            (Offset::LFS, true) => 40 + 32 + AvailBlock::sizeof(layout, avail_elems),
+            (Offset::LFS, false) => 40 + AvailBlock::sizeof(layout, avail_elems),
+        }
+    }
+
+    pub fn new(block_size: u32, layout: &Layout, dir_bits: u32, numsync: bool) -> Self {
+        let bucket_elems = (block_size - Bucket::sizeof(layout)) / BucketElement::sizeof(layout);
+        let avail_elems =
+            (block_size - Self::sizeof(layout, numsync, 0)) / AvailElem::sizeof(layout);
+        Header {
+            magic: Magic::new(layout.endian, layout.offset, numsync),
+            block_sz: block_size,
+            dir_ofs: block_size as u64,
+            dir_sz: block_size,
+            dir_bits,
+            bucket_sz: Bucket::sizeof(layout) + bucket_elems * BucketElement::sizeof(layout),
+            bucket_elems,
+            next_block: block_size as u64 * 3,
+            avail: AvailBlock::new(avail_elems, 0, vec![]),
+            dirty: true,
+            layout: *layout,
+            numsync: None,
         }
     }
 
     pub fn from_reader(
         alignment: &Option<Alignment>,
-        metadata: &std::fs::Metadata,
+        length: u64,
         reader: &mut impl Read,
     ) -> io::Result<Self> {
-        let file_sz = metadata.len();
-
-        // fixme: read u32, not u64, if is_lfs
+        let file_sz = length;
 
         let magic = Magic::from_reader(reader)?;
         let block_sz = read32(magic.endian(), reader)?;
-        let dir_ofs = read64(magic.endian(), reader)?;
+        let dir_ofs = match magic.offset() {
+            Offset::Small => read32(magic.endian(), reader)? as u64,
+            Offset::LFS => read64(magic.endian(), reader)?,
+        };
         let dir_sz = read32(magic.endian(), reader)?;
         let dir_bits = read32(magic.endian(), reader)?;
         let bucket_sz = read32(magic.endian(), reader)?;
         let bucket_elems = read32(magic.endian(), reader)?;
-        let next_block = read64(magic.endian(), reader)?;
+        let next_block = match magic.offset() {
+            Offset::Small => read32(magic.endian(), reader)? as u64,
+            Offset::LFS => read64(magic.endian(), reader)?,
+        };
         let numsync = magic
             .is_numsync()
             .then(|| read_numsync(magic.endian(), reader))
@@ -75,8 +100,8 @@ impl Header {
 
         let avail = AvailBlock::from_reader(&layout, reader)?;
 
-        // Block must be big enough for header and avail table with one element.
-        if block_sz < Self::sizeof(&layout, magic.is_numsync(), 1) {
+        // Block must be big enough for header and avail table with two elements.
+        if block_sz < Self::sizeof(&layout, magic.is_numsync(), 2) {
             return Err(Error::new(ErrorKind::Other, "bad header: blksz"));
         }
 
@@ -89,12 +114,12 @@ impl Header {
             return Err(Error::new(ErrorKind::Other, "bad header: dir"));
         }
 
-        let (ck_dir_sz, _ck_dir_bits) = build_dir_size(&layout, block_sz);
+        let (ck_dir_sz, _ck_dir_bits) = build_dir_size(layout.offset, block_sz);
         if dir_sz < ck_dir_sz {
             return Err(Error::new(ErrorKind::Other, "bad header: dir sz"));
         }
 
-        let (_ck_dir_sz, ck_dir_bits) = build_dir_size(&layout, dir_sz);
+        let (_ck_dir_sz, ck_dir_bits) = build_dir_size(layout.offset, dir_sz);
         if dir_bits != ck_dir_bits {
             return Err(Error::new(ErrorKind::Other, "bad header: dir bits"));
         }
@@ -193,15 +218,10 @@ impl Header {
 
         (new_avail_sz > 1)
             .then(|| {
-                self.avail.sz = new_avail_sz;
                 self.magic = Magic::new(self.magic.endian(), self.magic.offset(), use_numsync);
                 self.numsync = None;
                 self.dirty = true;
-                self.avail
-                    .elems
-                    .drain((self.avail.sz as usize).min(self.avail.elems.len())..)
-                    .map(|elem| (elem.addr, elem.sz))
-                    .collect()
+                self.avail.resize(new_avail_sz)
             })
             .ok_or_else(|| Error::new(ErrorKind::Other, "blocksize too small for numsync"))
     }
