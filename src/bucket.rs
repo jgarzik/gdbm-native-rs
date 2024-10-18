@@ -98,7 +98,7 @@ impl BucketElement {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Bucket {
     // on-disk gdbm database hash bucket
     pub avail: Vec<AvailElem>,

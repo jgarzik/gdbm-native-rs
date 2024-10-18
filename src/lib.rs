@@ -198,7 +198,7 @@ impl Gdbm {
         Ok(())
     }
 
-    fn export_ascii_datum(&self, outf: &mut std::fs::File, bindata: &[u8]) -> io::Result<()> {
+    fn export_ascii_datum(outf: &mut std::fs::File, bindata: &[u8]) -> io::Result<()> {
         const MAX_DUMP_LINE_LEN: usize = 76;
 
         writeln!(outf, "#:len={}", bindata.len())?;
@@ -219,20 +219,13 @@ impl Gdbm {
     }
 
     fn export_ascii_records(&mut self, outf: &mut std::fs::File) -> io::Result<usize> {
-        let mut n_written: usize = 0;
-        let mut key_res = self.first_key()?;
-        while key_res.is_some() {
-            let key = key_res.unwrap();
-            let val_res = self.get(&key)?;
-            let val = val_res.unwrap();
-
-            self.export_ascii_datum(outf, &key)?;
-            self.export_ascii_datum(outf, &val)?;
-
-            key_res = self.next_key(&key)?;
-            n_written += 1;
-        }
-        Ok(n_written)
+        self.iter().try_fold(0, |count, kv| {
+            kv.and_then(|(key, value)| {
+                Self::export_ascii_datum(outf, &key)
+                    .and_then(|_| Self::export_ascii_datum(outf, &value))
+                    .map(|_| count + 1)
+            })
+        })
     }
 
     fn export_ascii_footer(&self, outf: &mut std::fs::File, n_written: usize) -> io::Result<()> {
@@ -266,7 +259,6 @@ impl Gdbm {
     }
 
     fn export_bin_datum(
-        &self,
         outf: &mut std::fs::File,
         alignment: Alignment,
         bindata: &[u8],
@@ -288,18 +280,12 @@ impl Gdbm {
         outf: &mut std::fs::File,
         alignment: Alignment,
     ) -> io::Result<()> {
-        let mut key_res = self.first_key()?;
-        while key_res.is_some() {
-            let key = key_res.unwrap();
-            let val_res = self.get(&key)?;
-            let val = val_res.unwrap();
-
-            self.export_bin_datum(outf, alignment, &key)?;
-            self.export_bin_datum(outf, alignment, &val)?;
-
-            key_res = self.next_key(&key)?;
-        }
-        Ok(())
+        self.iter().try_for_each(|kv| {
+            kv.and_then(|(key, value)| {
+                Self::export_bin_datum(outf, alignment, &key)
+                    .and_then(|_| Self::export_bin_datum(outf, alignment, &value))
+            })
+        })
     }
 
     // API: export database to binary dump file
@@ -329,7 +315,7 @@ impl Gdbm {
     }
 
     // read bucket into bucket cache.
-    fn cache_load_bucket(&mut self, bucket_dir: usize) -> io::Result<()> {
+    fn cache_load_bucket(&mut self, bucket_dir: usize) -> io::Result<&Bucket> {
         self.cur_bucket_dir = bucket_dir;
         self.cur_bucket_ofs = self.dir.dir[bucket_dir];
 
@@ -339,7 +325,11 @@ impl Gdbm {
             self.bucket_cache.insert(self.cur_bucket_ofs, bucket);
         }
 
-        Ok(())
+        Ok(self
+            .bucket_cache
+            .bucket_map
+            .get(&self.cur_bucket_ofs)
+            .unwrap())
     }
 
     // return a reference to the current bucket
@@ -403,60 +393,9 @@ impl Gdbm {
         Ok(len)
     }
 
-    // given a bucket ptr, return the next key
-    fn int_next_key(&mut self, elem_opt: Option<usize>) -> io::Result<Option<Vec<u8>>> {
-        let mut elem_ofs = elem_opt.map(|n| n + 1).unwrap_or_default();
-        let mut found = None;
-        while found.is_none() {
-            // finished current bucket. get next bucket.
-            if elem_ofs == self.header.bucket_elems as usize {
-                elem_ofs = 0;
-
-                // find next bucket.  many dir entries may duplicate
-                // the current bucket, so skip dups.
-                let cur_dir = self.next_bucket_dir(self.cur_bucket_dir);
-                if cur_dir == self.dir.len() {
-                    break; // reached end of bucket dir - no more keys
-                }
-
-                // load new bucket
-                self.cache_load_bucket(cur_dir)?;
-            }
-
-            // any valid hash will do
-            let elem = &self.current_bucket().tab[elem_ofs];
-            found = elem.is_occupied().then_some((elem.data_ofs, elem.key_size));
-
-            elem_ofs += 1;
-        }
-
-        let data = match found {
-            Some((offset, size)) => Some(read_ofs(&mut self.f, offset, size as usize)?),
-            None => None,
-        };
-
-        Ok(data)
-    }
-
-    // API: return first key in database, for sequential iteration start.
-    pub fn first_key(&mut self) -> io::Result<Option<Vec<u8>>> {
-        // get first bucket
-        self.cache_load_bucket(0)?;
-
-        // start iteration - return next key
-        self.int_next_key(None)
-    }
-
-    // API: return next key, for given key, in db-wide sequential order.
-    pub fn next_key(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
-        let get_opt = self.int_get(key)?;
-        if get_opt.is_none() {
-            return Ok(None);
-        }
-
-        let (elem_ofs, _data) = get_opt.unwrap();
-
-        self.int_next_key(Some(elem_ofs))
+    // API: get an iterator
+    pub fn iter(&mut self) -> GDBMIterator {
+        GDBMIterator::new(self)
     }
 
     // API: does key exist?
@@ -618,23 +557,15 @@ impl Gdbm {
         Ok(())
     }
 
-    fn write_bucket(&mut self, bucket_ofs: u64, bucket: &Bucket) -> io::Result<()> {
-        self.f.seek(SeekFrom::Start(bucket_ofs))?;
-        bucket.serialize(&self.header.layout, &mut self.f)?;
-
-        Ok(())
-    }
-
     // write out any cached, not-yet-written metadata and data to storage
     fn write_buckets(&mut self) -> io::Result<()> {
         let dirty_list = self.bucket_cache.dirty_list();
 
         // write out each dirty bucket
         for bucket_ofs in dirty_list {
-            assert!(self.bucket_cache.contains(bucket_ofs));
-            let bucket = self.bucket_cache.bucket_map[&bucket_ofs].clone();
-
-            self.write_bucket(bucket_ofs, &bucket)?;
+            let bucket = self.bucket_cache.bucket_map.get(&bucket_ofs).unwrap();
+            self.f.seek(SeekFrom::Start(bucket_ofs))?;
+            bucket.serialize(&self.header.layout, &mut self.f)?;
         }
 
         // nothing in cache remains dirty
@@ -861,20 +792,110 @@ impl Gdbm {
     }
 }
 
-impl Iterator for Gdbm {
-    type Item = io::Result<Vec<u8>>;
+pub struct GDBMIterator<'a> {
+    db: &'a mut Gdbm,
+    slot: Option<io::Result<Slot>>,
+}
+
+#[derive(Debug)]
+struct Slot {
+    bucket: usize,
+    element: usize,
+}
+
+impl<'a> GDBMIterator<'a> {
+    fn next_slot(db: &Gdbm, slot: Slot) -> Option<Slot> {
+        match slot {
+            Slot { bucket, element } if element + 1 < db.header.bucket_elems as usize => {
+                Some(Slot {
+                    bucket,
+                    element: element + 1,
+                })
+            }
+            Slot { bucket, .. } => {
+                let current_bucket_offset = db.dir.dir[bucket];
+                (db.dir.dir)
+                    .iter()
+                    .enumerate()
+                    .skip(bucket + 1)
+                    .find(|(_, &offset)| offset != current_bucket_offset)
+                    .map(|(bucket, _)| Slot { bucket, element: 0 })
+            }
+        }
+    }
+
+    fn next_occupied_slot(db: &mut Gdbm, slot: Slot) -> Option<io::Result<Slot>> {
+        let mut next_slot = Self::next_slot(db, slot);
+        while let Some(slot) = next_slot {
+            let is_occupied = db
+                .cache_load_bucket(slot.bucket)
+                .map(|bucket| bucket.tab.get(slot.element).unwrap().is_occupied());
+            match is_occupied {
+                Ok(false) => (),
+                Ok(true) => return Some(Ok(slot)),
+                Err(e) => return Some(Err(e)),
+            }
+            next_slot = Self::next_slot(db, slot);
+        }
+
+        None
+    }
+
+    fn new(db: &'a mut Gdbm) -> GDBMIterator<'a> {
+        let slot = {
+            let slot = Slot {
+                bucket: 0,
+                element: 0,
+            };
+            match db.cache_load_bucket(0) {
+                Ok(bucket) => {
+                    if bucket.tab.first().unwrap().is_occupied() {
+                        Some(Ok(slot))
+                    } else {
+                        Self::next_occupied_slot(db, slot)
+                    }
+                }
+                Err(e) => Some(Err(e)),
+            }
+        };
+        Self { db, slot }
+    }
+}
+
+impl<'a> Iterator for GDBMIterator<'a> {
+    type Item = io::Result<(Vec<u8>, Vec<u8>)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let next_key = match self.iter_key.take() {
-            None => self.first_key(),
-            Some(key) => self.next_key(&key),
-        };
+        let slot = self.slot.take();
+        match slot {
+            None => None,
+            Some(Err(e)) => Some(Err(e)),
+            Some(Ok(slot)) => {
+                let data = self
+                    .db
+                    .cache_load_bucket(slot.bucket)
+                    .map(|bucket| {
+                        bucket
+                            .tab
+                            .get(slot.element)
+                            .map(|e| (e.data_ofs, e.key_size as usize, e.data_size as usize))
+                            .unwrap()
+                    })
+                    .and_then(|(offset, key_length, data_length)| {
+                        read_ofs(&mut self.db.f, offset, key_length + data_length).map(|data| {
+                            let (key, value) = data.split_at(key_length);
+                            (key.to_vec(), value.to_vec())
+                        })
+                    });
 
-        self.iter_key = match next_key {
-            Ok(ref key) => key.clone(),
-            Err(_) => None,
-        };
-
-        next_key.transpose()
+                match data {
+                    Ok(data) => {
+                        self.slot = Self::next_occupied_slot(self.db, slot);
+                        Some(Ok(data))
+                    }
+                    Err(e) => Some(Err(e)),
+                }
+            }
+        }
     }
 }
