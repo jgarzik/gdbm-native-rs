@@ -100,8 +100,6 @@ pub struct Gdbm {
     pub header: Header,
     pub dir: Directory,
     bucket_cache: BucketCache,
-    cur_bucket_ofs: u64,
-    cur_bucket_dir: usize,
 
     iter_key: Option<Vec<u8>>,
 }
@@ -172,9 +170,6 @@ impl Gdbm {
             }
         };
 
-        let cur_bucket_dir: usize = 0;
-        let cur_bucket_ofs = dir.dir[cur_bucket_dir];
-
         Ok(Gdbm {
             pathname: pathname.to_string(),
             cfg: *dbcfg,
@@ -182,8 +177,6 @@ impl Gdbm {
             header,
             dir,
             bucket_cache,
-            cur_bucket_ofs,
-            cur_bucket_dir,
             iter_key: None,
         })
     }
@@ -316,46 +309,17 @@ impl Gdbm {
 
     // read bucket into bucket cache.
     fn cache_load_bucket(&mut self, bucket_dir: usize) -> io::Result<&Bucket> {
-        self.cur_bucket_dir = bucket_dir;
-        self.cur_bucket_ofs = self.dir.dir[bucket_dir];
+        let offset = self.dir.dir[bucket_dir];
 
-        if !self.bucket_cache.contains(self.cur_bucket_ofs) {
-            self.f.seek(SeekFrom::Start(self.cur_bucket_ofs))?;
+        if !self.bucket_cache.contains(offset) {
+            self.f.seek(SeekFrom::Start(offset))?;
             let bucket = Bucket::from_reader(&self.header, &self.header.layout, &mut self.f)?;
-            self.bucket_cache.insert(self.cur_bucket_ofs, bucket);
+            self.bucket_cache.insert(offset, bucket, false);
         }
 
-        Ok(self
-            .bucket_cache
-            .bucket_map
-            .get(&self.cur_bucket_ofs)
-            .unwrap())
-    }
+        self.bucket_cache.set_current(offset);
 
-    // return a reference to the current bucket
-    fn current_bucket(&self) -> &Bucket {
-        // note: assumes will be called following cache_load_bucket() to cache
-        // assignment of dir[0] to cur_bucket at Gdbm{} creation not sufficient.
-        let bucket = self
-            .bucket_cache
-            .bucket_map
-            .get(&self.cur_bucket_ofs)
-            .unwrap();
-
-        bucket
-    }
-
-    // return a mutable reference to the current bucket
-    fn current_bucket_mut(&mut self) -> &mut Bucket {
-        // note: assumes will be called following cache_load_bucket() to cache
-        // assignment of dir[0] to cur_bucket at Gdbm{} creation not sufficient.
-        let bucket = self
-            .bucket_cache
-            .bucket_map
-            .get_mut(&self.cur_bucket_ofs)
-            .unwrap();
-
-        bucket
+        Ok(self.bucket_cache.current_bucket().unwrap())
     }
 
     // since one bucket dir entry may duplicate another,
@@ -383,10 +347,7 @@ impl Gdbm {
         let mut cur_dir: usize = 0;
         let dir_max_elem = self.dir.dir.len();
         while cur_dir < dir_max_elem {
-            self.cache_load_bucket(cur_dir)?;
-            let bucket = self.current_bucket();
-            len += bucket.count as usize;
-
+            len += self.cache_load_bucket(cur_dir)?.count as usize;
             cur_dir = self.next_bucket_dir(cur_dir);
         }
 
@@ -413,11 +374,11 @@ impl Gdbm {
             key_loc(self.header.dir_bits, self.header.bucket_elems, key);
         let key_start = PartialKey::new(key);
 
-        self.cache_load_bucket(bucket_dir)?;
+        let bucket = self.cache_load_bucket(bucket_dir)?;
 
-        let bucket_entries = (0..self.header.bucket_elems)
-            .map(|index| ((index + elem_ofs) % self.header.bucket_elems) as usize)
-            .map(|offset| (offset, self.current_bucket().tab[offset]))
+        let bucket_entries = (0..bucket.tab.len())
+            .map(|index| ((index + elem_ofs as usize) % bucket.tab.len()))
+            .map(|offset| (offset, bucket.tab[offset]))
             .take_while(|(_, elem)| elem.is_occupied())
             .filter(|(_, elem)| {
                 elem.hash == key_hash
@@ -524,12 +485,16 @@ impl Gdbm {
         let elem = AvailElem { sz, addr };
 
         // smaller items go into bucket avail list
-        let bucket = self.current_bucket();
+        let bucket = self.bucket_cache.current_bucket().unwrap();
         if sz < self.header.block_sz && (bucket.avail.len() as u32) < Bucket::AVAIL {
             // insort into bucket avail vector, sorted by size
             let pos = bucket.avail.binary_search(&elem).unwrap_or_else(|e| e);
-            self.current_bucket_mut().avail.insert(pos, elem);
-            self.bucket_cache.dirty(self.cur_bucket_ofs);
+            self.bucket_cache
+                .current_bucket_mut()
+                .unwrap()
+                .avail
+                .insert(pos, elem);
+            self.bucket_cache.dirty();
 
             // success (and no I/O performed)
             return Ok(());
@@ -559,19 +524,15 @@ impl Gdbm {
 
     // write out any cached, not-yet-written metadata and data to storage
     fn write_buckets(&mut self) -> io::Result<()> {
-        let dirty_list = self.bucket_cache.dirty_list();
-
-        // write out each dirty bucket
-        for bucket_ofs in dirty_list {
-            let bucket = self.bucket_cache.bucket_map.get(&bucket_ofs).unwrap();
-            self.f.seek(SeekFrom::Start(bucket_ofs))?;
-            bucket.serialize(&self.header.layout, &mut self.f)?;
-        }
-
-        // nothing in cache remains dirty
-        self.bucket_cache.clear_dirty();
-
-        Ok(())
+        self.bucket_cache
+            .dirty_list()
+            .iter()
+            .try_for_each(|(offset, bucket)| {
+                self.f
+                    .seek(SeekFrom::Start(*offset))
+                    .and_then(|_| bucket.serialize(&self.header.layout, &mut self.f))
+            })
+            .and_then(|_| Ok(self.bucket_cache.clear_dirty()))
     }
 
     // write out any cached, not-yet-written metadata and data to storage
@@ -632,8 +593,12 @@ impl Gdbm {
         }
         let (elem_ofs, data) = get_opt.unwrap();
 
-        let elem = self.current_bucket_mut().remove(elem_ofs);
-        self.bucket_cache.dirty(self.cur_bucket_ofs);
+        let elem = self
+            .bucket_cache
+            .current_bucket_mut()
+            .unwrap()
+            .remove(elem_ofs);
+        self.bucket_cache.dirty();
 
         // release record bytes to available-space pool
         self.free_record(elem.data_ofs, elem.key_size + elem.data_size)?;
@@ -645,11 +610,11 @@ impl Gdbm {
     }
 
     fn allocate_from_bucket(&mut self, size: u32) -> Option<(u64, u32)> {
-        let bucket = self.current_bucket_mut();
+        let bucket = self.bucket_cache.current_bucket_mut().unwrap();
         let elem = avail::remove_elem(&mut bucket.avail, size);
 
         if elem.is_some() {
-            self.bucket_cache.dirty(self.cur_bucket_ofs);
+            self.bucket_cache.dirty();
         }
 
         elem.map(|elem| (elem.addr, elem.sz))
@@ -692,13 +657,16 @@ impl Gdbm {
         let bucket_elem = BucketElement::new(key, data, offset);
         self.cache_load_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash))?;
 
-        while self.current_bucket().count == self.header.bucket_elems {
+        while self.bucket_cache.current_bucket().unwrap().count == self.header.bucket_elems {
             self.split_bucket()?;
             self.cache_load_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash))?;
         }
 
-        self.current_bucket_mut().insert(bucket_elem);
-        self.bucket_cache.dirty(self.cur_bucket_ofs);
+        self.bucket_cache
+            .current_bucket_mut()
+            .unwrap()
+            .insert(bucket_elem);
+        self.bucket_cache.dirty();
 
         Ok(())
     }
@@ -724,7 +692,7 @@ impl Gdbm {
     }
 
     fn split_bucket(&mut self) -> io::Result<()> {
-        if self.current_bucket().bits == self.header.dir_bits {
+        if self.bucket_cache.current_bucket().unwrap().bits == self.header.dir_bits {
             self.extend_directory()?;
         }
 
@@ -738,18 +706,15 @@ impl Gdbm {
             offset
         };
 
-        let (bucket0, bucket1) = self.current_bucket().split();
-        self.bucket_cache.insert(self.cur_bucket_ofs, bucket0);
-        self.bucket_cache.dirty(self.cur_bucket_ofs);
-        self.bucket_cache.insert(new_bucket_ofs, bucket1);
-        self.bucket_cache.dirty(new_bucket_ofs);
+        let (bucket0, bucket1) = self.bucket_cache.current_bucket().unwrap().split();
+        let cur_bucket_ofs = self.bucket_cache.current_bucket_offset.unwrap();
+        let bits = bucket0.bits;
 
-        self.dir.update_bucket_split(
-            self.header.dir_bits,
-            self.current_bucket().bits,
-            self.cur_bucket_dir,
-            new_bucket_ofs,
-        );
+        self.bucket_cache.insert(cur_bucket_ofs, bucket0, true);
+        self.bucket_cache.insert(new_bucket_ofs, bucket1, true);
+
+        self.dir
+            .update_bucket_split(self.header.dir_bits, bits, cur_bucket_ofs, new_bucket_ofs);
 
         Ok(())
     }
@@ -775,7 +740,6 @@ impl Gdbm {
         self.header.dir_bits += 1;
         self.header.dir_ofs = offset;
         self.header.dir_sz = size;
-        self.cur_bucket_dir <<= 1;
         self.header.dirty = true;
 
         self.dir = directory;

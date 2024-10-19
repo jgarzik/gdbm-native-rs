@@ -8,7 +8,7 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Error, ErrorKind, Read, Write};
 
 use crate::avail::{self, AvailElem};
@@ -276,30 +276,33 @@ impl Bucket {
 
 #[derive(Debug)]
 pub struct BucketCache {
-    pub bucket_map: HashMap<u64, Bucket>,
-    pub dirty: HashMap<u64, bool>,
+    pub current_bucket_offset: Option<u64>,
+    buckets: HashMap<u64, Bucket>,
+    dirty: HashSet<u64>,
 }
 
 impl BucketCache {
     pub fn new(bucket: Option<(u64, Bucket)>) -> BucketCache {
+        let dirty = bucket.iter().map(|(offset, _)| *offset).collect();
+        let current_bucket_offset = bucket.as_ref().map(|(offset, _)| *offset);
+        let buckets = bucket.into_iter().collect();
         BucketCache {
-            dirty: bucket.iter().map(|(offset, _)| (*offset, true)).collect(),
-            bucket_map: bucket.into_iter().collect(),
+            dirty,
+            buckets,
+            current_bucket_offset,
         }
     }
 
-    pub fn dirty(&mut self, bucket_ofs: u64) {
-        self.dirty.insert(bucket_ofs, true);
+    pub fn dirty(&mut self) {
+        self.dirty.insert(self.current_bucket_offset.unwrap());
     }
 
-    pub fn dirty_list(&mut self) -> Vec<u64> {
-        let mut dl: Vec<u64> = Vec::new();
-        for ofs in self.dirty.keys() {
-            dl.push(*ofs);
-        }
+    pub fn dirty_list(&self) -> Vec<(u64, &Bucket)> {
+        let mut dl = self.dirty.iter().copied().collect::<Vec<_>>();
         dl.sort();
-
-        dl
+        dl.iter()
+            .map(|offset| (*offset, self.buckets.get(offset).unwrap()))
+            .collect()
     }
 
     pub fn clear_dirty(&mut self) {
@@ -307,11 +310,32 @@ impl BucketCache {
     }
 
     pub fn contains(&self, bucket_ofs: u64) -> bool {
-        self.bucket_map.contains_key(&bucket_ofs)
+        self.buckets.contains_key(&bucket_ofs)
     }
 
-    pub fn insert(&mut self, bucket_ofs: u64, bucket: Bucket) {
-        self.bucket_map.insert(bucket_ofs, bucket);
+    pub fn set_current(&mut self, bucket_ofs: u64) {
+        if self.buckets.contains_key(&bucket_ofs) {
+            self.current_bucket_offset = Some(bucket_ofs);
+        }
+    }
+
+    pub fn insert(&mut self, bucket_ofs: u64, bucket: Bucket, dirty: bool) {
+        self.buckets.insert(bucket_ofs, bucket);
+        if dirty {
+            self.dirty.insert(bucket_ofs);
+        }
+    }
+
+    pub fn current_bucket(&self) -> Option<&Bucket> {
+        self.current_bucket_offset
+            .as_ref()
+            .map(|offset| self.buckets.get(offset).unwrap())
+    }
+
+    pub fn current_bucket_mut(&mut self) -> Option<&mut Bucket> {
+        self.current_bucket_offset
+            .as_ref()
+            .map(|offset| self.buckets.get_mut(offset).unwrap())
     }
 }
 
