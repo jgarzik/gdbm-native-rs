@@ -225,6 +225,18 @@ impl Header {
             })
             .ok_or_else(|| Error::new(ErrorKind::Other, "blocksize too small for numsync"))
     }
+
+    pub fn allocate(&mut self, size: u32) -> Option<(u64, u32)> {
+        self.avail.remove_elem(size).map(|block| {
+            self.dirty = true;
+            block
+        })
+    }
+
+    pub fn free(&mut self, offset: u64, length: u32) {
+        self.avail.insert_elem(offset, length);
+        self.dirty = true;
+    }
 }
 
 fn read_numsync(endian: Endian, reader: &mut impl Read) -> io::Result<u32> {

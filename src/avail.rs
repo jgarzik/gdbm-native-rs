@@ -116,8 +116,12 @@ impl AvailBlock {
         })
     }
 
-    pub fn remove_elem(&mut self, sz: u32) -> Option<AvailElem> {
+    pub fn remove_elem(&mut self, sz: u32) -> Option<(u64, u32)> {
         remove_elem(&mut self.elems, sz)
+    }
+
+    pub fn insert_elem(&mut self, offset: u64, length: u32) {
+        insert_elem(&mut self.elems, offset, length)
     }
 
     pub fn serialize(&self, layout: &Layout, writer: &mut impl Write) -> io::Result<()> {
@@ -198,11 +202,21 @@ impl AvailBlock {
     }
 }
 
-pub fn remove_elem(elems: &mut Vec<AvailElem>, size: u32) -> Option<AvailElem> {
+pub fn remove_elem(elems: &mut Vec<AvailElem>, size: u32) -> Option<(u64, u32)> {
     elems
         .iter()
         .position(|elem| elem.sz >= size)
         .map(|index| elems.remove(index))
+        .map(|elem| (elem.addr, elem.sz))
+}
+
+pub fn insert_elem(elems: &mut Vec<AvailElem>, offset: u64, length: u32) {
+    let elem = AvailElem {
+        addr: offset,
+        sz: length,
+    };
+    let pos = elems.binary_search(&elem).unwrap_or_else(|e| e);
+    elems.insert(pos, elem);
 }
 
 pub fn partition_elems(elems: &[AvailElem]) -> (Vec<AvailElem>, Vec<AvailElem>) {
@@ -224,10 +238,7 @@ mod tests {
             AvailElem { addr: 3000, sz: 3 },
         ];
 
-        assert_eq!(
-            remove_elem(&mut elems, 2),
-            Some(AvailElem { addr: 2000, sz: 2 })
-        );
+        assert_eq!(remove_elem(&mut elems, 2), Some((2000, 2)));
 
         assert_eq!(
             elems,

@@ -25,7 +25,7 @@ mod import;
 pub mod magic;
 pub mod ser;
 
-use avail::{AvailBlock, AvailElem};
+use avail::AvailBlock;
 use bucket::{Bucket, BucketCache, BucketElement};
 use dir::{build_dir_size, Directory};
 use hashutil::{bucket_dir, key_loc, PartialKey};
@@ -481,39 +481,22 @@ impl Gdbm {
             return Ok(());
         }
 
-        // build element to be inserted into free-space list
-        let elem = AvailElem { sz, addr };
-
         // smaller items go into bucket avail list
-        let bucket = self.bucket_cache.current_bucket_mut().unwrap();
+        let bucket = self.bucket_cache.current_bucket().unwrap();
         if sz < self.header.block_sz && (bucket.avail.len() as u32) < Bucket::AVAIL {
-            // insort into bucket avail vector, sorted by size
-            let pos = bucket.avail.binary_search(&elem).unwrap_or_else(|e| e);
-            bucket.avail.insert(pos, elem);
-            bucket.dirty = true;
+            self.bucket_cache
+                .current_bucket_mut()
+                .unwrap()
+                .free(addr, sz);
+        } else {
+            // larger items go into the header avail list
+            // (and also when bucket avail list is full)
+            if self.header.avail.elems.len() == self.header.avail.sz as usize {
+                self.push_avail_block()?;
+            }
 
-            // success (and no I/O performed)
-            return Ok(());
+            self.header.free(addr, sz);
         }
-
-        // larger items go into the header avail list
-        // (and also when bucket avail list is full)
-        if self.header.avail.elems.len() == self.header.avail.sz as usize {
-            self.push_avail_block()?;
-        }
-        assert!(self.header.avail.elems.len() < self.header.avail.sz as usize);
-
-        // insort into header avail vector, sorted by size
-        let pos = self
-            .header
-            .avail
-            .elems
-            .binary_search(&elem)
-            .unwrap_or_else(|e| e);
-        self.header.avail.elems.insert(pos, elem);
-
-        // header needs to be written
-        self.header.dirty = true;
 
         Ok(())
     }
@@ -528,7 +511,7 @@ impl Gdbm {
                     .seek(SeekFrom::Start(*offset))
                     .and_then(|_| bucket.serialize(&self.header.layout, &mut self.f))
             })
-            .and_then(|_| Ok(self.bucket_cache.clear_dirty()))
+            .map(|_| self.bucket_cache.clear_dirty())
     }
 
     // write out any cached, not-yet-written metadata and data to storage
@@ -604,38 +587,24 @@ impl Gdbm {
         Ok(Some(data))
     }
 
-    fn allocate_from_bucket(&mut self, size: u32) -> Option<(u64, u32)> {
-        let bucket = self.bucket_cache.current_bucket_mut().unwrap();
-        let elem = avail::remove_elem(&mut bucket.avail, size);
-
-        if elem.is_some() {
-            bucket.dirty = true;
-        }
-
-        elem.map(|elem| (elem.addr, elem.sz))
-    }
-
-    fn allocate_from_header(&mut self, size: u32) -> io::Result<Option<(u64, u32)>> {
-        if self.header.avail.elems.len() as u32 > self.header.avail.sz / 2 {
-            self.pop_avail_block()?;
-        }
-
-        let elem = self.header.avail.remove_elem(size);
-
-        if elem.is_some() {
-            self.header.dirty = true;
-        }
-
-        Ok(elem.map(|elem| (elem.addr, elem.sz)))
-    }
-
     fn allocate_record(&mut self, size: u32) -> io::Result<u64> {
-        let (offset, length) = match self.allocate_from_bucket(size) {
-            Some((offset, length)) => (offset, length),
-            None => match self.allocate_from_header(size)? {
-                Some((offset, length)) => (offset, length),
-                None => self.extend(size)?,
-            },
+        let (offset, length) = match self
+            .bucket_cache
+            .current_bucket_mut()
+            .unwrap()
+            .allocate(size)
+        {
+            Some(block) => block,
+            None => {
+                if self.header.avail.elems.len() as u32 > self.header.avail.sz / 2 {
+                    self.pop_avail_block()?;
+                }
+
+                match self.header.allocate(size) {
+                    Some(block) => block,
+                    None => self.extend(size)?,
+                }
+            }
         };
 
         self.free_record(offset + size as u64, length - size)?;

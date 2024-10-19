@@ -100,7 +100,7 @@ impl BucketElement {
 
 #[derive(Debug)]
 pub struct Bucket {
-    pub dirty: bool,
+    dirty: bool,
     // on-disk gdbm database hash bucket
     pub avail: Vec<AvailElem>,
     pub bits: u32,
@@ -278,6 +278,18 @@ impl Bucket {
             Bucket::new(self.bits + 1, self.tab.len(), avail0, elems0),
             Bucket::new(self.bits + 1, self.tab.len(), avail1, elems1),
         )
+    }
+
+    pub fn allocate(&mut self, size: u32) -> Option<(u64, u32)> {
+        avail::remove_elem(&mut self.avail, size).map(|block| {
+            self.dirty = true;
+            block
+        })
+    }
+
+    pub fn free(&mut self, offset: u64, length: u32) {
+        avail::insert_elem(&mut self.avail, offset, length);
+        self.dirty = true;
     }
 }
 
