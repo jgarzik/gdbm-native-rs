@@ -314,7 +314,7 @@ impl Gdbm {
         if !self.bucket_cache.contains(offset) {
             self.f.seek(SeekFrom::Start(offset))?;
             let bucket = Bucket::from_reader(&self.header, &self.header.layout, &mut self.f)?;
-            self.bucket_cache.insert(offset, bucket, false);
+            self.bucket_cache.insert(offset, bucket);
         }
 
         self.bucket_cache.set_current(offset);
@@ -485,16 +485,12 @@ impl Gdbm {
         let elem = AvailElem { sz, addr };
 
         // smaller items go into bucket avail list
-        let bucket = self.bucket_cache.current_bucket().unwrap();
+        let bucket = self.bucket_cache.current_bucket_mut().unwrap();
         if sz < self.header.block_sz && (bucket.avail.len() as u32) < Bucket::AVAIL {
             // insort into bucket avail vector, sorted by size
             let pos = bucket.avail.binary_search(&elem).unwrap_or_else(|e| e);
-            self.bucket_cache
-                .current_bucket_mut()
-                .unwrap()
-                .avail
-                .insert(pos, elem);
-            self.bucket_cache.dirty();
+            bucket.avail.insert(pos, elem);
+            bucket.dirty = true;
 
             // success (and no I/O performed)
             return Ok(());
@@ -598,7 +594,6 @@ impl Gdbm {
             .current_bucket_mut()
             .unwrap()
             .remove(elem_ofs);
-        self.bucket_cache.dirty();
 
         // release record bytes to available-space pool
         self.free_record(elem.data_ofs, elem.key_size + elem.data_size)?;
@@ -614,7 +609,7 @@ impl Gdbm {
         let elem = avail::remove_elem(&mut bucket.avail, size);
 
         if elem.is_some() {
-            self.bucket_cache.dirty();
+            bucket.dirty = true;
         }
 
         elem.map(|elem| (elem.addr, elem.sz))
@@ -666,7 +661,6 @@ impl Gdbm {
             .current_bucket_mut()
             .unwrap()
             .insert(bucket_elem);
-        self.bucket_cache.dirty();
 
         Ok(())
     }
@@ -710,8 +704,8 @@ impl Gdbm {
         let cur_bucket_ofs = self.bucket_cache.current_bucket_offset.unwrap();
         let bits = bucket0.bits;
 
-        self.bucket_cache.insert(cur_bucket_ofs, bucket0, true);
-        self.bucket_cache.insert(new_bucket_ofs, bucket1, true);
+        self.bucket_cache.insert(cur_bucket_ofs, bucket0);
+        self.bucket_cache.insert(new_bucket_ofs, bucket1);
 
         self.dir
             .update_bucket_split(self.header.dir_bits, bits, cur_bucket_ofs, new_bucket_ofs);

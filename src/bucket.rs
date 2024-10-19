@@ -8,7 +8,7 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::{self, Error, ErrorKind, Read, Write};
 
 use crate::avail::{self, AvailElem};
@@ -100,6 +100,7 @@ impl BucketElement {
 
 #[derive(Debug)]
 pub struct Bucket {
+    pub dirty: bool,
     // on-disk gdbm database hash bucket
     pub avail: Vec<AvailElem>,
     pub bits: u32,
@@ -113,6 +114,7 @@ impl Bucket {
     pub fn new(bits: u32, len: usize, avail: Vec<AvailElem>, elements: Vec<BucketElement>) -> Self {
         elements.into_iter().fold(
             Self {
+                dirty: true,
                 avail,
                 bits,
                 count: 0,
@@ -163,6 +165,7 @@ impl Bucket {
             .collect::<io::Result<Vec<_>>>()?;
 
         Ok(Bucket {
+            dirty: false,
             avail,
             bits,
             count,
@@ -228,6 +231,8 @@ impl Bucket {
             .unwrap();
 
         self.tab[index] = element;
+
+        self.dirty = true;
     }
 
     // remove an element - we assume there's an element
@@ -254,6 +259,8 @@ impl Bucket {
             elem_ofs = (elem_ofs + 1) % len;
         }
 
+        self.dirty = true;
+
         elem
     }
 
@@ -278,27 +285,25 @@ impl Bucket {
 pub struct BucketCache {
     pub current_bucket_offset: Option<u64>,
     buckets: HashMap<u64, Bucket>,
-    dirty: HashSet<u64>,
 }
 
 impl BucketCache {
     pub fn new(bucket: Option<(u64, Bucket)>) -> BucketCache {
-        let dirty = bucket.iter().map(|(offset, _)| *offset).collect();
         let current_bucket_offset = bucket.as_ref().map(|(offset, _)| *offset);
         let buckets = bucket.into_iter().collect();
         BucketCache {
-            dirty,
             buckets,
             current_bucket_offset,
         }
     }
 
-    pub fn dirty(&mut self) {
-        self.dirty.insert(self.current_bucket_offset.unwrap());
-    }
-
     pub fn dirty_list(&self) -> Vec<(u64, &Bucket)> {
-        let mut dl = self.dirty.iter().copied().collect::<Vec<_>>();
+        let mut dl = self
+            .buckets
+            .iter()
+            .filter_map(|(offset, bucket)| bucket.dirty.then_some(offset))
+            .copied()
+            .collect::<Vec<_>>();
         dl.sort();
         dl.iter()
             .map(|offset| (*offset, self.buckets.get(offset).unwrap()))
@@ -306,7 +311,9 @@ impl BucketCache {
     }
 
     pub fn clear_dirty(&mut self) {
-        self.dirty.clear();
+        self.buckets
+            .values_mut()
+            .for_each(|bucket| bucket.dirty = false);
     }
 
     pub fn contains(&self, bucket_ofs: u64) -> bool {
@@ -319,11 +326,8 @@ impl BucketCache {
         }
     }
 
-    pub fn insert(&mut self, bucket_ofs: u64, bucket: Bucket, dirty: bool) {
+    pub fn insert(&mut self, bucket_ofs: u64, bucket: Bucket) {
         self.buckets.insert(bucket_ofs, bucket);
-        if dirty {
-            self.dirty.insert(bucket_ofs);
-        }
     }
 
     pub fn current_bucket(&self) -> Option<&Bucket> {
@@ -410,6 +414,7 @@ mod test {
                     .collect::<Vec<_>>();
 
                 let mut bucket = Bucket {
+                    dirty: true,
                     avail: vec![],
                     bits: 0, /* unused */
                     count: tab.iter().filter(|elem| elem.is_occupied()).count() as u32,
