@@ -14,7 +14,6 @@ mod common;
 
 use common::init_tests;
 use gdbm_native::Gdbm;
-use std::collections::HashMap;
 
 #[test]
 fn api_exists_not() {
@@ -71,42 +70,6 @@ fn api_get() {
                 let valstr = format!("value {}", n).into_bytes();
                 assert_eq!(db.get(keystr.as_bytes()).unwrap(), Some(valstr));
             }
-        }
-    }
-}
-
-#[test]
-fn api_first_next_key() {
-    let tests = init_tests();
-
-    for testdb in tests {
-        if testdb.is_basic {
-            // build internal map of keys expected to be present in basic.db
-            let mut keys_remaining: HashMap<Vec<u8>, bool> = HashMap::new();
-            for n in 0..10001 {
-                let keystr = format!("key {}", n);
-                keys_remaining.insert(keystr.as_bytes().to_vec(), true);
-            }
-
-            // simple verf of correct map construction
-            assert_eq!(keys_remaining.len(), testdb.n_records);
-
-            // open basic.db
-            let mut db = Gdbm::open(&testdb.db_path, &testdb.ro_cfg()).unwrap();
-
-            // iterate through each key in db
-            let mut key_res = db.first_key().unwrap();
-            while key_res.is_some() {
-                let key = key_res.unwrap();
-
-                // remove iteration key from internal map
-                assert_ne!(keys_remaining.remove(&key), None);
-
-                key_res = db.next_key(&key).unwrap();
-            }
-
-            // if internal map is empty, success
-            assert_eq!(keys_remaining.len(), 0);
         }
     }
 }

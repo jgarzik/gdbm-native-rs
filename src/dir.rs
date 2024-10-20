@@ -104,15 +104,19 @@ impl Directory {
         &mut self,
         dir_bits: u32,
         bucket_bits: u32,
-        offset: usize,
-        bucket_offset: u64,
+        old_bucket_offset: u64,
+        new_bucket_offset: u64,
     ) {
         let num_entries = (1 << dir_bits) >> (bucket_bits - 1);
-        let range_start = offset / num_entries * num_entries;
+        let range_start = self
+            .dir
+            .iter()
+            .position(|&offset| offset == old_bucket_offset)
+            .unwrap();
 
         // replace offsets in second half of the range with the new offset.
         (range_start + (num_entries >> 1)..range_start + num_entries)
-            .for_each(|index| self.dir[index] = bucket_offset);
+            .for_each(|index| self.dir[index] = new_bucket_offset);
 
         self.dirty = true;
     }

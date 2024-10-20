@@ -98,8 +98,9 @@ impl BucketElement {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Bucket {
+    dirty: bool,
     // on-disk gdbm database hash bucket
     pub avail: Vec<AvailElem>,
     pub bits: u32,
@@ -113,6 +114,7 @@ impl Bucket {
     pub fn new(bits: u32, len: usize, avail: Vec<AvailElem>, elements: Vec<BucketElement>) -> Self {
         elements.into_iter().fold(
             Self {
+                dirty: true,
                 avail,
                 bits,
                 count: 0,
@@ -163,6 +165,7 @@ impl Bucket {
             .collect::<io::Result<Vec<_>>>()?;
 
         Ok(Bucket {
+            dirty: false,
             avail,
             bits,
             count,
@@ -228,6 +231,8 @@ impl Bucket {
             .unwrap();
 
         self.tab[index] = element;
+
+        self.dirty = true;
     }
 
     // remove an element - we assume there's an element
@@ -254,6 +259,8 @@ impl Bucket {
             elem_ofs = (elem_ofs + 1) % len;
         }
 
+        self.dirty = true;
+
         elem
     }
 
@@ -272,46 +279,79 @@ impl Bucket {
             Bucket::new(self.bits + 1, self.tab.len(), avail1, elems1),
         )
     }
+
+    pub fn allocate(&mut self, size: u32) -> Option<(u64, u32)> {
+        avail::remove_elem(&mut self.avail, size).map(|block| {
+            self.dirty = true;
+            block
+        })
+    }
+
+    pub fn free(&mut self, offset: u64, length: u32) {
+        avail::insert_elem(&mut self.avail, offset, length);
+        self.dirty = true;
+    }
 }
 
 #[derive(Debug)]
 pub struct BucketCache {
-    pub bucket_map: HashMap<u64, Bucket>,
-    pub dirty: HashMap<u64, bool>,
+    pub current_bucket_offset: Option<u64>,
+    buckets: HashMap<u64, Bucket>,
 }
 
 impl BucketCache {
     pub fn new(bucket: Option<(u64, Bucket)>) -> BucketCache {
+        let current_bucket_offset = bucket.as_ref().map(|(offset, _)| *offset);
+        let buckets = bucket.into_iter().collect();
         BucketCache {
-            dirty: bucket.iter().map(|(offset, _)| (*offset, true)).collect(),
-            bucket_map: bucket.into_iter().collect(),
+            buckets,
+            current_bucket_offset,
         }
     }
 
-    pub fn dirty(&mut self, bucket_ofs: u64) {
-        self.dirty.insert(bucket_ofs, true);
-    }
-
-    pub fn dirty_list(&mut self) -> Vec<u64> {
-        let mut dl: Vec<u64> = Vec::new();
-        for ofs in self.dirty.keys() {
-            dl.push(*ofs);
-        }
+    pub fn dirty_list(&self) -> Vec<(u64, &Bucket)> {
+        let mut dl = self
+            .buckets
+            .iter()
+            .filter_map(|(offset, bucket)| bucket.dirty.then_some(offset))
+            .copied()
+            .collect::<Vec<_>>();
         dl.sort();
-
-        dl
+        dl.iter()
+            .map(|offset| (*offset, self.buckets.get(offset).unwrap()))
+            .collect()
     }
 
     pub fn clear_dirty(&mut self) {
-        self.dirty.clear();
+        self.buckets
+            .values_mut()
+            .for_each(|bucket| bucket.dirty = false);
     }
 
     pub fn contains(&self, bucket_ofs: u64) -> bool {
-        self.bucket_map.contains_key(&bucket_ofs)
+        self.buckets.contains_key(&bucket_ofs)
+    }
+
+    pub fn set_current(&mut self, bucket_ofs: u64) {
+        if self.buckets.contains_key(&bucket_ofs) {
+            self.current_bucket_offset = Some(bucket_ofs);
+        }
     }
 
     pub fn insert(&mut self, bucket_ofs: u64, bucket: Bucket) {
-        self.bucket_map.insert(bucket_ofs, bucket);
+        self.buckets.insert(bucket_ofs, bucket);
+    }
+
+    pub fn current_bucket(&self) -> Option<&Bucket> {
+        self.current_bucket_offset
+            .as_ref()
+            .map(|offset| self.buckets.get(offset).unwrap())
+    }
+
+    pub fn current_bucket_mut(&mut self) -> Option<&mut Bucket> {
+        self.current_bucket_offset
+            .as_ref()
+            .map(|offset| self.buckets.get_mut(offset).unwrap())
     }
 }
 
@@ -386,6 +426,7 @@ mod test {
                     .collect::<Vec<_>>();
 
                 let mut bucket = Bucket {
+                    dirty: true,
                     avail: vec![],
                     bits: 0, /* unused */
                     count: tab.iter().filter(|elem| elem.is_occupied()).count() as u32,
