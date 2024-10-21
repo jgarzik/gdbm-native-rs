@@ -100,8 +100,6 @@ pub struct Gdbm {
     pub header: Header,
     pub dir: Directory,
     bucket_cache: BucketCache,
-
-    iter_key: Option<Vec<u8>>,
 }
 
 impl Gdbm {
@@ -177,7 +175,6 @@ impl Gdbm {
             header,
             dir,
             bucket_cache,
-            iter_key: None,
         })
     }
 
@@ -657,11 +654,6 @@ impl Gdbm {
                 Some(_) => Ok((false, olddata)),
                 _ => self.int_insert(key, data).map(|_| (true, None)),
             })
-    }
-
-    // API: reset iterator state
-    pub fn iter_reset(&mut self) {
-        self.iter_key = None;
     }
 
     fn split_bucket(&mut self) -> io::Result<()> {
