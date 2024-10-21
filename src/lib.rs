@@ -235,7 +235,7 @@ impl Gdbm {
     pub fn import_ascii(&mut self, reader: &mut impl Read) -> io::Result<()> {
         ASCIIImportIterator::new(reader)?.try_for_each(|l| {
             let (key, value) = l?;
-            self.insert(&key, &value).map(|_| ())
+            self.insert(key, value).map(|_| ())
         })
     }
 
@@ -300,7 +300,7 @@ impl Gdbm {
 
         BinaryImportIterator::new(alignment, reader)?.try_for_each(|l| {
             let (key, value) = l?;
-            self.insert(&key, &value).map(|_| ())
+            self.insert(key, value).map(|_| ())
         })
     }
 
@@ -619,13 +619,13 @@ impl Gdbm {
         Ok(offset)
     }
 
-    fn int_insert(&mut self, key: &[u8], data: &[u8]) -> io::Result<()> {
+    fn int_insert(&mut self, key: Vec<u8>, data: Vec<u8>) -> io::Result<()> {
         let offset = self.allocate_record((key.len() + data.len()) as u32)?;
         self.f.seek(SeekFrom::Start(offset))?;
-        self.f.write_all(key)?;
-        self.f.write_all(data)?;
+        self.f.write_all(&key)?;
+        self.f.write_all(&data)?;
 
-        let bucket_elem = BucketElement::new(key, data, offset);
+        let bucket_elem = BucketElement::new(&key, &data, offset);
         self.cache_load_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash))?;
 
         while self.bucket_cache.current_bucket().unwrap().count == self.header.bucket_elems {
@@ -641,15 +641,19 @@ impl Gdbm {
         Ok(())
     }
 
-    pub fn insert(&mut self, key: &[u8], data: &[u8]) -> io::Result<Option<Vec<u8>>> {
+    pub fn insert(&mut self, key: Vec<u8>, data: Vec<u8>) -> io::Result<Option<Vec<u8>>> {
         self.writeable()
-            .and_then(|_| self.remove(key))
+            .and_then(|_| self.remove(&key))
             .and_then(|oldkey| self.int_insert(key, data).map(|_| oldkey))
     }
 
-    pub fn try_insert(&mut self, key: &[u8], data: &[u8]) -> io::Result<(bool, Option<Vec<u8>>)> {
+    pub fn try_insert(
+        &mut self,
+        key: Vec<u8>,
+        data: Vec<u8>,
+    ) -> io::Result<(bool, Option<Vec<u8>>)> {
         self.writeable()
-            .and_then(|_| self.get(key))
+            .and_then(|_| self.get(&key))
             .and_then(|olddata| match olddata {
                 Some(_) => Ok((false, olddata)),
                 _ => self.int_insert(key, data).map(|_| (true, None)),
