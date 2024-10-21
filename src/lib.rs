@@ -354,9 +354,19 @@ impl Gdbm {
         Ok(len)
     }
 
+    // API: get an iterator over values
+    pub fn values(&mut self) -> impl std::iter::Iterator<Item = io::Result<Vec<u8>>> + '_ {
+        GDBMIterator::new(self, KeyOrValue::Value).map(|data| data.map(|(_, value)| value))
+    }
+
+    // API: get an iterator over keys
+    pub fn keys(&mut self) -> impl std::iter::Iterator<Item = io::Result<Vec<u8>>> + '_ {
+        GDBMIterator::new(self, KeyOrValue::Key).map(|data| data.map(|(key, _)| key))
+    }
+
     // API: get an iterator
-    pub fn iter(&mut self) -> GDBMIterator {
-        GDBMIterator::new(self)
+    pub fn iter(&mut self) -> impl std::iter::Iterator<Item = io::Result<(Vec<u8>, Vec<u8>)>> + '_ {
+        GDBMIterator::new(self, KeyOrValue::Both)
     }
 
     // API: does key exist?
@@ -719,9 +729,16 @@ impl Gdbm {
     }
 }
 
-pub struct GDBMIterator<'a> {
+struct GDBMIterator<'a> {
+    key_or_value: KeyOrValue,
     db: &'a mut Gdbm,
     slot: Option<io::Result<Slot>>,
+}
+
+enum KeyOrValue {
+    Key,
+    Value,
+    Both,
 }
 
 #[derive(Debug)]
@@ -768,7 +785,7 @@ impl<'a> GDBMIterator<'a> {
         None
     }
 
-    fn new(db: &'a mut Gdbm) -> GDBMIterator<'a> {
+    fn new(db: &'a mut Gdbm, key_or_value: KeyOrValue) -> GDBMIterator<'a> {
         let slot = {
             let slot = Slot {
                 bucket: 0,
@@ -785,7 +802,11 @@ impl<'a> GDBMIterator<'a> {
                 Err(e) => Some(Err(e)),
             }
         };
-        Self { db, slot }
+        Self {
+            db,
+            slot,
+            key_or_value,
+        }
     }
 }
 
@@ -808,12 +829,24 @@ impl<'a> Iterator for GDBMIterator<'a> {
                             .map(|e| (e.data_ofs, e.key_size as usize, e.data_size as usize))
                             .unwrap()
                     })
-                    .and_then(|(offset, key_length, data_length)| {
-                        read_ofs(&mut self.db.f, offset, key_length + data_length).map(|data| {
-                            let (key, value) = data.split_at(key_length);
-                            (key.to_vec(), value.to_vec())
-                        })
-                    });
+                    .and_then(
+                        |(offset, key_length, data_length)| match self.key_or_value {
+                            KeyOrValue::Key => read_ofs(&mut self.db.f, offset, key_length)
+                                .map(|data| (data.to_vec(), vec![])),
+                            KeyOrValue::Value => {
+                                read_ofs(&mut self.db.f, offset + key_length as u64, data_length)
+                                    .map(|data| (vec![], data.to_vec()))
+                            }
+                            KeyOrValue::Both => {
+                                read_ofs(&mut self.db.f, offset, key_length + data_length).map(
+                                    |data| {
+                                        let (key, value) = data.split_at(key_length);
+                                        (key.to_vec(), value.to_vec())
+                                    },
+                                )
+                            }
+                        },
+                    );
 
                 match data {
                     Ok(data) => {
