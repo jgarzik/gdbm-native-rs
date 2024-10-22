@@ -281,10 +281,7 @@ impl Bucket {
     }
 
     pub fn allocate(&mut self, size: u32) -> Option<(u64, u32)> {
-        avail::remove_elem(&mut self.avail, size).map(|block| {
-            self.dirty = true;
-            block
-        })
+        avail::remove_elem(&mut self.avail, size).inspect(|_| self.dirty = true)
     }
 
     pub fn free(&mut self, offset: u64, length: u32) {
