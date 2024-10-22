@@ -20,7 +20,9 @@ pub struct TestInfo {
     #[allow(dead_code)]
     pub json_path: String,
     pub db_path: String,
+    #[allow(dead_code)]
     pub is_basic: bool,
+    #[allow(dead_code)]
     pub n_records: usize,
     #[allow(dead_code)]
     pub metadata: TestMetadata,

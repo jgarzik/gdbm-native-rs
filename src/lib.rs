@@ -100,8 +100,6 @@ pub struct Gdbm {
     pub header: Header,
     pub dir: Directory,
     bucket_cache: BucketCache,
-
-    iter_key: Option<Vec<u8>>,
 }
 
 impl Gdbm {
@@ -177,7 +175,6 @@ impl Gdbm {
             header,
             dir,
             bucket_cache,
-            iter_key: None,
         })
     }
 
@@ -238,7 +235,7 @@ impl Gdbm {
     pub fn import_ascii(&mut self, reader: &mut impl Read) -> io::Result<()> {
         ASCIIImportIterator::new(reader)?.try_for_each(|l| {
             let (key, value) = l?;
-            self.insert(&key, &value).map(|_| ())
+            self.insert(key, value).map(|_| ())
         })
     }
 
@@ -303,7 +300,7 @@ impl Gdbm {
 
         BinaryImportIterator::new(alignment, reader)?.try_for_each(|l| {
             let (key, value) = l?;
-            self.insert(&key, &value).map(|_| ())
+            self.insert(key, value).map(|_| ())
         })
     }
 
@@ -354,9 +351,19 @@ impl Gdbm {
         Ok(len)
     }
 
+    // API: get an iterator over values
+    pub fn values(&mut self) -> impl std::iter::Iterator<Item = io::Result<Vec<u8>>> + '_ {
+        GDBMIterator::new(self, KeyOrValue::Value).map(|data| data.map(|(_, value)| value))
+    }
+
+    // API: get an iterator over keys
+    pub fn keys(&mut self) -> impl std::iter::Iterator<Item = io::Result<Vec<u8>>> + '_ {
+        GDBMIterator::new(self, KeyOrValue::Key).map(|data| data.map(|(key, _)| key))
+    }
+
     // API: get an iterator
-    pub fn iter(&mut self) -> GDBMIterator {
-        GDBMIterator::new(self)
+    pub fn iter(&mut self) -> impl std::iter::Iterator<Item = io::Result<(Vec<u8>, Vec<u8>)>> + '_ {
+        GDBMIterator::new(self, KeyOrValue::Both)
     }
 
     // API: does key exist?
@@ -612,13 +619,13 @@ impl Gdbm {
         Ok(offset)
     }
 
-    fn int_insert(&mut self, key: &[u8], data: &[u8]) -> io::Result<()> {
+    fn int_insert(&mut self, key: Vec<u8>, data: Vec<u8>) -> io::Result<()> {
         let offset = self.allocate_record((key.len() + data.len()) as u32)?;
         self.f.seek(SeekFrom::Start(offset))?;
-        self.f.write_all(key)?;
-        self.f.write_all(data)?;
+        self.f.write_all(&key)?;
+        self.f.write_all(&data)?;
 
-        let bucket_elem = BucketElement::new(key, data, offset);
+        let bucket_elem = BucketElement::new(&key, &data, offset);
         self.cache_load_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash))?;
 
         while self.bucket_cache.current_bucket().unwrap().count == self.header.bucket_elems {
@@ -634,24 +641,23 @@ impl Gdbm {
         Ok(())
     }
 
-    pub fn insert(&mut self, key: &[u8], data: &[u8]) -> io::Result<Option<Vec<u8>>> {
+    pub fn insert(&mut self, key: Vec<u8>, data: Vec<u8>) -> io::Result<Option<Vec<u8>>> {
         self.writeable()
-            .and_then(|_| self.remove(key))
+            .and_then(|_| self.remove(&key))
             .and_then(|oldkey| self.int_insert(key, data).map(|_| oldkey))
     }
 
-    pub fn try_insert(&mut self, key: &[u8], data: &[u8]) -> io::Result<(bool, Option<Vec<u8>>)> {
+    pub fn try_insert(
+        &mut self,
+        key: Vec<u8>,
+        data: Vec<u8>,
+    ) -> io::Result<(bool, Option<Vec<u8>>)> {
         self.writeable()
-            .and_then(|_| self.get(key))
+            .and_then(|_| self.get(&key))
             .and_then(|olddata| match olddata {
                 Some(_) => Ok((false, olddata)),
                 _ => self.int_insert(key, data).map(|_| (true, None)),
             })
-    }
-
-    // API: reset iterator state
-    pub fn iter_reset(&mut self) {
-        self.iter_key = None;
     }
 
     fn split_bucket(&mut self) -> io::Result<()> {
@@ -719,9 +725,16 @@ impl Gdbm {
     }
 }
 
-pub struct GDBMIterator<'a> {
+struct GDBMIterator<'a> {
+    key_or_value: KeyOrValue,
     db: &'a mut Gdbm,
     slot: Option<io::Result<Slot>>,
+}
+
+enum KeyOrValue {
+    Key,
+    Value,
+    Both,
 }
 
 #[derive(Debug)]
@@ -768,7 +781,7 @@ impl<'a> GDBMIterator<'a> {
         None
     }
 
-    fn new(db: &'a mut Gdbm) -> GDBMIterator<'a> {
+    fn new(db: &'a mut Gdbm, key_or_value: KeyOrValue) -> GDBMIterator<'a> {
         let slot = {
             let slot = Slot {
                 bucket: 0,
@@ -785,7 +798,11 @@ impl<'a> GDBMIterator<'a> {
                 Err(e) => Some(Err(e)),
             }
         };
-        Self { db, slot }
+        Self {
+            db,
+            slot,
+            key_or_value,
+        }
     }
 }
 
@@ -808,12 +825,24 @@ impl<'a> Iterator for GDBMIterator<'a> {
                             .map(|e| (e.data_ofs, e.key_size as usize, e.data_size as usize))
                             .unwrap()
                     })
-                    .and_then(|(offset, key_length, data_length)| {
-                        read_ofs(&mut self.db.f, offset, key_length + data_length).map(|data| {
-                            let (key, value) = data.split_at(key_length);
-                            (key.to_vec(), value.to_vec())
-                        })
-                    });
+                    .and_then(
+                        |(offset, key_length, data_length)| match self.key_or_value {
+                            KeyOrValue::Key => read_ofs(&mut self.db.f, offset, key_length)
+                                .map(|data| (data.to_vec(), vec![])),
+                            KeyOrValue::Value => {
+                                read_ofs(&mut self.db.f, offset + key_length as u64, data_length)
+                                    .map(|data| (vec![], data.to_vec()))
+                            }
+                            KeyOrValue::Both => {
+                                read_ofs(&mut self.db.f, offset, key_length + data_length).map(
+                                    |data| {
+                                        let (key, value) = data.split_at(key_length);
+                                        (key.to_vec(), value.to_vec())
+                                    },
+                                )
+                            }
+                        },
+                    );
 
                 match data {
                     Ok(data) => {

@@ -227,10 +227,7 @@ impl Header {
     }
 
     pub fn allocate(&mut self, size: u32) -> Option<(u64, u32)> {
-        self.avail.remove_elem(size).map(|block| {
-            self.dirty = true;
-            block
-        })
+        self.avail.remove_elem(size).inspect(|_| self.dirty = true)
     }
 
     pub fn free(&mut self, offset: u64, length: u32) {
