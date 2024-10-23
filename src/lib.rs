@@ -45,6 +45,12 @@ const IGNORE_SMALL: usize = 4;
 
 pub const DEFAULT_CACHESIZE: usize = 4 * 1024 * 1024;
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompareAndSwapSummary {
+    pub was: Option<Vec<u8>>,
+    pub is: Option<Vec<u8>>,
+}
+
 #[derive(Copy, Clone, Debug)]
 pub enum ExportBinMode {
     ExpNative,
@@ -749,6 +755,38 @@ impl Gdbm {
             .and_then(|_| self.header.convert_numsync(options.numsync))?
             .into_iter()
             .try_for_each(|(offset, length)| self.free_record(offset, length))
+    }
+
+    // API: compare_and_swap
+    pub fn compare_and_swap(
+        &mut self,
+        key: Vec<u8>,
+        old: Option<&[u8]>,
+        new: Option<Vec<u8>>,
+    ) -> io::Result<CompareAndSwapSummary> {
+        let current = self.get(&key)?;
+
+        if old != current.as_deref() {
+            return Ok(CompareAndSwapSummary {
+                was: current.clone(),
+                is: current,
+            });
+        }
+
+        if let Some(new) = new {
+            let copy = new.clone();
+            self.insert(key, new)?;
+            return Ok(CompareAndSwapSummary {
+                was: current,
+                is: Some(copy),
+            });
+        }
+
+        self.remove(&key)?;
+        Ok(CompareAndSwapSummary {
+            was: current,
+            is: None,
+        })
     }
 }
 
