@@ -43,6 +43,7 @@ fn api_open_conflicting() {
                 block_size: None,
                 bsexact: false,
                 numsync: false,
+                cachesize: None,
             },
         )
         .map_err(|e| e.to_string())
@@ -94,6 +95,7 @@ fn api_open_creat_newdb() {
                 block_size: None,
                 bsexact: false,
                 numsync: false,
+                cachesize: None,
             },
         ) {
             Ok(_) if expected.is_ok() => Ok(()),
@@ -147,6 +149,7 @@ fn api_open_newdb_magic() {
                 block_size: None,
                 bsexact: false,
                 numsync,
+                cachesize: None,
             },
         )
         .and_then(|mut db| {
@@ -169,6 +172,7 @@ fn api_open_newdb_magic() {
                 block_size: None,
                 bsexact: false,
                 numsync: false,
+                cachesize: None,
             },
         )
         .map_err(|e| format!(
@@ -215,6 +219,7 @@ fn api_open_bsexact() {
                 block_size: Some(block_size),
                 bsexact: true,
                 numsync: false,
+                cachesize: None,
             },
         ) {
             Ok(_) if expected.is_ok() => Ok(()),
@@ -224,4 +229,77 @@ fn api_open_bsexact() {
         }
     })
     .unwrap_or_else(|e: String| panic!("bsexact unexpected: {}", e));
+}
+
+#[test]
+fn api_open_cachesize() {
+    const RECORD_COUNT: usize = 1000; // buckets will occupy around 20k
+
+    fn the_test(cachesize: Option<usize>) -> Result<(), String> {
+        let db = NamedTempFile::new().unwrap();
+
+        // Create a database using configured cachesize.
+        Gdbm::open(
+            db.path().to_str().unwrap(),
+            &GdbmOptions {
+                readonly: false,
+                creat: false,
+                newdb: true,
+                alignment: None,
+                offset: None,
+                endian: None,
+                block_size: None,
+                bsexact: false,
+                numsync: true,
+                cachesize,
+            },
+        )
+        .map_err(|e| format!("write open failed: {}", e))
+        .and_then(|mut db| {
+            (0..RECORD_COUNT)
+                .try_for_each(|n| {
+                    db.insert(n.to_be_bytes().to_vec(), vec![])
+                        .map(|_| ())
+                        .map_err(|e| format!("insert failed: {}", e))
+                })
+                .and_then(|()| db.sync().map_err(|e| format!("sync failed: {}", e)))
+        })?;
+
+        // Read a database using configured cachesize.
+        Gdbm::open(
+            db.path().to_str().unwrap(),
+            &GdbmOptions {
+                readonly: true,
+                creat: false,
+                newdb: false,
+                alignment: None,
+                offset: None,
+                endian: None,
+                block_size: None,
+                bsexact: false,
+                numsync: true,
+                cachesize,
+            },
+        )
+        .map_err(|e| format!("read open failed: {}", e))
+        .and_then(|mut db| {
+            (0..RECORD_COUNT).try_for_each(|n| {
+                db.get(&n.to_be_bytes())
+                    .map_err(|e| e.to_string())
+                    .and_then(|v| {
+                        (v == Some(vec![]))
+                            .then_some(())
+                            .ok_or_else(|| "wrong value".to_string())
+                    })
+                    .map_err(|e| format!("get failed: {}", e))
+            })
+        })
+    }
+
+    [Some(0), Some(100000)]
+        .into_iter()
+        .try_for_each(|cachesize| {
+            the_test(cachesize).map_err(|e| format!("cachesize: {:?}]: {}", cachesize, e))
+        })
+        .unwrap_or_else(|e| panic!("{}", e));
 }

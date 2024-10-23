@@ -1,5 +1,5 @@
 //
-// tests/export.rs -- testing GDBM export APIs
+// tests/iterate.rs -- testing GDBM export APIs
 //
 // Copyright (c) 2019-2024 Jeff Garzik
 //

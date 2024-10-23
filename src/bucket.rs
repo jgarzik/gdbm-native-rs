@@ -292,17 +292,21 @@ impl Bucket {
 
 #[derive(Debug)]
 pub struct BucketCache {
-    pub current_bucket_offset: Option<u64>,
+    cachesize: usize,
     buckets: HashMap<u64, Bucket>,
+    // 1st element is MRU
+    queue: Vec<u64>,
 }
 
 impl BucketCache {
-    pub fn new(bucket: Option<(u64, Bucket)>) -> BucketCache {
-        let current_bucket_offset = bucket.as_ref().map(|(offset, _)| *offset);
-        let buckets = bucket.into_iter().collect();
+    pub fn new(cachesize: usize, bucket: Option<(u64, Bucket)>) -> BucketCache {
+        let buckets = bucket.into_iter().collect::<HashMap<_, _>>();
+        let queue = buckets.keys().copied().collect();
+
         BucketCache {
+            cachesize,
             buckets,
-            current_bucket_offset,
+            queue,
         }
     }
 
@@ -329,25 +333,53 @@ impl BucketCache {
         self.buckets.contains_key(&bucket_ofs)
     }
 
-    pub fn set_current(&mut self, bucket_ofs: u64) {
-        if self.buckets.contains_key(&bucket_ofs) {
-            self.current_bucket_offset = Some(bucket_ofs);
+    /// set_current moves bucket_offset to the front of the MRU queue.
+    pub fn set_current(&mut self, bucket_offset: u64) {
+        self.queue
+            .iter()
+            .position(|&o| o == bucket_offset)
+            .inspect(|pos| {
+                self.queue.copy_within(0..*pos, 1);
+                self.queue[0] = bucket_offset;
+            });
+    }
+
+    #[must_use]
+    /// insert inserts the bucket into the cache and returns the evicted bucket if any, and if it
+    /// is dirty (needs writing).
+    pub fn insert(&mut self, bucket_offset: u64, bucket: Bucket) -> Option<(u64, Bucket)> {
+        match self.buckets.insert(bucket_offset, bucket) {
+            Some(_) => None, // bucket already in queue, nothing to evict
+            None => {
+                let evicted = (self.queue.len() >= self.cachesize)
+                    .then_some(())
+                    .and_then(|_| self.queue.pop())
+                    .and_then(|offset| {
+                        self.buckets
+                            .remove(&offset)
+                            .filter(|bucket| bucket.dirty)
+                            .map(|bucket| (offset, bucket))
+                    });
+                self.queue.push(bucket_offset);
+
+                evicted
+            }
         }
     }
 
-    pub fn insert(&mut self, bucket_ofs: u64, bucket: Bucket) {
-        self.buckets.insert(bucket_ofs, bucket);
-    }
-
     pub fn current_bucket(&self) -> Option<&Bucket> {
-        self.current_bucket_offset
-            .as_ref()
+        self.queue
+            .first()
             .map(|offset| self.buckets.get(offset).unwrap())
     }
 
+    pub fn current_bucket_offset(&self) -> Option<u64> {
+        self.queue.iter().copied().next()
+    }
+
     pub fn current_bucket_mut(&mut self) -> Option<&mut Bucket> {
-        self.current_bucket_offset
-            .as_ref()
+        self.queue
+            .first()
             .map(|offset| self.buckets.get_mut(offset).unwrap())
     }
 }
@@ -442,6 +474,54 @@ mod test {
             },
         )
         .map_err(|e| println!("{}", e))
+        .unwrap()
+    }
+
+    #[test]
+    fn insert() {
+        // Ensure cache eviction mechanism works.
+        struct Test {
+            name: &'static str,
+            bucket: Option<bool>,
+            expected: bool,
+        }
+
+        [
+            Test {
+                name: "cache empty",
+                bucket: None,
+                expected: false,
+            },
+            Test {
+                name: "cache clean add",
+                bucket: Some(false),
+                expected: false,
+            },
+            Test {
+                name: "cache dirty add",
+                bucket: Some(true),
+                expected: true,
+            },
+        ]
+        .into_iter()
+        .try_for_each(|test| {
+            let mut cache = BucketCache::new(
+                1,
+                test.bucket.map(|dirty| {
+                    let mut bucket = Bucket::new(0, 0, vec![], vec![]);
+                    bucket.dirty = dirty;
+
+                    (100, bucket)
+                }),
+            );
+
+            println!("{:?}", cache);
+            let evicted = cache.insert(200, Bucket::new(0, 0, vec![], vec![]));
+
+            (evicted.is_some() == test.expected)
+                .then_some(())
+                .ok_or_else(|| format!("{}: expected {}", test.name, test.expected))
+        })
         .unwrap()
     }
 }
