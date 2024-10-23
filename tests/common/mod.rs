@@ -95,6 +95,7 @@ impl TestInfo {
     }
 }
 
+#[allow(dead_code)]
 pub fn init_tests() -> Vec<TestInfo> {
     [
         ("le64", None),
