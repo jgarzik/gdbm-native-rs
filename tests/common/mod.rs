@@ -66,6 +66,7 @@ impl TestInfo {
             newdb: false,
             numsync: false,
             offset: None,
+            cachesize: None,
         }
     }
 
@@ -81,6 +82,7 @@ impl TestInfo {
             newdb: false,
             numsync: false,
             offset: None,
+            cachesize: None,
         }
     }
 
@@ -136,6 +138,7 @@ pub fn default_cfg() -> GdbmOptions {
         alignment: None,
         endian: None,
         offset: None,
+        cachesize: None,
     }
 }
 
@@ -151,5 +154,6 @@ pub fn creat_cfg() -> GdbmOptions {
         alignment: None,
         endian: None,
         offset: None,
+        cachesize: None,
     }
 }

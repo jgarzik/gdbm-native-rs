@@ -43,6 +43,8 @@ const COMPAT_GDBM_VERSION: &str = "1.23";
 
 const IGNORE_SMALL: usize = 4;
 
+pub const DEFAULT_CACHESIZE: usize = 4 * 1024 * 1024;
+
 #[derive(Copy, Clone, Debug)]
 pub enum ExportBinMode {
     ExpNative,
@@ -84,6 +86,8 @@ pub struct GdbmOptions {
     pub bsexact: bool,
     /// use numsync when creating a new DB.
     pub numsync: bool,
+    /// Bytesize of in-memory bucket cache (defaults to DEFAULT_CACHESIZE)
+    pub cachesize: Option<usize>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -125,7 +129,7 @@ impl Gdbm {
             Err(Error::new(ErrorKind::Other, "empty database"))?;
         }
 
-        let (header, dir, bucket_cache) = match metadata.len() {
+        let (header, dir, initial_bucket) = match metadata.len() {
             0 => {
                 let layout = Layout {
                     offset: dbcfg.offset.unwrap_or(Offset::LFS),
@@ -149,7 +153,7 @@ impl Gdbm {
                 let bucket_offset = header.next_block - block_size as u64;
                 let dir = Directory::new(vec![bucket_offset; 1 << header.dir_bits]);
 
-                (header, dir, BucketCache::new(Some((bucket_offset, bucket))))
+                (header, dir, Some((bucket_offset, bucket)))
             }
             _ => {
                 let header = Header::from_reader(&dbcfg.alignment, metadata.len(), &mut f)?;
@@ -164,8 +168,17 @@ impl Gdbm {
                     ))?;
                 }
 
-                (header, dir, BucketCache::new(None))
+                (header, dir, None)
             }
+        };
+
+        let bucket_cache = {
+            let cache_buckets = {
+                let bytes = dbcfg.cachesize.unwrap_or(DEFAULT_CACHESIZE);
+                let buckets = bytes / header.bucket_sz as usize;
+                buckets.max(1)
+            };
+            BucketCache::new(cache_buckets, initial_bucket)
         };
 
         Ok(Gdbm {
@@ -311,7 +324,11 @@ impl Gdbm {
         if !self.bucket_cache.contains(offset) {
             self.f.seek(SeekFrom::Start(offset))?;
             let bucket = Bucket::from_reader(&self.header, &self.header.layout, &mut self.f)?;
-            self.bucket_cache.insert(offset, bucket);
+            if let Some((evicted_offset, evicted_bucket)) = self.bucket_cache.insert(offset, bucket)
+            {
+                self.f.seek(SeekFrom::Start(evicted_offset))?;
+                evicted_bucket.serialize(&self.header.layout, &mut self.f)?;
+            }
         }
 
         self.bucket_cache.set_current(offset);
@@ -666,7 +683,7 @@ impl Gdbm {
         }
 
         // allocate space for new bucket in an aligned block at the end of file
-        let new_bucket_ofs = {
+        let new_bucket_offset = {
             let (offset, size) = self.extend(self.header.bucket_sz)?;
             self.free_record(
                 offset + self.header.bucket_sz as u64,
@@ -675,15 +692,25 @@ impl Gdbm {
             offset
         };
 
-        let (bucket0, bucket1) = self.bucket_cache.current_bucket().unwrap().split();
-        let cur_bucket_ofs = self.bucket_cache.current_bucket_offset.unwrap();
+        let bucket = self.bucket_cache.current_bucket().unwrap();
+        let cur_bucket_offset = self.bucket_cache.current_bucket_offset().unwrap();
+        let (bucket0, bucket1) = bucket.split();
         let bits = bucket0.bits;
 
-        self.bucket_cache.insert(cur_bucket_ofs, bucket0);
-        self.bucket_cache.insert(new_bucket_ofs, bucket1);
+        let _ = self.bucket_cache.insert(cur_bucket_offset, bucket0);
+        if let Some((evicted_offset, evicted_bucket)) =
+            self.bucket_cache.insert(new_bucket_offset, bucket1)
+        {
+            self.f.seek(SeekFrom::Start(evicted_offset))?;
+            evicted_bucket.serialize(&self.header.layout, &mut self.f)?;
+        }
 
-        self.dir
-            .update_bucket_split(self.header.dir_bits, bits, cur_bucket_ofs, new_bucket_ofs);
+        self.dir.update_bucket_split(
+            self.header.dir_bits,
+            bits,
+            cur_bucket_offset,
+            new_bucket_offset,
+        );
 
         Ok(())
     }
