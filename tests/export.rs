@@ -51,11 +51,9 @@ fn api_export_bin() {
                         .map_err(|e| e.to_string())
                         .and_then(|mut db| {
                             test.metadata.data.iter().try_for_each(|kv| {
-                                let key = kv[0].as_ref();
-                                db.get(key).map_err(|e| e.to_string()).and_then(|v| {
-                                    let expected = Some(kv[1].as_bytes().to_vec());
-                                    (v == expected).then_some(()).ok_or_else(|| {
-                                        format!("expected: {:?}, got: {:?}", v, expected)
+                                db.get(&kv[0]).map_err(|e| e.to_string()).and_then(|v| {
+                                    (v == Some(kv[1].clone())).then_some(()).ok_or_else(|| {
+                                        format!("expected: {:?}, got: {:?}", v, kv[1])
                                     })
                                 })
                             })
@@ -93,17 +91,10 @@ fn api_export_ascii() {
             .map_err(|e| e.to_string())
             .and_then(|mut db| {
                 testdb.metadata.data.iter().try_for_each(|kv| {
-                    let key = kv[0].as_ref();
-                    db.get(key).map_err(|e| e.to_string()).and_then(|got| {
-                        let expected = Some(kv[1].as_bytes().to_vec());
-                        (got == expected).then_some(()).ok_or_else(|| {
-                            format!(
-                                "expected: {:?}, got: {:?} ({:?})",
-                                expected.as_ref().map(|v| std::str::from_utf8(v.as_ref())),
-                                got.as_ref().map(|v| std::str::from_utf8(v)),
-                                got
-                            )
-                        })
+                    db.get(&kv[0]).map_err(|e| e.to_string()).and_then(|got| {
+                        (got == Some(kv[1].clone()))
+                            .then_some(())
+                            .ok_or_else(|| format!("expected: {:?}, got: {:?}", kv[1], got))
                     })
                 })
             })

@@ -50,9 +50,8 @@ fn api_get_not() {
     let tests = init_tests();
 
     for testdb in tests {
-        let keystr = String::from("This key does not exist.");
         let mut db = Gdbm::open(&testdb.db_path, &testdb.ro_cfg()).unwrap();
-        let res = db.get(keystr.as_bytes()).unwrap();
+        let res = db.get::<&str, String>("This key does not exist").unwrap();
         assert_eq!(res, None);
     }
 }
@@ -67,8 +66,8 @@ fn api_get() {
 
             for n in 0..10001 {
                 let keystr = format!("key {}", n);
-                let valstr = format!("value {}", n).into_bytes();
-                assert_eq!(db.get(keystr.as_bytes()).unwrap(), Some(valstr));
+                let valstr = format!("value {}", n);
+                assert_eq!(db.get(&keystr).unwrap(), Some(valstr));
             }
         }
     }

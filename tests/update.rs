@@ -33,20 +33,21 @@ fn api_remove() {
             let mut db = Gdbm::open(&newdb_fn, &testdb.rw_cfg()).expect("GDBM open failed");
 
             // Test: remove non-existent key
-            let keystr = String::from("This key does not exist.");
-            let res = db.remove(keystr.as_bytes()).expect("GDBM remove failed");
+            let res = db
+                .remove("This key does not exist.")
+                .expect("GDBM remove failed");
             assert_eq!(res, None);
 
             // Test: remove existing key
-            let key1 = String::from("key 1");
-            let res = db.remove(key1.as_bytes()).expect("GDBM remove failed");
+            let key = "key 1";
+            let res = db.remove(key).expect("GDBM remove failed");
             let removed_val = res.expect("Expected some value data");
             let val1 = String::from("value 1");
             assert_eq!(removed_val, val1.as_bytes());
 
             // Test: validate that just-removed key is not in db anymore
             let res = db
-                .contains_key(key1.as_bytes())
+                .contains_key(key.as_bytes())
                 .expect("GDBM contains-key failed");
             assert!(!res);
 
@@ -76,7 +77,7 @@ fn api_insert() {
                 let key = format!("key {}", n);
                 let value = format!("value {}", n);
 
-                db.insert(key.as_bytes().to_vec(), value.as_bytes().to_vec())
+                db.insert(key.clone(), value.clone())
                     .map_err(|e| {
                         format!("inserting key \"{}\" with value \"{}\": {}", key, value, e)
                     })
@@ -110,13 +111,11 @@ fn api_insert() {
                 let key = format!("key {}", n);
                 let value = format!("value {}", n);
 
-                db.get(key.as_bytes())
+                db.get::<_, String>(&key)
                     .map_err(|e| format!("getting key \"{}\": {}", key, e))
                     .and_then(|v| match v {
                         None => Err(format!("no value for key \"{}\"", key)),
-                        Some(v) if v != value.into_bytes() => {
-                            Err(format!("wrong value for key \"{}\"", key))
-                        }
+                        Some(v) if v != value => Err(format!("wrong value for key \"{}\"", key)),
                         _ => Ok(()),
                     })
             })?;
