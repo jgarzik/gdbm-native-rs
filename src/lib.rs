@@ -18,13 +18,13 @@ use std::{
 
 mod avail;
 mod bucket;
-pub mod bytes;
-pub mod dir;
+mod bytes;
+mod dir;
 mod hashutil;
 mod header;
 mod import;
-pub mod magic;
-pub mod ser;
+mod magic;
+mod ser;
 
 use avail::AvailBlock;
 use bucket::{Bucket, BucketCache, BucketElement};
@@ -33,7 +33,9 @@ use dir::{build_dir_size, Directory};
 use hashutil::{bucket_dir, key_loc, PartialKey};
 use header::Header;
 use import::{ASCIIImportIterator, BinaryImportIterator};
-use ser::{write32, write64, Alignment, Endian, Layout, Offset};
+pub use magic::Magic;
+use ser::{write32, write64};
+pub use ser::{Alignment, Endian, Layout, Offset};
 
 #[cfg(target_os = "linux")]
 use std::os::linux::fs::MetadataExt;

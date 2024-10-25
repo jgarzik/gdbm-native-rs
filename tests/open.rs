@@ -1,13 +1,10 @@
 extern crate gdbm_native;
 
 use gdbm_native::{
-    magic::Magic,
-    ser::{
-        Alignment::{Align32, Align64},
-        Endian::{Big, Little},
-        Offset::{Small, LFS},
-    },
-    Gdbm, GdbmOptions,
+    Alignment::{Align32, Align64},
+    Endian::{Big, Little},
+    Gdbm, GdbmOptions, Magic,
+    Offset::{Small, LFS},
 };
 use tempfile::NamedTempFile;
 

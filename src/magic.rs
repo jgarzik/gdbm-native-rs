@@ -42,7 +42,7 @@ impl Magic {
         }
     }
 
-    pub fn from_reader(rdr: &mut impl std::io::Read) -> Result<Self> {
+    pub(super) fn from_reader(rdr: &mut impl std::io::Read) -> Result<Self> {
         let mut buf = [0u8; 4];
         rdr.read_exact(&mut buf)?;
         match buf {
@@ -88,7 +88,7 @@ impl Magic {
         }
     }
 
-    pub fn as_bytes(&self) -> &[u8] {
+    pub(super) fn as_bytes(&self) -> &[u8] {
         match self {
             Magic::LE => &GDBM_OMAGIC_LE,
             Magic::LE32 => &GDBM_MAGIC_LE_32,
