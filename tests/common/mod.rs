@@ -1,7 +1,6 @@
 extern crate gdbm_native;
 
-use gdbm_native::Alignment;
-use gdbm_native::GdbmOptions;
+use gdbm_native::{Alignment, GdbmOptions};
 use serde::Deserialize;
 use std::fs;
 use std::path::PathBuf;

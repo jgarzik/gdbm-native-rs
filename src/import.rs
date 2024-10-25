@@ -1,4 +1,4 @@
-use std::io::{self, BufRead, BufReader, Error, ErrorKind, Read};
+use std::io::{self, BufRead, BufReader, ErrorKind, Read};
 
 use base64::Engine;
 
@@ -21,7 +21,7 @@ impl<'a> ASCIIImportIterator<'a> {
             .lines()
             .map(|line| match line {
                 Ok(s) if s.as_str().starts_with('#') => Ok(s),
-                Ok(s) => Err(Error::new(
+                Ok(s) => Err(io::Error::new(
                     ErrorKind::Other,
                     format!("bad header line: {}", s),
                 )),
@@ -36,7 +36,7 @@ impl<'a> ASCIIImportIterator<'a> {
             .by_ref()
             .lines()
             .next()
-            .unwrap_or(Err(Error::new(ErrorKind::Other, "end of input")))
+            .unwrap_or(Err(io::Error::new(ErrorKind::Other, "end of input")))
     }
 
     fn read_base64(&mut self, length: usize) -> io::Result<Vec<u8>> {
@@ -56,16 +56,16 @@ impl<'a> ASCIIImportIterator<'a> {
         self.read_line().and_then(|l| {
             l.is_empty()
                 .then_some(())
-                .ok_or_else(|| Error::new(ErrorKind::Other, "unexpected data"))
+                .ok_or_else(|| io::Error::new(ErrorKind::Other, "unexpected data"))
         })?;
 
         base64::prelude::BASE64_STANDARD
             .decode(bytes)
-            .map_err(|e| Error::new(ErrorKind::Other, format!("bad base64: {}", e)))
+            .map_err(|e| io::Error::new(ErrorKind::Other, format!("bad base64: {}", e)))
             .and_then(|decoded| {
                 (decoded.len() == length)
                     .then_some(decoded)
-                    .ok_or_else(|| Error::new(ErrorKind::Other, "length mismatch"))
+                    .ok_or_else(|| io::Error::new(ErrorKind::Other, "length mismatch"))
             })
     }
 
@@ -75,10 +75,15 @@ impl<'a> ASCIIImportIterator<'a> {
             Some(("#:count", _)) => Ok(None),
             Some(("#:len", length)) => length
                 .parse::<usize>()
-                .map_err(|e| Error::new(ErrorKind::Other, format!("bad line ({}): {}", line, e)))
+                .map_err(|e| {
+                    io::Error::new(ErrorKind::Other, format!("bad line ({}): {}", line, e))
+                })
                 .and_then(|length| self.read_base64(length))
                 .map(Some),
-            _ => Err(Error::new(ErrorKind::Other, format!("bad data ({})", line))),
+            _ => Err(io::Error::new(
+                ErrorKind::Other,
+                format!("bad data ({})", line),
+            )),
         }
     }
 }
@@ -90,7 +95,7 @@ impl<'a> Iterator for ASCIIImportIterator<'a> {
         match self.read_datum() {
             Ok(None) => None,
             Ok(Some(key)) => match self.read_datum() {
-                Ok(None) => Some(Err(Error::new(ErrorKind::Other, "end of file"))),
+                Ok(None) => Some(Err(io::Error::new(ErrorKind::Other, "end of file"))),
                 Ok(Some(value)) => Some(Ok((key, value))),
                 Err(e) => Some(Err(e)),
             },
@@ -136,7 +141,7 @@ impl<'a> BinaryImportIterator<'a> {
                 (Alignment::Align64, 8) => {
                     Ok(Some(u64::from_be_bytes(buf.try_into().unwrap()) as usize))
                 }
-                _ => Err(Error::new(ErrorKind::UnexpectedEof, "partial read")),
+                _ => Err(io::Error::new(ErrorKind::UnexpectedEof, "partial read")),
             })?;
 
         match length {
@@ -157,7 +162,7 @@ impl<'a> Iterator for BinaryImportIterator<'a> {
         match self.read_datum() {
             Ok(None) => None,
             Ok(Some(key)) => match self.read_datum() {
-                Ok(None) => Some(Err(Error::new(ErrorKind::Other, "end of file"))),
+                Ok(None) => Some(Err(io::Error::new(ErrorKind::Other, "end of file"))),
                 Ok(Some(value)) => Some(Ok((key, value))),
                 Err(e) => Some(Err(e)),
             },

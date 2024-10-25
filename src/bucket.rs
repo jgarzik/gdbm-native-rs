@@ -9,7 +9,7 @@
 // SPDX-License-Identifier: MIT
 
 use std::collections::HashMap;
-use std::io::{self, Error, ErrorKind, Read, Write};
+use std::io::{self, ErrorKind, Read, Write};
 
 use crate::avail::{self, AvailElem};
 use crate::hashutil::{hash_key, PartialKey};
@@ -156,7 +156,7 @@ impl Bucket {
         let count = read32(layout.endian, reader)?;
 
         if !(count <= header.bucket_elems && bits <= header.dir_bits) {
-            return Err(Error::new(ErrorKind::Other, "invalid bucket c/b"));
+            return Err(io::Error::new(ErrorKind::Other, "invalid bucket c/b"));
         }
 
         // read bucket elements section

@@ -13,13 +13,14 @@ extern crate base64;
 use base64::Engine;
 use std::{
     fs::OpenOptions,
-    io::{self, Error, ErrorKind, Read, Seek, SeekFrom, Write},
+    io::{self, ErrorKind, Read, Seek, SeekFrom, Write},
 };
 
 mod avail;
 mod bucket;
 mod bytes;
 mod dir;
+mod error;
 mod hashutil;
 mod header;
 mod import;
@@ -30,6 +31,7 @@ use avail::AvailBlock;
 use bucket::{Bucket, BucketCache, BucketElement};
 use bytes::{Bytes, BytesRef};
 use dir::{build_dir_size, Directory};
+pub use error::Error;
 use hashutil::{bucket_dir, key_loc, PartialKey};
 use header::Header;
 use import::{ASCIIImportIterator, BinaryImportIterator};
@@ -48,6 +50,8 @@ const COMPAT_GDBM_VERSION: &str = "1.23";
 const IGNORE_SMALL: usize = 4;
 
 pub const DEFAULT_CACHESIZE: usize = 4 * 1024 * 1024;
+
+pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Copy, Clone, Debug)]
 pub enum ExportBinMode {
@@ -112,12 +116,10 @@ pub struct Gdbm {
 
 impl Gdbm {
     // API: open database file, read and validate header
-    pub fn open(pathname: &str, dbcfg: &GdbmOptions) -> io::Result<Gdbm> {
+    pub fn open(pathname: &str, dbcfg: &GdbmOptions) -> Result<Gdbm> {
         if dbcfg.readonly && (dbcfg.newdb || dbcfg.creat) {
-            Err(Error::new(
-                ErrorKind::Other,
-                "readonly conflicts with newdb or creat",
-            ))?;
+            let inner = io::Error::new(ErrorKind::Other, "readonly conflicts with newdb or creat");
+            Err(Error::Io(inner))?;
         }
 
         let mut f = OpenOptions::new()
@@ -125,12 +127,14 @@ impl Gdbm {
             .write(!dbcfg.readonly)
             .create(dbcfg.creat | dbcfg.newdb)
             .truncate(dbcfg.newdb)
-            .open(pathname)?;
+            .open(pathname)
+            .map_err(Error::Io)?;
 
-        let metadata = f.metadata()?;
+        let metadata = f.metadata().map_err(Error::Io)?;
 
         if metadata.len() == 0 && !(dbcfg.creat || dbcfg.newdb) {
-            Err(Error::new(ErrorKind::Other, "empty database"))?;
+            let inner = io::Error::new(ErrorKind::Other, "empty database");
+            Err(Error::Io(inner))?;
         }
 
         let (header, dir, initial_bucket) = match metadata.len() {
@@ -144,12 +148,15 @@ impl Gdbm {
                     layout.offset,
                     match dbcfg.block_size {
                         Some(size) if size >= 512 => size,
-                        _ => f.metadata()?.st_blksize() as u32,
+                        _ => f.metadata().map_err(Error::Io)?.st_blksize() as u32,
                     },
                 );
 
                 if dbcfg.bsexact && Some(block_size) != dbcfg.block_size {
-                    Err(Error::new(ErrorKind::Other, "no exact blocksize"))?;
+                    return Err(Error::Io(io::Error::new(
+                        ErrorKind::Other,
+                        "no exact blocksize",
+                    )));
                 }
 
                 let header = Header::new(block_size, &layout, dir_bits, dbcfg.numsync);
@@ -160,16 +167,18 @@ impl Gdbm {
                 (header, dir, Some((bucket_offset, bucket)))
             }
             _ => {
-                let header = Header::from_reader(&dbcfg.alignment, metadata.len(), &mut f)?;
-                f.seek(SeekFrom::Start(header.dir_ofs))?;
-                let dir = Directory::from_reader(&header.layout, header.dir_sz, &mut f)?;
+                let header = Header::from_reader(&dbcfg.alignment, metadata.len(), &mut f)
+                    .map_err(Error::Io)?;
+                f.seek(SeekFrom::Start(header.dir_ofs)).map_err(Error::Io)?;
+                let dir = Directory::from_reader(&header.layout, header.dir_sz, &mut f)
+                    .map_err(Error::Io)?;
 
                 // ensure all bucket offsets are reasonable
                 if !dir.validate(header.block_sz as u64, header.next_block, header.block_sz) {
-                    return Err(Error::new(
+                    return Err(Error::Io(io::Error::new(
                         ErrorKind::Other,
                         "corruption: bucket offset outside of file",
-                    ))?;
+                    )));
                 }
 
                 (header, dir, None)
@@ -225,12 +234,13 @@ impl Gdbm {
         Ok(())
     }
 
-    fn export_ascii_records(&mut self, outf: &mut std::fs::File) -> io::Result<usize> {
+    fn export_ascii_records(&mut self, outf: &mut std::fs::File) -> Result<usize> {
         self.iter().try_fold(0, |count, kv| {
             kv.and_then(|(key, value)| {
                 Self::export_ascii_datum(outf, key)
                     .and_then(|_| Self::export_ascii_datum(outf, value))
                     .map(|_| count + 1)
+                    .map_err(Error::Io)
             })
         })
     }
@@ -242,18 +252,22 @@ impl Gdbm {
     }
 
     // API: export database to ASCII dump file
-    pub fn export_ascii(&mut self, outf: &mut std::fs::File) -> io::Result<()> {
-        self.export_ascii_header(outf)?;
-        let n_written = self.export_ascii_records(outf)?;
-        self.export_ascii_footer(outf, n_written)?;
-        Ok(())
+    pub fn export_ascii(&mut self, outf: &mut std::fs::File) -> Result<()> {
+        self.export_ascii_header(outf)
+            .map_err(Error::Io)
+            .and_then(|_| self.export_ascii_records(outf))
+            .and_then(|n_written| self.export_ascii_footer(outf, n_written).map_err(Error::Io))
     }
 
-    pub fn import_ascii(&mut self, reader: &mut impl Read) -> io::Result<()> {
-        ASCIIImportIterator::new(reader)?.try_for_each(|l| {
-            let (key, value) = l?;
-            self.insert(key, value).map(|_| ())
-        })
+    pub fn import_ascii(&mut self, reader: &mut impl Read) -> Result<()> {
+        ASCIIImportIterator::new(reader)
+            .map_err(Error::Io)
+            .and_then(|mut lines| {
+                lines.try_for_each(|l| {
+                    let (key, value) = l.map_err(Error::Io)?;
+                    self.insert(key, value).map(|_| ())
+                })
+            })
     }
 
     fn export_bin_header(&self, outf: &mut std::fs::File) -> io::Result<()> {
@@ -282,43 +296,44 @@ impl Gdbm {
         Ok(())
     }
 
-    fn export_bin_records(
-        &mut self,
-        outf: &mut std::fs::File,
-        alignment: Alignment,
-    ) -> io::Result<()> {
+    fn export_bin_records(&mut self, outf: &mut std::fs::File, alignment: Alignment) -> Result<()> {
         self.iter().try_for_each(|kv| {
             kv.and_then(|(key, value)| {
                 Self::export_bin_datum(outf, alignment, key)
                     .and_then(|_| Self::export_bin_datum(outf, alignment, value))
+                    .map_err(Error::Io)
             })
         })
     }
 
     // API: export database to binary dump file
-    pub fn export_bin(&mut self, outf: &mut std::fs::File, mode: ExportBinMode) -> io::Result<()> {
+    pub fn export_bin(&mut self, outf: &mut std::fs::File, mode: ExportBinMode) -> Result<()> {
         let alignment = match mode {
             ExportBinMode::ExpNative => self.header.layout.alignment,
             ExportBinMode::Exp32 => Alignment::Align32,
             ExportBinMode::Exp64 => Alignment::Align64,
         };
 
-        self.export_bin_header(outf)?;
-        self.export_bin_records(outf, alignment)?;
-        Ok(())
+        self.export_bin_header(outf)
+            .map_err(Error::Io)
+            .and_then(|_| self.export_bin_records(outf, alignment))
     }
 
-    pub fn import_bin(&mut self, reader: &mut impl Read, mode: ExportBinMode) -> io::Result<()> {
+    pub fn import_bin(&mut self, reader: &mut impl Read, mode: ExportBinMode) -> Result<()> {
         let alignment = match mode {
             ExportBinMode::ExpNative => self.header.layout.alignment,
             ExportBinMode::Exp32 => Alignment::Align32,
             ExportBinMode::Exp64 => Alignment::Align64,
         };
 
-        BinaryImportIterator::new(alignment, reader)?.try_for_each(|l| {
-            let (key, value) = l?;
-            self.insert(key, value).map(|_| ())
-        })
+        BinaryImportIterator::new(alignment, reader)
+            .map_err(Error::Io)
+            .and_then(|mut lines| {
+                lines.try_for_each(|l| {
+                    let (key, value) = l.map_err(Error::Io)?;
+                    self.insert(key, value).map(|_| ())
+                })
+            })
     }
 
     // read bucket into bucket cache.
@@ -360,12 +375,12 @@ impl Gdbm {
 
     // API: count entries in database
     #[allow(clippy::len_without_is_empty)]
-    pub fn len(&mut self) -> io::Result<usize> {
+    pub fn len(&mut self) -> Result<usize> {
         let mut len: usize = 0;
         let mut cur_dir: usize = 0;
         let dir_max_elem = self.dir.dir.len();
         while cur_dir < dir_max_elem {
-            len += self.cache_load_bucket(cur_dir)?.count as usize;
+            len += self.cache_load_bucket(cur_dir).map_err(Error::Io)?.count as usize;
             cur_dir = self.next_bucket_dir(cur_dir);
         }
 
@@ -373,15 +388,13 @@ impl Gdbm {
     }
 
     // API: get an iterator over values
-    pub fn values<V: From<Bytes>>(
-        &mut self,
-    ) -> impl std::iter::Iterator<Item = io::Result<V>> + '_ {
+    pub fn values<V: From<Bytes>>(&mut self) -> impl std::iter::Iterator<Item = Result<V>> + '_ {
         GDBMIterator::new(self, KeyOrValue::Value)
             .map(|data| data.map(|(_, value)| Bytes::from(value).into()))
     }
 
     // API: get an iterator over keys
-    pub fn keys<K: From<Bytes>>(&mut self) -> impl std::iter::Iterator<Item = io::Result<K>> + '_ {
+    pub fn keys<K: From<Bytes>>(&mut self) -> impl std::iter::Iterator<Item = Result<K>> + '_ {
         GDBMIterator::new(self, KeyOrValue::Key)
             .map(|data| data.map(|(key, _)| Bytes::from(key).into()))
     }
@@ -389,19 +402,17 @@ impl Gdbm {
     // API: get an iterator
     pub fn iter<K: From<Bytes>, V: From<Bytes>>(
         &mut self,
-    ) -> impl std::iter::Iterator<Item = io::Result<(K, V)>> + '_ {
+    ) -> impl std::iter::Iterator<Item = Result<(K, V)>> + '_ {
         GDBMIterator::new(self, KeyOrValue::Both).map(|data| {
             data.map(|(key, value)| (Bytes::from(key).into(), Bytes::from(value).into()))
         })
     }
 
     // API: does key exist?
-    pub fn contains_key(&mut self, key: &[u8]) -> io::Result<bool> {
-        let get_opt = self.int_get(key)?;
-        match get_opt {
-            None => Ok(false),
-            Some(_v) => Ok(true),
-        }
+    pub fn contains_key(&mut self, key: &[u8]) -> Result<bool> {
+        self.int_get(key)
+            .map(|result| result.is_some())
+            .map_err(Error::Io)
     }
 
     // retrieve record data, and element offset in bucket, for given key
@@ -445,11 +456,8 @@ impl Gdbm {
     }
 
     // API: Fetch record value, given a key
-    pub fn get<'a, K: Into<BytesRef<'a>>, V: From<Bytes>>(
-        &mut self,
-        key: K,
-    ) -> io::Result<Option<V>> {
-        let get_opt = self.int_get(key.into().as_ref())?;
+    pub fn get<'a, K: Into<BytesRef<'a>>, V: From<Bytes>>(&mut self, key: K) -> Result<Option<V>> {
+        let get_opt = self.int_get(key.into().as_ref()).map_err(Error::Io)?;
         match get_opt {
             None => Ok(None),
             Some(data) => Ok(Some(Bytes::from(data.1).into())),
@@ -591,21 +599,21 @@ impl Gdbm {
     }
 
     // API: ensure database is flushed to stable storage
-    pub fn sync(&mut self) -> io::Result<()> {
-        self.writeable()?;
-
-        self.header.increment_numsync();
-        self.write_dirty()?;
-        self.f.sync_data()?;
-
-        Ok(())
+    pub fn sync(&mut self) -> Result<()> {
+        self.writeable()
+            .and_then(|_| {
+                self.header.increment_numsync();
+                self.write_dirty().and_then(|_| self.f.sync_data())
+            })
+            .map_err(Error::Io)
     }
 
     // API: remove a key/value pair from db, given a key
-    pub fn remove<'a, K: Into<BytesRef<'a>>>(&mut self, key: K) -> io::Result<Option<Vec<u8>>> {
-        self.writeable()?;
+    pub fn remove<'a, K: Into<BytesRef<'a>>>(&mut self, key: K) -> Result<Option<Vec<u8>>> {
+        self.writeable().map_err(Error::Io)?;
 
-        let get_opt = self.int_get(key.into().as_ref())?;
+        let get_opt = self.int_get(key.into().as_ref()).map_err(Error::Io)?;
+
         if get_opt.is_none() {
             return Ok(None);
         }
@@ -618,10 +626,11 @@ impl Gdbm {
             .remove(elem_ofs);
 
         // release record bytes to available-space pool
-        self.free_record(elem.data_ofs, elem.key_size + elem.data_size)?;
+        self.free_record(elem.data_ofs, elem.key_size + elem.data_size)
+            .map_err(Error::Io)?;
 
         // flush any dirty pages to OS
-        self.write_dirty()?;
+        self.write_dirty().map_err(Error::Io)?;
 
         Ok(Some(data))
     }
@@ -677,27 +686,28 @@ impl Gdbm {
         &mut self,
         key: K,
         value: V,
-    ) -> io::Result<Option<Vec<u8>>> {
+    ) -> Result<Option<Vec<u8>>> {
         let key = key.into();
         self.writeable()
+            .map_err(Error::Io)
             .and_then(|_| self.remove(key.as_ref()))
             .and_then(|oldkey| {
                 self.int_insert(key.into_vec(), value.into().into_vec())
                     .map(|_| oldkey)
+                    .map_err(Error::Io)
             })
     }
 
-    pub fn try_insert(
-        &mut self,
-        key: Vec<u8>,
-        data: Vec<u8>,
-    ) -> io::Result<(bool, Option<Vec<u8>>)> {
-        self.writeable()
-            .and_then(|_| self.get(&key))
-            .and_then(|olddata| match olddata {
+    pub fn try_insert(&mut self, key: Vec<u8>, data: Vec<u8>) -> Result<(bool, Option<Vec<u8>>)> {
+        self.writeable().map_err(Error::Io).and_then(|_| {
+            self.get(&key).and_then(|olddata| match olddata {
                 Some(_) => Ok((false, olddata)),
-                _ => self.int_insert(key, data).map(|_| (true, None)),
+                _ => self
+                    .int_insert(key, data)
+                    .map(|_| (true, None))
+                    .map_err(Error::Io),
             })
+        })
     }
 
     fn split_bucket(&mut self) -> io::Result<()> {
@@ -742,7 +752,7 @@ impl Gdbm {
     fn writeable(&self) -> io::Result<()> {
         (!self.cfg.readonly)
             .then_some(())
-            .ok_or_else(|| Error::new(ErrorKind::Other, "write to readonly db"))
+            .ok_or_else(|| io::Error::new(ErrorKind::Other, "write to readonly db"))
     }
 
     // Extends the directory by duplicating each bucket offset.
@@ -767,11 +777,15 @@ impl Gdbm {
     }
 
     // API: convert
-    pub fn convert(&mut self, options: &ConvertOptions) -> io::Result<()> {
+    pub fn convert(&mut self, options: &ConvertOptions) -> Result<()> {
         self.writeable()
-            .and_then(|_| self.header.convert_numsync(options.numsync))?
-            .into_iter()
-            .try_for_each(|(offset, length)| self.free_record(offset, length))
+            .and_then(|_| self.header.convert_numsync(options.numsync))
+            .and_then(|blocks_to_free| {
+                blocks_to_free
+                    .into_iter()
+                    .try_for_each(|(offset, length)| self.free_record(offset, length))
+            })
+            .map_err(Error::Io)
     }
 }
 
@@ -857,13 +871,13 @@ impl<'a> GDBMIterator<'a> {
 }
 
 impl<'a> Iterator for GDBMIterator<'a> {
-    type Item = io::Result<(Vec<u8>, Vec<u8>)>;
+    type Item = Result<(Vec<u8>, Vec<u8>)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let slot = self.slot.take();
         match slot {
             None => None,
-            Some(Err(e)) => Some(Err(e)),
+            Some(Err(e)) => Some(Err(Error::Io(e))),
             Some(Ok(slot)) => {
                 let data = self
                     .db
@@ -899,7 +913,7 @@ impl<'a> Iterator for GDBMIterator<'a> {
                         self.slot = Self::next_occupied_slot(self.db, slot);
                         Some(Ok(data))
                     }
-                    Err(e) => Some(Err(e)),
+                    Err(e) => Some(Err(Error::Io(e))),
                 }
             }
         }
