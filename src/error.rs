@@ -37,6 +37,13 @@ pub enum Error {
     },
     /// Attempting write operation on readonly database.
     WriteToReadonly,
+    /// Block size found in header is impossibly small.
+    BadHeaderBlockSize {
+        /// Block size from header.
+        size: u32,
+        /// Minimum is sizeof header.
+        minimum: u32,
+    },
 }
 
 impl Display for Error {

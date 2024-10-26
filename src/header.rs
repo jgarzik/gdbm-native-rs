@@ -101,10 +101,10 @@ impl Header {
 
         // Block must be big enough for header and avail table with two elements.
         if block_sz < Self::sizeof(&layout, magic.is_numsync(), 2) {
-            return Err(Error::Io(io::Error::new(
-                ErrorKind::Other,
-                "bad header: blksz",
-            )));
+            return Err(Error::BadHeaderBlockSize {
+                size: block_sz,
+                minimum: Self::sizeof(&layout, magic.is_numsync(), 2),
+            });
         }
 
         if next_block < file_size {
