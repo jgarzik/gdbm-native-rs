@@ -45,8 +45,7 @@ fn api_open_conflicting() {
         )
         .map_err(|e| e.to_string())
         .and_then(|_| Err("success".to_string()))
-        .inspect_err(|e| println!("{}", e))
-        .or_else(|e| match e == r#"Io(Custom { kind: Other, error: "readonly conflicts with newdb or creat" })"# {
+        .or_else(|e| match e == "ConflictingOpenOptions" {
             true if expected_arg_conflict => Ok(()),
             false if !expected_arg_conflict => Ok(()),
             _ => Err(format!(

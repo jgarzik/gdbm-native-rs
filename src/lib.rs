@@ -118,8 +118,7 @@ impl Gdbm {
     // API: open database file, read and validate header
     pub fn open(pathname: &str, dbcfg: &GdbmOptions) -> Result<Gdbm> {
         if dbcfg.readonly && (dbcfg.newdb || dbcfg.creat) {
-            let inner = io::Error::new(ErrorKind::Other, "readonly conflicts with newdb or creat");
-            Err(Error::Io(inner))?;
+            return Err(Error::ConflictingOpenOptions);
         }
 
         let mut f = OpenOptions::new()

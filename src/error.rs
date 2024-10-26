@@ -17,6 +17,8 @@ pub enum Error {
         /// Directory bits.
         dir_bits: u32,
     },
+    /// Tried to open with readonly and either creat or write.
+    ConflictingOpenOptions,
     Corruption(String),
 }
 
