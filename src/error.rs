@@ -28,7 +28,13 @@ pub enum Error {
         /// Actual blocksize.
         actual: u32,
     },
-    Corruption(String),
+    /// A directory entry points outside the file.
+    BadDirectory {
+        /// Start of directory in file.
+        offset: u64,
+        /// Directory length in bytes.
+        length: u32,
+    },
 }
 
 impl Display for Error {

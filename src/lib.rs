@@ -166,16 +166,18 @@ impl Gdbm {
             }
             _ => {
                 let header = Header::from_reader(&dbcfg.alignment, metadata.len(), &mut f)?;
-                f.seek(SeekFrom::Start(header.dir_ofs)).map_err(Error::Io)?;
+
+                f.seek(SeekFrom::Start(header.dir_ofs))
+                    .map_err(Error::from)?;
                 let dir = Directory::from_reader(&header.layout, header.dir_sz, &mut f)
-                    .map_err(Error::Io)?;
+                    .map_err(Error::from)?;
 
                 // ensure all bucket offsets are reasonable
                 if !dir.validate(header.block_sz as u64, header.next_block, header.block_sz) {
-                    return Err(Error::Io(io::Error::new(
-                        ErrorKind::Other,
-                        "corruption: bucket offset outside of file",
-                    )));
+                    return Err(Error::BadDirectory {
+                        offset: header.dir_ofs,
+                        length: header.dir_sz,
+                    });
                 }
 
                 (header, dir, None)
