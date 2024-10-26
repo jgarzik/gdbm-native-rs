@@ -60,6 +60,17 @@ pub enum Error {
         /// Database file size.
         file_size: u64,
     },
+    /// Directory size and bits in header are inconsistent.
+    BadHeaderDirectory {
+        /// Directory size in header.
+        size: u32,
+        /// Directory bits in header.
+        bits: u32,
+        /// Minimum size calculated from header block size.
+        minimum_size: u32,
+        /// Expected bits calculated from header directory size.
+        expected_bits: u32,
+    },
 }
 
 impl Display for Error {

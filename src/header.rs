@@ -122,20 +122,15 @@ impl Header {
             });
         }
 
-        let (ck_dir_sz, _ck_dir_bits) = build_dir_size(layout.offset, block_sz);
-        if dir_sz < ck_dir_sz {
-            return Err(Error::Io(io::Error::new(
-                ErrorKind::Other,
-                "bad header: dir sz",
-            )));
-        }
-
-        let (_ck_dir_sz, ck_dir_bits) = build_dir_size(layout.offset, dir_sz);
-        if dir_bits != ck_dir_bits {
-            return Err(Error::Io(io::Error::new(
-                ErrorKind::Other,
-                "bad header: dir bits",
-            )));
+        let (minimum_size, _) = build_dir_size(layout.offset, block_sz);
+        let (_, expected_bits) = build_dir_size(layout.offset, dir_sz);
+        if dir_sz < minimum_size || dir_bits != expected_bits {
+            return Err(Error::BadHeaderDirectory {
+                size: dir_sz,
+                bits: dir_bits,
+                minimum_size,
+                expected_bits,
+            });
         }
 
         if bucket_sz <= Bucket::sizeof(&layout) {
