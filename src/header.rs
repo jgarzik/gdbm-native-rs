@@ -169,11 +169,11 @@ impl Header {
             });
         }
 
-        if !(avail.sz > 1 && avail.elems.len() as u32 <= avail.sz) {
-            return Err(Error::Io(io::Error::new(
-                ErrorKind::Other,
-                "bad header: avail sz/ct",
-            )));
+        if avail.elems.len() as u32 > avail.sz {
+            return Err(Error::BadHeaderAvailCount {
+                elems: avail.elems.len() as u32,
+                maximum: avail.sz,
+            });
         }
 
         Ok(Header {

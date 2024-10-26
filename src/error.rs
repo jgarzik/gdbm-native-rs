@@ -102,6 +102,13 @@ pub enum Error {
         /// Block size.
         block_size: u32,
     },
+    /// Too many items in the available block.
+    BadHeaderAvailCount {
+        /// Number of elements in avail block.
+        elems: u32,
+        /// Maximum expected from header.
+        maximum: u32,
+    },
 }
 
 impl Display for Error {
