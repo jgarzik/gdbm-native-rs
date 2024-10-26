@@ -8,7 +8,7 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
-use std::io::{self, ErrorKind, Read, Write};
+use std::io::{self, Read, Write};
 
 use crate::avail::{AvailBlock, AvailElem};
 use crate::bucket::{Bucket, BucketElement};
@@ -254,16 +254,13 @@ impl Header {
     }
 }
 
-fn read_numsync(endian: Endian, reader: &mut impl Read) -> io::Result<u32> {
+fn read_numsync(endian: Endian, reader: &mut impl Read) -> Result<u32> {
     (0..8)
-        .map(|_| read32(endian, reader))
-        .collect::<io::Result<Vec<_>>>()
+        .map(|_| read32(endian, reader).map_err(Error::from))
+        .collect::<Result<Vec<_>>>()
         .and_then(|ext| match ext[0] {
             0 => Ok(ext[1]),
-            v => {
-                let s = format!("bad header: unsupported extended header version: {}", v);
-                Err(io::Error::new(ErrorKind::Other, s))
-            }
+            v => Err(Error::BadNumsyncVersion { version: v }),
         })
 }
 

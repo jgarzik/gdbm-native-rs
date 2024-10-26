@@ -109,6 +109,11 @@ pub enum Error {
         /// Maximum expected from header.
         maximum: u32,
     },
+    /// Numsync version must be 0.
+    BadNumsyncVersion {
+        /// Numsync version from header.
+        version: u32,
+    },
 }
 
 impl Display for Error {
