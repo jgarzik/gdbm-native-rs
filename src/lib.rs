@@ -13,7 +13,7 @@ extern crate base64;
 use base64::Engine;
 use std::{
     fs::OpenOptions,
-    io::{self, ErrorKind, Read, Seek, SeekFrom, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
 };
 
 mod avail;
@@ -612,17 +612,17 @@ impl Gdbm {
 
     // API: ensure database is flushed to stable storage
     pub fn sync(&mut self) -> Result<()> {
-        self.writeable()
-            .and_then(|_| {
-                self.header.increment_numsync();
-                self.write_dirty().and_then(|_| self.f.sync_data())
-            })
-            .map_err(Error::Io)
+        self.writeable().and_then(|_| {
+            self.header.increment_numsync();
+            self.write_dirty()
+                .and_then(|_| self.f.sync_data())
+                .map_err(Error::Io)
+        })
     }
 
     // API: remove a key/value pair from db, given a key
     pub fn remove<'a, K: Into<BytesRef<'a>>>(&mut self, key: K) -> Result<Option<Vec<u8>>> {
-        self.writeable().map_err(Error::Io)?;
+        self.writeable()?;
 
         let get_opt = self.int_get(key.into().as_ref())?;
 
@@ -762,10 +762,10 @@ impl Gdbm {
     }
 
     // Convenience function to convert readonly flag into an error if we want to write
-    fn writeable(&self) -> io::Result<()> {
+    fn writeable(&self) -> Result<()> {
         (!self.cfg.readonly)
             .then_some(())
-            .ok_or_else(|| io::Error::new(ErrorKind::Other, "write to readonly db"))
+            .ok_or_else(|| Error::WriteToReadonly)
     }
 
     // Extends the directory by duplicating each bucket offset.
@@ -791,14 +791,13 @@ impl Gdbm {
 
     // API: convert
     pub fn convert(&mut self, options: &ConvertOptions) -> Result<()> {
-        self.writeable()
-            .and_then(|_| {
-                self.header
-                    .convert_numsync(options.numsync)
-                    .into_iter()
-                    .try_for_each(|(offset, length)| self.free_record(offset, length))
-            })
-            .map_err(Error::Io)
+        self.writeable().and_then(|_| {
+            self.header
+                .convert_numsync(options.numsync)
+                .into_iter()
+                .try_for_each(|(offset, length)| self.free_record(offset, length))
+                .map_err(Error::from)
+        })
     }
 }
 

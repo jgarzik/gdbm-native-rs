@@ -35,6 +35,8 @@ pub enum Error {
         /// Directory length in bytes.
         length: u32,
     },
+    /// Attempting write operation on readonly database.
+    WriteToReadonly,
 }
 
 impl Display for Error {
