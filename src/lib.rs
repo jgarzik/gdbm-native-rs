@@ -132,8 +132,7 @@ impl Gdbm {
         let metadata = f.metadata().map_err(Error::Io)?;
 
         if metadata.len() == 0 && !(dbcfg.creat || dbcfg.newdb) {
-            let inner = io::Error::new(ErrorKind::Other, "empty database");
-            Err(Error::Io(inner))?;
+            return Err(Error::EmptyFile);
         }
 
         let (header, dir, initial_bucket) = match metadata.len() {

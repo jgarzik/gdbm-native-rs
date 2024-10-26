@@ -19,6 +19,8 @@ pub enum Error {
     },
     /// Tried to open with readonly and either creat or write.
     ConflictingOpenOptions,
+    /// There is no data.
+    EmptyFile,
     Corruption(String),
 }
 
