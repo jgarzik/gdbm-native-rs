@@ -126,10 +126,9 @@ impl Gdbm {
             .write(!dbcfg.readonly)
             .create(dbcfg.creat | dbcfg.newdb)
             .truncate(dbcfg.newdb)
-            .open(pathname)
-            .map_err(Error::Io)?;
+            .open(pathname)?;
 
-        let metadata = f.metadata().map_err(Error::Io)?;
+        let metadata = f.metadata()?;
 
         if metadata.len() == 0 && !(dbcfg.creat || dbcfg.newdb) {
             return Err(Error::EmptyFile);
@@ -146,7 +145,7 @@ impl Gdbm {
                     layout.offset,
                     match dbcfg.block_size {
                         Some(size) if size >= 512 => size,
-                        _ => f.metadata().map_err(Error::from)?.st_blksize() as u32,
+                        _ => f.metadata()?.st_blksize() as u32,
                     },
                 );
 
@@ -167,10 +166,8 @@ impl Gdbm {
             _ => {
                 let header = Header::from_reader(&dbcfg.alignment, metadata.len(), &mut f)?;
 
-                f.seek(SeekFrom::Start(header.dir_ofs))
-                    .map_err(Error::from)?;
-                let dir = Directory::from_reader(&header.layout, header.dir_sz, &mut f)
-                    .map_err(Error::from)?;
+                f.seek(SeekFrom::Start(header.dir_ofs))?;
+                let dir = Directory::from_reader(&header.layout, header.dir_sz, &mut f)?;
 
                 // ensure all bucket offsets are reasonable
                 if !dir.validate(header.block_sz as u64, header.next_block, header.block_sz) {
@@ -340,10 +337,9 @@ impl Gdbm {
         let offset = self.dir.dir[bucket_dir];
 
         if !self.bucket_cache.contains(offset) {
-            self.f.seek(SeekFrom::Start(offset)).map_err(Error::from)?;
+            self.f.seek(SeekFrom::Start(offset))?;
             let bucket =
-                Bucket::from_reader(self.header.bucket_elems, &self.header.layout, &mut self.f)
-                    .map_err(Error::from)?;
+                Bucket::from_reader(self.header.bucket_elems, &self.header.layout, &mut self.f)?;
 
             if bucket.count > self.header.bucket_elems || bucket.bits > self.header.dir_bits {
                 return Err(Error::BadBucket {
@@ -359,8 +355,7 @@ impl Gdbm {
             {
                 self.f
                     .seek(SeekFrom::Start(evicted_offset))
-                    .and_then(|_| evicted_bucket.serialize(&self.header.layout, &mut self.f))
-                    .map_err(Error::from)?;
+                    .and_then(|_| evicted_bucket.serialize(&self.header.layout, &mut self.f))?;
             }
         }
 
@@ -638,11 +633,10 @@ impl Gdbm {
             .remove(elem_ofs);
 
         // release record bytes to available-space pool
-        self.free_record(elem.data_ofs, elem.key_size + elem.data_size)
-            .map_err(Error::Io)?;
+        self.free_record(elem.data_ofs, elem.key_size + elem.data_size)?;
 
         // flush any dirty pages to OS
-        self.write_dirty().map_err(Error::Io)?;
+        self.write_dirty()?;
 
         Ok(Some(data))
     }
@@ -673,15 +667,12 @@ impl Gdbm {
     }
 
     fn int_insert(&mut self, key: Vec<u8>, data: Vec<u8>) -> Result<()> {
-        let offset = self
-            .allocate_record((key.len() + data.len()) as u32)
-            .map_err(Error::from)?;
+        let offset = self.allocate_record((key.len() + data.len()) as u32)?;
 
         self.f
             .seek(SeekFrom::Start(offset))
             .and_then(|_| self.f.write_all(&key))
-            .and_then(|_| self.f.write_all(&data))
-            .map_err(Error::from)?;
+            .and_then(|_| self.f.write_all(&data))?;
 
         let bucket_elem = BucketElement::new(&key, &data, offset);
         self.cache_load_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash))?;
@@ -706,7 +697,6 @@ impl Gdbm {
     ) -> Result<Option<Vec<u8>>> {
         let key = key.into();
         self.writeable()
-            .map_err(Error::from)
             .and_then(|_| self.remove(key.as_ref()))
             .and_then(|oldkey| {
                 self.int_insert(key.into_vec(), value.into().into_vec())
@@ -715,7 +705,7 @@ impl Gdbm {
     }
 
     pub fn try_insert(&mut self, key: Vec<u8>, data: Vec<u8>) -> Result<(bool, Option<Vec<u8>>)> {
-        self.writeable().map_err(Error::from).and_then(|_| {
+        self.writeable().and_then(|_| {
             self.get(&key).and_then(|olddata| match olddata {
                 Some(_) => Ok((false, olddata)),
                 _ => self.int_insert(key, data).map(|_| (true, None)),
@@ -796,7 +786,7 @@ impl Gdbm {
                 .convert_numsync(options.numsync)
                 .into_iter()
                 .try_for_each(|(offset, length)| self.free_record(offset, length))
-                .map_err(Error::from)
+                .map_err(Error::Io)
         })
     }
 }
@@ -905,11 +895,11 @@ impl<'a> Iterator for GDBMIterator<'a> {
                         |(offset, key_length, data_length)| match self.key_or_value {
                             KeyOrValue::Key => read_ofs(&mut self.db.f, offset, key_length)
                                 .map(|data| (data.to_vec(), vec![]))
-                                .map_err(Error::from),
+                                .map_err(Error::Io),
                             KeyOrValue::Value => {
                                 read_ofs(&mut self.db.f, offset + key_length as u64, data_length)
                                     .map(|data| (vec![], data.to_vec()))
-                                    .map_err(Error::from)
+                                    .map_err(Error::Io)
                             }
                             KeyOrValue::Both => {
                                 read_ofs(&mut self.db.f, offset, key_length + data_length)
@@ -917,7 +907,7 @@ impl<'a> Iterator for GDBMIterator<'a> {
                                         let (key, value) = data.split_at(key_length);
                                         (key.to_vec(), value.to_vec())
                                     })
-                                    .map_err(Error::from)
+                                    .map_err(Error::Io)
                             }
                         },
                     );

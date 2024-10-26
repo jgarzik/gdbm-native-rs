@@ -72,19 +72,19 @@ impl Header {
         file_size: u64,
         reader: &mut impl Read,
     ) -> Result<Self> {
-        let magic = Magic::from_reader(reader).map_err(Error::from)?;
-        let block_sz = read32(magic.endian(), reader).map_err(Error::from)?;
+        let magic = Magic::from_reader(reader)?;
+        let block_sz = read32(magic.endian(), reader)?;
         let dir_ofs = match magic.offset() {
-            Offset::Small => read32(magic.endian(), reader).map_err(Error::from)? as u64,
-            Offset::LFS => read64(magic.endian(), reader).map_err(Error::from)?,
+            Offset::Small => read32(magic.endian(), reader)? as u64,
+            Offset::LFS => read64(magic.endian(), reader)?,
         };
-        let dir_sz = read32(magic.endian(), reader).map_err(Error::from)?;
-        let dir_bits = read32(magic.endian(), reader).map_err(Error::from)?;
-        let bucket_sz = read32(magic.endian(), reader).map_err(Error::from)?;
-        let bucket_elems = read32(magic.endian(), reader).map_err(Error::from)?;
+        let dir_sz = read32(magic.endian(), reader)?;
+        let dir_bits = read32(magic.endian(), reader)?;
+        let bucket_sz = read32(magic.endian(), reader)?;
+        let bucket_elems = read32(magic.endian(), reader)?;
         let next_block = match magic.offset() {
-            Offset::Small => read32(magic.endian(), reader).map_err(Error::from)? as u64,
-            Offset::LFS => read64(magic.endian(), reader).map_err(Error::from)?,
+            Offset::Small => read32(magic.endian(), reader)? as u64,
+            Offset::LFS => read64(magic.endian(), reader)?,
         };
         let numsync = magic
             .is_numsync()
@@ -256,7 +256,7 @@ impl Header {
 
 fn read_numsync(endian: Endian, reader: &mut impl Read) -> Result<u32> {
     (0..8)
-        .map(|_| read32(endian, reader).map_err(Error::from))
+        .map(|_| read32(endian, reader).map_err(Error::Io))
         .collect::<Result<Vec<_>>>()
         .and_then(|ext| match ext[0] {
             0 => Ok(ext[1]),
