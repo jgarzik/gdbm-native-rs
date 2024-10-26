@@ -44,6 +44,13 @@ pub enum Error {
         /// Minimum is sizeof header.
         minimum: u32,
     },
+    /// Next block offset in header is greater than file size.
+    BadHeaderNextBlock {
+        /// Next block from header.
+        next_block: u64,
+        /// Database file size.
+        file_size: u64,
+    },
 }
 
 impl Display for Error {

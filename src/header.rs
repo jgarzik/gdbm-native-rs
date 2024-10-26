@@ -108,10 +108,10 @@ impl Header {
         }
 
         if next_block < file_size {
-            return Err(Error::Io(io::Error::new(
-                ErrorKind::Other,
-                "needs recovery",
-            )));
+            return Err(Error::BadHeaderNextBlock {
+                next_block,
+                file_size,
+            });
         }
 
         if !(dir_ofs > 0
