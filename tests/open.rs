@@ -258,7 +258,7 @@ fn api_open_cachesize() {
         .and_then(|mut db| {
             (0..RECORD_COUNT)
                 .try_for_each(|n| {
-                    db.insert(n.to_be_bytes().to_vec(), vec![])
+                    db.insert(n, vec![])
                         .map(|_| ())
                         .map_err(|e| format!("insert failed: {}", e))
                 })
@@ -284,7 +284,7 @@ fn api_open_cachesize() {
         .map_err(|e| format!("read open failed: {}", e))
         .and_then(|mut db| {
             (0..RECORD_COUNT).try_for_each(|n| {
-                db.get(&n.to_be_bytes())
+                db.get(&n)
                     .map_err(|e| e.to_string())
                     .and_then(|v| {
                         (v == Some(vec![]))

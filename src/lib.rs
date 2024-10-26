@@ -18,6 +18,7 @@ use std::{
 
 mod avail;
 mod bucket;
+pub mod bytes;
 pub mod dir;
 mod hashutil;
 mod header;
@@ -27,6 +28,7 @@ pub mod ser;
 
 use avail::AvailBlock;
 use bucket::{Bucket, BucketCache, BucketElement};
+use bytes::{Bytes, BytesRef};
 use dir::{build_dir_size, Directory};
 use hashutil::{bucket_dir, key_loc, PartialKey};
 use header::Header;
@@ -201,7 +203,7 @@ impl Gdbm {
         Ok(())
     }
 
-    fn export_ascii_datum(outf: &mut std::fs::File, bindata: &[u8]) -> io::Result<()> {
+    fn export_ascii_datum(outf: &mut std::fs::File, bindata: Vec<u8>) -> io::Result<()> {
         const MAX_DUMP_LINE_LEN: usize = 76;
 
         writeln!(outf, "#:len={}", bindata.len())?;
@@ -224,8 +226,8 @@ impl Gdbm {
     fn export_ascii_records(&mut self, outf: &mut std::fs::File) -> io::Result<usize> {
         self.iter().try_fold(0, |count, kv| {
             kv.and_then(|(key, value)| {
-                Self::export_ascii_datum(outf, &key)
-                    .and_then(|_| Self::export_ascii_datum(outf, &value))
+                Self::export_ascii_datum(outf, key)
+                    .and_then(|_| Self::export_ascii_datum(outf, value))
                     .map(|_| count + 1)
             })
         })
@@ -264,7 +266,7 @@ impl Gdbm {
     fn export_bin_datum(
         outf: &mut std::fs::File,
         alignment: Alignment,
-        bindata: &[u8],
+        bindata: Vec<u8>,
     ) -> io::Result<()> {
         // write metadata:  big-endian datum size, 32b or 64b
         match alignment {
@@ -273,7 +275,7 @@ impl Gdbm {
         }
 
         // write datum
-        outf.write_all(bindata)?;
+        outf.write_all(&bindata)?;
 
         Ok(())
     }
@@ -285,8 +287,8 @@ impl Gdbm {
     ) -> io::Result<()> {
         self.iter().try_for_each(|kv| {
             kv.and_then(|(key, value)| {
-                Self::export_bin_datum(outf, alignment, &key)
-                    .and_then(|_| Self::export_bin_datum(outf, alignment, &value))
+                Self::export_bin_datum(outf, alignment, key)
+                    .and_then(|_| Self::export_bin_datum(outf, alignment, value))
             })
         })
     }
@@ -369,18 +371,26 @@ impl Gdbm {
     }
 
     // API: get an iterator over values
-    pub fn values(&mut self) -> impl std::iter::Iterator<Item = io::Result<Vec<u8>>> + '_ {
-        GDBMIterator::new(self, KeyOrValue::Value).map(|data| data.map(|(_, value)| value))
+    pub fn values<V: From<Bytes>>(
+        &mut self,
+    ) -> impl std::iter::Iterator<Item = io::Result<V>> + '_ {
+        GDBMIterator::new(self, KeyOrValue::Value)
+            .map(|data| data.map(|(_, value)| Bytes::from(value).into()))
     }
 
     // API: get an iterator over keys
-    pub fn keys(&mut self) -> impl std::iter::Iterator<Item = io::Result<Vec<u8>>> + '_ {
-        GDBMIterator::new(self, KeyOrValue::Key).map(|data| data.map(|(key, _)| key))
+    pub fn keys<K: From<Bytes>>(&mut self) -> impl std::iter::Iterator<Item = io::Result<K>> + '_ {
+        GDBMIterator::new(self, KeyOrValue::Key)
+            .map(|data| data.map(|(key, _)| Bytes::from(key).into()))
     }
 
     // API: get an iterator
-    pub fn iter(&mut self) -> impl std::iter::Iterator<Item = io::Result<(Vec<u8>, Vec<u8>)>> + '_ {
-        GDBMIterator::new(self, KeyOrValue::Both)
+    pub fn iter<K: From<Bytes>, V: From<Bytes>>(
+        &mut self,
+    ) -> impl std::iter::Iterator<Item = io::Result<(K, V)>> + '_ {
+        GDBMIterator::new(self, KeyOrValue::Both).map(|data| {
+            data.map(|(key, value)| (Bytes::from(key).into(), Bytes::from(value).into()))
+        })
     }
 
     // API: does key exist?
@@ -433,11 +443,14 @@ impl Gdbm {
     }
 
     // API: Fetch record value, given a key
-    pub fn get(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
-        let get_opt = self.int_get(key)?;
+    pub fn get<'a, K: Into<BytesRef<'a>>, V: From<Bytes>>(
+        &mut self,
+        key: K,
+    ) -> io::Result<Option<V>> {
+        let get_opt = self.int_get(key.into().as_ref())?;
         match get_opt {
             None => Ok(None),
-            Some(data) => Ok(Some(data.1)),
+            Some(data) => Ok(Some(Bytes::from(data.1).into())),
         }
     }
 
@@ -587,10 +600,10 @@ impl Gdbm {
     }
 
     // API: remove a key/value pair from db, given a key
-    pub fn remove(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+    pub fn remove<'a, K: Into<BytesRef<'a>>>(&mut self, key: K) -> io::Result<Option<Vec<u8>>> {
         self.writeable()?;
 
-        let get_opt = self.int_get(key)?;
+        let get_opt = self.int_get(key.into().as_ref())?;
         if get_opt.is_none() {
             return Ok(None);
         }
@@ -658,10 +671,18 @@ impl Gdbm {
         Ok(())
     }
 
-    pub fn insert(&mut self, key: Vec<u8>, data: Vec<u8>) -> io::Result<Option<Vec<u8>>> {
+    pub fn insert<K: Into<Bytes>, V: Into<Bytes>>(
+        &mut self,
+        key: K,
+        value: V,
+    ) -> io::Result<Option<Vec<u8>>> {
+        let key = key.into();
         self.writeable()
-            .and_then(|_| self.remove(&key))
-            .and_then(|oldkey| self.int_insert(key, data).map(|_| oldkey))
+            .and_then(|_| self.remove(key.as_ref()))
+            .and_then(|oldkey| {
+                self.int_insert(key.into_vec(), value.into().into_vec())
+                    .map(|_| oldkey)
+            })
     }
 
     pub fn try_insert(

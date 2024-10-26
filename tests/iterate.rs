@@ -26,15 +26,15 @@ fn api_iter() {
                 .metadata
                 .data
                 .iter()
-                .map(|kv| (kv[0].as_bytes().to_vec(), kv[1].as_bytes().to_vec()))
+                .map(|kv| (kv[0].clone(), kv[1].clone()))
                 .collect::<HashMap<_, _>>();
 
             Gdbm::open(&test.db_path, &test.ro_cfg())
                 .map_err(|e| e.to_string())
                 .and_then(|mut db| {
-                    db.iter().try_for_each(|kv| {
+                    db.iter::<String, String>().try_for_each(|kv| {
                         kv.map_err(|e| e.to_string()).and_then(|(k, v)| {
-                            (keys_and_values.remove(&k.to_vec()) == Some(v))
+                            (keys_and_values.remove(&k) == Some(v))
                                 .then_some(())
                                 .ok_or_else(|| format!("key {:?} not in metadata", k))
                         })
@@ -60,15 +60,15 @@ fn api_keys() {
                 .metadata
                 .data
                 .iter()
-                .map(|kv| (kv[0].as_bytes().to_vec()))
+                .map(|kv| kv[0].clone())
                 .collect::<HashSet<_>>();
 
             Gdbm::open(&test.db_path, &test.ro_cfg())
                 .map_err(|e| e.to_string())
                 .and_then(|mut db| {
-                    db.keys().try_for_each(|kv| {
+                    db.keys::<String>().try_for_each(|kv| {
                         kv.map_err(|e| e.to_string()).and_then(|k| {
-                            keys.remove(&k.to_vec())
+                            keys.remove(&k)
                                 .then_some(())
                                 .ok_or_else(|| format!("key {:?} not in metadata", k))
                         })
@@ -93,16 +93,16 @@ fn api_values() {
                 .metadata
                 .data
                 .iter()
-                .map(|kv| (kv[1].as_bytes().to_vec()))
+                .map(|kv| kv[1].clone())
                 .collect::<HashSet<_>>();
 
             Gdbm::open(&test.db_path, &test.ro_cfg())
                 .map_err(|e| e.to_string())
                 .and_then(|mut db| {
-                    db.values().try_for_each(|kv| {
+                    db.values::<String>().try_for_each(|kv| {
                         kv.map_err(|e| e.to_string()).and_then(|k| {
                             values
-                                .remove(&k.to_vec())
+                                .remove(&k)
                                 .then_some(())
                                 .ok_or_else(|| format!("value {:?} not in metadata", k))
                         })
