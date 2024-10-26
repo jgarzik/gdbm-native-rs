@@ -147,16 +147,19 @@ impl Header {
             });
         }
 
-        if avail
-            .elems
-            .iter()
-            .any(|elem| elem.addr < bucket_sz as u64 || elem.addr + elem.sz as u64 > next_block)
-        {
-            return Err(Error::Io(io::Error::new(
-                ErrorKind::Other,
-                "bad header: avail el",
-            )));
-        }
+        avail.elems.iter().enumerate().try_for_each(|(i, elem)| {
+            if elem.addr < block_sz as u64 || elem.addr + elem.sz as u64 > file_size {
+                Err(Error::BadAvailElem {
+                    block_offset: Self::sizeof(&layout, magic.is_numsync(), 0) as u64,
+                    elem: i,
+                    offset: elem.addr,
+                    size: elem.sz,
+                    file_size,
+                })
+            } else {
+                Ok(())
+            }
+        })?;
 
         if block_sz < Self::sizeof(&layout, magic.is_numsync(), avail.sz) {
             return Err(Error::Io(io::Error::new(

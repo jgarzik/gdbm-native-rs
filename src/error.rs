@@ -80,6 +80,19 @@ pub enum Error {
     },
     /// Bucket elements in header inconsistent with bucket size.
     BadHeaderBucketElems { elems: u32, expected: u32 },
+    /// Free space offset is outside of file.
+    BadAvailElem {
+        /// Start of the avail block in the file.
+        block_offset: u64,
+        /// Elem number.
+        elem: usize,
+        /// Offset of free space.
+        offset: u64,
+        /// Size of free space.
+        size: u32,
+        /// File size.
+        file_size: u64,
+    },
 }
 
 impl Display for Error {
