@@ -51,6 +51,15 @@ pub enum Error {
         /// Database file size.
         file_size: u64,
     },
+    /// Directory offset + size in header puts it outside the file.
+    BadHeaderDirectoryOffset {
+        /// Directory offset from header.
+        offset: u64,
+        /// Directory sise from header.
+        size: u32,
+        /// Database file size.
+        file_size: u64,
+    },
 }
 
 impl Display for Error {

@@ -114,15 +114,12 @@ impl Header {
             });
         }
 
-        if !(dir_ofs > 0
-            && dir_ofs < file_size
-            && dir_sz > 0
-            && dir_ofs + (dir_sz as u64) < file_size)
-        {
-            return Err(Error::Io(io::Error::new(
-                ErrorKind::Other,
-                "bad header: dir",
-            )));
+        if dir_ofs + dir_sz as u64 > file_size {
+            return Err(Error::BadHeaderDirectoryOffset {
+                offset: dir_ofs,
+                size: dir_sz,
+                file_size,
+            });
         }
 
         let (ck_dir_sz, _ck_dir_bits) = build_dir_size(layout.offset, block_sz);
