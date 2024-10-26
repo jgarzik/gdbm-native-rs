@@ -165,8 +165,7 @@ impl Gdbm {
                 (header, dir, Some((bucket_offset, bucket)))
             }
             _ => {
-                let header = Header::from_reader(&dbcfg.alignment, metadata.len(), &mut f)
-                    .map_err(Error::Io)?;
+                let header = Header::from_reader(&dbcfg.alignment, metadata.len(), &mut f)?;
                 f.seek(SeekFrom::Start(header.dir_ofs)).map_err(Error::Io)?;
                 let dir = Directory::from_reader(&header.layout, header.dir_sz, &mut f)
                     .map_err(Error::Io)?;

@@ -15,6 +15,7 @@ use crate::bucket::{Bucket, BucketElement};
 use crate::dir::build_dir_size;
 use crate::magic::Magic;
 use crate::ser::{read32, read64, write32, write64, Alignment, Endian, Layout, Offset};
+use crate::{Error, Result};
 
 #[derive(Debug)]
 pub struct Header {
@@ -68,24 +69,22 @@ impl Header {
 
     pub fn from_reader(
         alignment: &Option<Alignment>,
-        length: u64,
+        file_size: u64,
         reader: &mut impl Read,
-    ) -> io::Result<Self> {
-        let file_sz = length;
-
-        let magic = Magic::from_reader(reader)?;
-        let block_sz = read32(magic.endian(), reader)?;
+    ) -> Result<Self> {
+        let magic = Magic::from_reader(reader).map_err(Error::from)?;
+        let block_sz = read32(magic.endian(), reader).map_err(Error::from)?;
         let dir_ofs = match magic.offset() {
-            Offset::Small => read32(magic.endian(), reader)? as u64,
-            Offset::LFS => read64(magic.endian(), reader)?,
+            Offset::Small => read32(magic.endian(), reader).map_err(Error::from)? as u64,
+            Offset::LFS => read64(magic.endian(), reader).map_err(Error::from)?,
         };
-        let dir_sz = read32(magic.endian(), reader)?;
-        let dir_bits = read32(magic.endian(), reader)?;
-        let bucket_sz = read32(magic.endian(), reader)?;
-        let bucket_elems = read32(magic.endian(), reader)?;
+        let dir_sz = read32(magic.endian(), reader).map_err(Error::from)?;
+        let dir_bits = read32(magic.endian(), reader).map_err(Error::from)?;
+        let bucket_sz = read32(magic.endian(), reader).map_err(Error::from)?;
+        let bucket_elems = read32(magic.endian(), reader).map_err(Error::from)?;
         let next_block = match magic.offset() {
-            Offset::Small => read32(magic.endian(), reader)? as u64,
-            Offset::LFS => read64(magic.endian(), reader)?,
+            Offset::Small => read32(magic.endian(), reader).map_err(Error::from)? as u64,
+            Offset::LFS => read64(magic.endian(), reader).map_err(Error::from)?,
         };
         let numsync = magic
             .is_numsync()
@@ -102,34 +101,58 @@ impl Header {
 
         // Block must be big enough for header and avail table with two elements.
         if block_sz < Self::sizeof(&layout, magic.is_numsync(), 2) {
-            return Err(io::Error::new(ErrorKind::Other, "bad header: blksz"));
+            return Err(Error::Io(io::Error::new(
+                ErrorKind::Other,
+                "bad header: blksz",
+            )));
         }
 
-        if next_block < file_sz {
-            return Err(io::Error::new(ErrorKind::Other, "needs recovery"));
+        if next_block < file_size {
+            return Err(Error::Io(io::Error::new(
+                ErrorKind::Other,
+                "needs recovery",
+            )));
         }
 
-        if !(dir_ofs > 0 && dir_ofs < file_sz && dir_sz > 0 && dir_ofs + (dir_sz as u64) < file_sz)
+        if !(dir_ofs > 0
+            && dir_ofs < file_size
+            && dir_sz > 0
+            && dir_ofs + (dir_sz as u64) < file_size)
         {
-            return Err(io::Error::new(ErrorKind::Other, "bad header: dir"));
+            return Err(Error::Io(io::Error::new(
+                ErrorKind::Other,
+                "bad header: dir",
+            )));
         }
 
         let (ck_dir_sz, _ck_dir_bits) = build_dir_size(layout.offset, block_sz);
         if dir_sz < ck_dir_sz {
-            return Err(io::Error::new(ErrorKind::Other, "bad header: dir sz"));
+            return Err(Error::Io(io::Error::new(
+                ErrorKind::Other,
+                "bad header: dir sz",
+            )));
         }
 
         let (_ck_dir_sz, ck_dir_bits) = build_dir_size(layout.offset, dir_sz);
         if dir_bits != ck_dir_bits {
-            return Err(io::Error::new(ErrorKind::Other, "bad header: dir bits"));
+            return Err(Error::Io(io::Error::new(
+                ErrorKind::Other,
+                "bad header: dir bits",
+            )));
         }
 
         if bucket_sz <= Bucket::sizeof(&layout) {
-            return Err(io::Error::new(ErrorKind::Other, "bad header: bucket sz"));
+            return Err(Error::Io(io::Error::new(
+                ErrorKind::Other,
+                "bad header: bucket sz",
+            )));
         }
 
         if bucket_elems != (bucket_sz - Bucket::sizeof(&layout)) / BucketElement::sizeof(&layout) {
-            return Err(io::Error::new(ErrorKind::Other, "bad header: bucket elem"));
+            return Err(Error::Io(io::Error::new(
+                ErrorKind::Other,
+                "bad header: bucket elem",
+            )));
         }
 
         if avail
@@ -137,18 +160,25 @@ impl Header {
             .iter()
             .any(|elem| elem.addr < bucket_sz as u64 || elem.addr + elem.sz as u64 > next_block)
         {
-            return Err(io::Error::new(ErrorKind::Other, "bad header: avail el"));
+            return Err(Error::Io(io::Error::new(
+                ErrorKind::Other,
+                "bad header: avail el",
+            )));
         }
 
         if block_sz < Self::sizeof(&layout, magic.is_numsync(), avail.sz) {
-            return Err(io::Error::new(ErrorKind::Other, "bad header: avail sz"));
+            return Err(Error::Io(io::Error::new(
+                ErrorKind::Other,
+                "bad header: avail sz",
+            )));
         }
 
         if !(avail.sz > 1 && avail.elems.len() as u32 <= avail.sz) {
-            return Err(io::Error::new(ErrorKind::Other, "bad header: avail sz/ct"));
+            return Err(Error::Io(io::Error::new(
+                ErrorKind::Other,
+                "bad header: avail sz/ct",
+            )));
         }
-
-        println!("magname {}", magic);
 
         Ok(Header {
             magic,
