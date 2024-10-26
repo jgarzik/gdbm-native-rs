@@ -238,18 +238,14 @@ impl Header {
 
     // convert_numsync converts the header to numsync and retuns a list of
     // offset/length pairs that need to be freed (because avail is shortened).
-    pub fn convert_numsync(&mut self, use_numsync: bool) -> io::Result<Vec<(u64, u32)>> {
+    pub fn convert_numsync(&mut self, use_numsync: bool) -> Vec<(u64, u32)> {
         let new_avail_sz = (self.block_sz - Self::sizeof(&self.layout, use_numsync, 0))
             / AvailElem::sizeof(&self.layout);
 
-        (new_avail_sz > 1)
-            .then(|| {
-                self.magic = Magic::new(self.magic.endian(), self.magic.offset(), use_numsync);
-                self.numsync = None;
-                self.dirty = true;
-                self.avail.resize(new_avail_sz)
-            })
-            .ok_or_else(|| io::Error::new(ErrorKind::Other, "blocksize too small for numsync"))
+        self.magic = Magic::new(self.magic.endian(), self.magic.offset(), use_numsync);
+        self.numsync = None;
+        self.dirty = true;
+        self.avail.resize(new_avail_sz)
     }
 
     pub fn allocate(&mut self, size: u32) -> Option<(u64, u32)> {

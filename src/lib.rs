@@ -792,9 +792,9 @@ impl Gdbm {
     // API: convert
     pub fn convert(&mut self, options: &ConvertOptions) -> Result<()> {
         self.writeable()
-            .and_then(|_| self.header.convert_numsync(options.numsync))
-            .and_then(|blocks_to_free| {
-                blocks_to_free
+            .and_then(|_| {
+                self.header
+                    .convert_numsync(options.numsync)
                     .into_iter()
                     .try_for_each(|(offset, length)| self.free_record(offset, length))
             })
