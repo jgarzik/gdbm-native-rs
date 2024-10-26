@@ -337,16 +337,31 @@ impl Gdbm {
     }
 
     // read bucket into bucket cache.
-    fn cache_load_bucket(&mut self, bucket_dir: usize) -> io::Result<&Bucket> {
+    fn cache_load_bucket(&mut self, bucket_dir: usize) -> Result<&Bucket> {
         let offset = self.dir.dir[bucket_dir];
 
         if !self.bucket_cache.contains(offset) {
-            self.f.seek(SeekFrom::Start(offset))?;
-            let bucket = Bucket::from_reader(&self.header, &self.header.layout, &mut self.f)?;
+            self.f.seek(SeekFrom::Start(offset)).map_err(Error::from)?;
+            let bucket =
+                Bucket::from_reader(self.header.bucket_elems, &self.header.layout, &mut self.f)
+                    .map_err(Error::from)?;
+
+            if bucket.count > self.header.bucket_elems || bucket.bits > self.header.dir_bits {
+                return Err(Error::BadBucket {
+                    offset,
+                    elems: bucket.count,
+                    bits: bucket.bits,
+                    max_elems: self.header.bucket_elems,
+                    dir_bits: self.header.dir_bits,
+                });
+            }
+
             if let Some((evicted_offset, evicted_bucket)) = self.bucket_cache.insert(offset, bucket)
             {
-                self.f.seek(SeekFrom::Start(evicted_offset))?;
-                evicted_bucket.serialize(&self.header.layout, &mut self.f)?;
+                self.f
+                    .seek(SeekFrom::Start(evicted_offset))
+                    .and_then(|_| evicted_bucket.serialize(&self.header.layout, &mut self.f))
+                    .map_err(Error::from)?;
             }
         }
 
@@ -380,7 +395,7 @@ impl Gdbm {
         let mut cur_dir: usize = 0;
         let dir_max_elem = self.dir.dir.len();
         while cur_dir < dir_max_elem {
-            len += self.cache_load_bucket(cur_dir).map_err(Error::Io)?.count as usize;
+            len += self.cache_load_bucket(cur_dir)?.count as usize;
             cur_dir = self.next_bucket_dir(cur_dir);
         }
 
@@ -410,13 +425,11 @@ impl Gdbm {
 
     // API: does key exist?
     pub fn contains_key(&mut self, key: &[u8]) -> Result<bool> {
-        self.int_get(key)
-            .map(|result| result.is_some())
-            .map_err(Error::Io)
+        self.int_get(key).map(|result| result.is_some())
     }
 
     // retrieve record data, and element offset in bucket, for given key
-    fn int_get(&mut self, key: &[u8]) -> io::Result<Option<(usize, Vec<u8>)>> {
+    fn int_get(&mut self, key: &[u8]) -> Result<Option<(usize, Vec<u8>)>> {
         let (key_hash, bucket_dir, elem_ofs) =
             key_loc(self.header.dir_bits, self.header.bucket_elems, key);
         let key_start = PartialKey::new(key);
@@ -457,7 +470,7 @@ impl Gdbm {
 
     // API: Fetch record value, given a key
     pub fn get<'a, K: Into<BytesRef<'a>>, V: From<Bytes>>(&mut self, key: K) -> Result<Option<V>> {
-        let get_opt = self.int_get(key.into().as_ref()).map_err(Error::Io)?;
+        let get_opt = self.int_get(key.into().as_ref())?;
         match get_opt {
             None => Ok(None),
             Some(data) => Ok(Some(Bytes::from(data.1).into())),
@@ -612,7 +625,7 @@ impl Gdbm {
     pub fn remove<'a, K: Into<BytesRef<'a>>>(&mut self, key: K) -> Result<Option<Vec<u8>>> {
         self.writeable().map_err(Error::Io)?;
 
-        let get_opt = self.int_get(key.into().as_ref()).map_err(Error::Io)?;
+        let get_opt = self.int_get(key.into().as_ref())?;
 
         if get_opt.is_none() {
             return Ok(None);
@@ -660,11 +673,16 @@ impl Gdbm {
         Ok(offset)
     }
 
-    fn int_insert(&mut self, key: Vec<u8>, data: Vec<u8>) -> io::Result<()> {
-        let offset = self.allocate_record((key.len() + data.len()) as u32)?;
-        self.f.seek(SeekFrom::Start(offset))?;
-        self.f.write_all(&key)?;
-        self.f.write_all(&data)?;
+    fn int_insert(&mut self, key: Vec<u8>, data: Vec<u8>) -> Result<()> {
+        let offset = self
+            .allocate_record((key.len() + data.len()) as u32)
+            .map_err(Error::from)?;
+
+        self.f
+            .seek(SeekFrom::Start(offset))
+            .and_then(|_| self.f.write_all(&key))
+            .and_then(|_| self.f.write_all(&data))
+            .map_err(Error::from)?;
 
         let bucket_elem = BucketElement::new(&key, &data, offset);
         self.cache_load_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash))?;
@@ -689,23 +707,19 @@ impl Gdbm {
     ) -> Result<Option<Vec<u8>>> {
         let key = key.into();
         self.writeable()
-            .map_err(Error::Io)
+            .map_err(Error::from)
             .and_then(|_| self.remove(key.as_ref()))
             .and_then(|oldkey| {
                 self.int_insert(key.into_vec(), value.into().into_vec())
                     .map(|_| oldkey)
-                    .map_err(Error::Io)
             })
     }
 
     pub fn try_insert(&mut self, key: Vec<u8>, data: Vec<u8>) -> Result<(bool, Option<Vec<u8>>)> {
-        self.writeable().map_err(Error::Io).and_then(|_| {
+        self.writeable().map_err(Error::from).and_then(|_| {
             self.get(&key).and_then(|olddata| match olddata {
                 Some(_) => Ok((false, olddata)),
-                _ => self
-                    .int_insert(key, data)
-                    .map(|_| (true, None))
-                    .map_err(Error::Io),
+                _ => self.int_insert(key, data).map(|_| (true, None)),
             })
         })
     }
@@ -792,7 +806,7 @@ impl Gdbm {
 struct GDBMIterator<'a> {
     key_or_value: KeyOrValue,
     db: &'a mut Gdbm,
-    slot: Option<io::Result<Slot>>,
+    slot: Option<Result<Slot>>,
 }
 
 enum KeyOrValue {
@@ -828,7 +842,7 @@ impl<'a> GDBMIterator<'a> {
         }
     }
 
-    fn next_occupied_slot(db: &mut Gdbm, slot: Slot) -> Option<io::Result<Slot>> {
+    fn next_occupied_slot(db: &mut Gdbm, slot: Slot) -> Option<Result<Slot>> {
         let mut next_slot = Self::next_slot(db, slot);
         while let Some(slot) = next_slot {
             let is_occupied = db
@@ -877,7 +891,7 @@ impl<'a> Iterator for GDBMIterator<'a> {
         let slot = self.slot.take();
         match slot {
             None => None,
-            Some(Err(e)) => Some(Err(Error::Io(e))),
+            Some(Err(e)) => Some(Err(e)),
             Some(Ok(slot)) => {
                 let data = self
                     .db
@@ -892,18 +906,20 @@ impl<'a> Iterator for GDBMIterator<'a> {
                     .and_then(
                         |(offset, key_length, data_length)| match self.key_or_value {
                             KeyOrValue::Key => read_ofs(&mut self.db.f, offset, key_length)
-                                .map(|data| (data.to_vec(), vec![])),
+                                .map(|data| (data.to_vec(), vec![]))
+                                .map_err(Error::from),
                             KeyOrValue::Value => {
                                 read_ofs(&mut self.db.f, offset + key_length as u64, data_length)
                                     .map(|data| (vec![], data.to_vec()))
+                                    .map_err(Error::from)
                             }
                             KeyOrValue::Both => {
-                                read_ofs(&mut self.db.f, offset, key_length + data_length).map(
-                                    |data| {
+                                read_ofs(&mut self.db.f, offset, key_length + data_length)
+                                    .map(|data| {
                                         let (key, value) = data.split_at(key_length);
                                         (key.to_vec(), value.to_vec())
-                                    },
-                                )
+                                    })
+                                    .map_err(Error::from)
                             }
                         },
                     );
@@ -913,7 +929,7 @@ impl<'a> Iterator for GDBMIterator<'a> {
                         self.slot = Self::next_occupied_slot(self.db, slot);
                         Some(Ok(data))
                     }
-                    Err(e) => Some(Err(Error::Io(e))),
+                    Err(e) => Some(Err(e)),
                 }
             }
         }
