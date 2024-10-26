@@ -71,6 +71,13 @@ pub enum Error {
         /// Expected bits calculated from header directory size.
         expected_bits: u32,
     },
+    /// Bucket size in header is impossibly small.
+    BadHeaderBucketSize {
+        /// Size found in header.
+        size: u32,
+        /// Minimum is sizeof bucket header and one bucket element.
+        minimum: u32,
+    },
 }
 
 impl Display for Error {

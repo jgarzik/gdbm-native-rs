@@ -133,11 +133,11 @@ impl Header {
             });
         }
 
-        if bucket_sz <= Bucket::sizeof(&layout) {
-            return Err(Error::Io(io::Error::new(
-                ErrorKind::Other,
-                "bad header: bucket sz",
-            )));
+        if bucket_sz < Bucket::sizeof(&layout) + BucketElement::sizeof(&layout) {
+            return Err(Error::BadHeaderBucketSize {
+                size: bucket_sz,
+                minimum: Bucket::sizeof(&layout) + BucketElement::sizeof(&layout),
+            });
         }
 
         if bucket_elems != (bucket_sz - Bucket::sizeof(&layout)) / BucketElement::sizeof(&layout) {
