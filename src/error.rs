@@ -93,6 +93,15 @@ pub enum Error {
         /// File size.
         file_size: u64,
     },
+    /// Avail size is 0 or blocksize in header not sufficient for header + available block.
+    BadHeaderAvail {
+        /// Number of avail elements per block in header.
+        elems: u32,
+        /// Size in bytes of avail block.
+        size: u32,
+        /// Block size.
+        block_size: u32,
+    },
 }
 
 impl Display for Error {

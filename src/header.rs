@@ -161,11 +161,12 @@ impl Header {
             }
         })?;
 
-        if block_sz < Self::sizeof(&layout, magic.is_numsync(), avail.sz) {
-            return Err(Error::Io(io::Error::new(
-                ErrorKind::Other,
-                "bad header: avail sz",
-            )));
+        if avail.sz == 0 || block_sz < Self::sizeof(&layout, magic.is_numsync(), avail.sz) {
+            return Err(Error::BadHeaderAvail {
+                elems: avail.sz,
+                size: Self::sizeof(&layout, magic.is_numsync(), avail.sz),
+                block_size: block_sz,
+            });
         }
 
         if !(avail.sz > 1 && avail.elems.len() as u32 <= avail.sz) {
