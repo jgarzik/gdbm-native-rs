@@ -8,13 +8,14 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
-use std::io::{self, Error, ErrorKind, Read, Write};
+use std::io::{self, Read, Write};
 
 use crate::avail::{AvailBlock, AvailElem};
 use crate::bucket::{Bucket, BucketElement};
 use crate::dir::build_dir_size;
 use crate::magic::Magic;
 use crate::ser::{read32, read64, write32, write64, Alignment, Endian, Layout, Offset};
+use crate::{Error, Result};
 
 #[derive(Debug)]
 pub struct Header {
@@ -68,11 +69,9 @@ impl Header {
 
     pub fn from_reader(
         alignment: &Option<Alignment>,
-        length: u64,
+        file_size: u64,
         reader: &mut impl Read,
-    ) -> io::Result<Self> {
-        let file_sz = length;
-
+    ) -> Result<Self> {
         let magic = Magic::from_reader(reader)?;
         let block_sz = read32(magic.endian(), reader)?;
         let dir_ofs = match magic.offset() {
@@ -102,53 +101,80 @@ impl Header {
 
         // Block must be big enough for header and avail table with two elements.
         if block_sz < Self::sizeof(&layout, magic.is_numsync(), 2) {
-            return Err(Error::new(ErrorKind::Other, "bad header: blksz"));
+            return Err(Error::BadHeaderBlockSize {
+                size: block_sz,
+                minimum: Self::sizeof(&layout, magic.is_numsync(), 2),
+            });
         }
 
-        if next_block < file_sz {
-            return Err(Error::new(ErrorKind::Other, "needs recovery"));
+        if next_block < file_size {
+            return Err(Error::BadHeaderNextBlock {
+                next_block,
+                file_size,
+            });
         }
 
-        if !(dir_ofs > 0 && dir_ofs < file_sz && dir_sz > 0 && dir_ofs + (dir_sz as u64) < file_sz)
-        {
-            return Err(Error::new(ErrorKind::Other, "bad header: dir"));
+        if dir_ofs + dir_sz as u64 > file_size {
+            return Err(Error::BadHeaderDirectoryOffset {
+                offset: dir_ofs,
+                size: dir_sz,
+                file_size,
+            });
         }
 
-        let (ck_dir_sz, _ck_dir_bits) = build_dir_size(layout.offset, block_sz);
-        if dir_sz < ck_dir_sz {
-            return Err(Error::new(ErrorKind::Other, "bad header: dir sz"));
+        let (minimum_size, _) = build_dir_size(layout.offset, block_sz);
+        let (_, expected_bits) = build_dir_size(layout.offset, dir_sz);
+        if dir_sz < minimum_size || dir_bits != expected_bits {
+            return Err(Error::BadHeaderDirectory {
+                size: dir_sz,
+                bits: dir_bits,
+                minimum_size,
+                expected_bits,
+            });
         }
 
-        let (_ck_dir_sz, ck_dir_bits) = build_dir_size(layout.offset, dir_sz);
-        if dir_bits != ck_dir_bits {
-            return Err(Error::new(ErrorKind::Other, "bad header: dir bits"));
-        }
-
-        if bucket_sz <= Bucket::sizeof(&layout) {
-            return Err(Error::new(ErrorKind::Other, "bad header: bucket sz"));
+        if bucket_sz < Bucket::sizeof(&layout) + BucketElement::sizeof(&layout) {
+            return Err(Error::BadHeaderBucketSize {
+                size: bucket_sz,
+                minimum: Bucket::sizeof(&layout) + BucketElement::sizeof(&layout),
+            });
         }
 
         if bucket_elems != (bucket_sz - Bucket::sizeof(&layout)) / BucketElement::sizeof(&layout) {
-            return Err(Error::new(ErrorKind::Other, "bad header: bucket elem"));
+            return Err(Error::BadHeaderBucketElems {
+                elems: bucket_elems,
+                expected: (bucket_sz - Bucket::sizeof(&layout)) / BucketElement::sizeof(&layout),
+            });
         }
 
-        if avail
-            .elems
-            .iter()
-            .any(|elem| elem.addr < bucket_sz as u64 || elem.addr + elem.sz as u64 > next_block)
-        {
-            return Err(Error::new(ErrorKind::Other, "bad header: avail el"));
+        avail.elems.iter().enumerate().try_for_each(|(i, elem)| {
+            if elem.addr < block_sz as u64 || elem.addr + elem.sz as u64 > file_size {
+                Err(Error::BadAvailElem {
+                    block_offset: Self::sizeof(&layout, magic.is_numsync(), 0) as u64,
+                    elem: i,
+                    offset: elem.addr,
+                    size: elem.sz,
+                    file_size,
+                })
+            } else {
+                Ok(())
+            }
+        })?;
+
+        if avail.sz == 0 || block_sz < Self::sizeof(&layout, magic.is_numsync(), avail.sz) {
+            return Err(Error::BadHeaderAvail {
+                elems: avail.sz,
+                size: Self::sizeof(&layout, magic.is_numsync(), avail.sz),
+                block_size: block_sz,
+            });
         }
 
-        if block_sz < Self::sizeof(&layout, magic.is_numsync(), avail.sz) {
-            return Err(Error::new(ErrorKind::Other, "bad header: avail sz"));
+        if avail.elems.len() as u32 > avail.sz {
+            return Err(Error::BadHeaderAvailCount {
+                elems: avail.elems.len() as u32,
+                maximum: avail.sz,
+            });
         }
-
-        if !(avail.sz > 1 && avail.elems.len() as u32 <= avail.sz) {
-            return Err(Error::new(ErrorKind::Other, "bad header: avail sz/ct"));
-        }
-
-        println!("magname {}", magic);
 
         Ok(Header {
             magic,
@@ -208,18 +234,14 @@ impl Header {
 
     // convert_numsync converts the header to numsync and retuns a list of
     // offset/length pairs that need to be freed (because avail is shortened).
-    pub fn convert_numsync(&mut self, use_numsync: bool) -> io::Result<Vec<(u64, u32)>> {
+    pub fn convert_numsync(&mut self, use_numsync: bool) -> Vec<(u64, u32)> {
         let new_avail_sz = (self.block_sz - Self::sizeof(&self.layout, use_numsync, 0))
             / AvailElem::sizeof(&self.layout);
 
-        (new_avail_sz > 1)
-            .then(|| {
-                self.magic = Magic::new(self.magic.endian(), self.magic.offset(), use_numsync);
-                self.numsync = None;
-                self.dirty = true;
-                self.avail.resize(new_avail_sz)
-            })
-            .ok_or_else(|| Error::new(ErrorKind::Other, "blocksize too small for numsync"))
+        self.magic = Magic::new(self.magic.endian(), self.magic.offset(), use_numsync);
+        self.numsync = None;
+        self.dirty = true;
+        self.avail.resize(new_avail_sz)
     }
 
     pub fn allocate(&mut self, size: u32) -> Option<(u64, u32)> {
@@ -232,16 +254,13 @@ impl Header {
     }
 }
 
-fn read_numsync(endian: Endian, reader: &mut impl Read) -> io::Result<u32> {
+fn read_numsync(endian: Endian, reader: &mut impl Read) -> Result<u32> {
     (0..8)
-        .map(|_| read32(endian, reader))
-        .collect::<io::Result<Vec<_>>>()
+        .map(|_| read32(endian, reader).map_err(Error::Io))
+        .collect::<Result<Vec<_>>>()
         .and_then(|ext| match ext[0] {
             0 => Ok(ext[1]),
-            v => {
-                let s = format!("bad header: unsupported extended header version: {}", v);
-                Err(Error::new(ErrorKind::Other, s))
-            }
+            v => Err(Error::BadNumsyncVersion { version: v }),
         })
 }
 

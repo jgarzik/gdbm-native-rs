@@ -1,13 +1,10 @@
 extern crate gdbm_native;
 
 use gdbm_native::{
-    magic::Magic,
-    ser::{
-        Alignment::{Align32, Align64},
-        Endian::{Big, Little},
-        Offset::{Small, LFS},
-    },
-    Gdbm, GdbmOptions,
+    Alignment::{Align32, Align64},
+    Endian::{Big, Little},
+    Gdbm, GdbmOptions, Magic,
+    Offset::{Small, LFS},
 };
 use tempfile::NamedTempFile;
 
@@ -48,7 +45,7 @@ fn api_open_conflicting() {
         )
         .map_err(|e| e.to_string())
         .and_then(|_| Err("success".to_string()))
-        .or_else(|e| match e == "readonly conflicts with newdb or creat" {
+        .or_else(|e| match e == "ConflictingOpenOptions" {
             true if expected_arg_conflict => Ok(()),
             false if !expected_arg_conflict => Ok(()),
             _ => Err(format!(

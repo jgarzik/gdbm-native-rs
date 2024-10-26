@@ -9,11 +9,10 @@
 // SPDX-License-Identifier: MIT
 
 use std::collections::HashMap;
-use std::io::{self, Error, ErrorKind, Read, Write};
+use std::io::{self, Read, Write};
 
 use crate::avail::{self, AvailElem};
 use crate::hashutil::{hash_key, PartialKey};
-use crate::header::Header;
 use crate::ser::{read32, read64, write32, write64, Alignment, Layout, Offset};
 
 #[derive(Debug, Copy, Clone)]
@@ -127,11 +126,7 @@ impl Bucket {
         )
     }
 
-    pub fn from_reader(
-        header: &Header,
-        layout: &Layout,
-        reader: &mut impl Read,
-    ) -> io::Result<Self> {
+    pub fn from_reader(elems: u32, layout: &Layout, reader: &mut impl Read) -> io::Result<Self> {
         // read avail section
         let av_count = read32(layout.endian, reader)?;
 
@@ -155,12 +150,8 @@ impl Bucket {
         let bits = read32(layout.endian, reader)?;
         let count = read32(layout.endian, reader)?;
 
-        if !(count <= header.bucket_elems && bits <= header.dir_bits) {
-            return Err(Error::new(ErrorKind::Other, "invalid bucket c/b"));
-        }
-
         // read bucket elements section
-        let tab = (0..header.bucket_elems)
+        let tab = (0..elems)
             .map(|_| BucketElement::from_reader(layout, reader))
             .collect::<io::Result<Vec<_>>>()?;
 

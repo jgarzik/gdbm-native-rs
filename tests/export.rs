@@ -32,9 +32,11 @@ fn api_export_bin() {
                     OpenOptions::new()
                         .write(true)
                         .open(dumpfile.path())
+                        .map_err(|e| e.to_string())
                         .and_then(|mut f| {
                             Gdbm::open(&test.db_path, &test.ro_cfg())
                                 .and_then(|mut db| db.export_bin(&mut f, mode))
+                                .map_err(|e| e.to_string())
                         })
                         .unwrap();
 
@@ -74,9 +76,11 @@ fn api_export_ascii() {
         OpenOptions::new()
             .write(true)
             .open(dumpfile.path())
+            .map_err(|e| e.to_string())
             .and_then(|mut f| {
                 Gdbm::open(&testdb.db_path, &testdb.ro_cfg())
                     .and_then(|mut db| db.export_ascii(&mut f))
+                    .map_err(|e| e.to_string())
             })
             .unwrap();
 
