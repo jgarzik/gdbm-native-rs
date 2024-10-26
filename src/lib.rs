@@ -146,15 +146,15 @@ impl Gdbm {
                     layout.offset,
                     match dbcfg.block_size {
                         Some(size) if size >= 512 => size,
-                        _ => f.metadata().map_err(Error::Io)?.st_blksize() as u32,
+                        _ => f.metadata().map_err(Error::from)?.st_blksize() as u32,
                     },
                 );
 
                 if dbcfg.bsexact && Some(block_size) != dbcfg.block_size {
-                    return Err(Error::Io(io::Error::new(
-                        ErrorKind::Other,
-                        "no exact blocksize",
-                    )));
+                    return Err(Error::BadBlockSize {
+                        requested: dbcfg.block_size.unwrap_or(0),
+                        actual: block_size,
+                    });
                 }
 
                 let header = Header::new(block_size, &layout, dir_bits, dbcfg.numsync);

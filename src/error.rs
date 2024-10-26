@@ -21,6 +21,13 @@ pub enum Error {
     ConflictingOpenOptions,
     /// There is no data.
     EmptyFile,
+    /// Could not use supplied block size and bsexact was specified.
+    BadBlockSize {
+        /// Requested blocksize.
+        requested: u32,
+        /// Actual blocksize.
+        actual: u32,
+    },
     Corruption(String),
 }
 
