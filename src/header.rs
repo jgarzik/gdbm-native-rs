@@ -141,10 +141,10 @@ impl Header {
         }
 
         if bucket_elems != (bucket_sz - Bucket::sizeof(&layout)) / BucketElement::sizeof(&layout) {
-            return Err(Error::Io(io::Error::new(
-                ErrorKind::Other,
-                "bad header: bucket elem",
-            )));
+            return Err(Error::BadHeaderBucketElems {
+                elems: bucket_elems,
+                expected: (bucket_sz - Bucket::sizeof(&layout)) / BucketElement::sizeof(&layout),
+            });
         }
 
         if avail

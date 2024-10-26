@@ -78,6 +78,8 @@ pub enum Error {
         /// Minimum is sizeof bucket header and one bucket element.
         minimum: u32,
     },
+    /// Bucket elements in header inconsistent with bucket size.
+    BadHeaderBucketElems { elems: u32, expected: u32 },
 }
 
 impl Display for Error {
