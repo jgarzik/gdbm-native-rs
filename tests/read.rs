@@ -21,10 +21,10 @@ fn api_exists_not() {
 
     for testdb in tests {
         let mut db = Gdbm::open(&testdb.db_path, &testdb.ro_cfg()).unwrap();
-        assert!(!db.contains_key(b"dummy").unwrap());
+        assert!(!db.contains_key("dummy").unwrap());
 
         if testdb.is_basic {
-            assert!(!db.contains_key(b"key -111").unwrap());
+            assert!(!db.contains_key("key -111").unwrap());
         }
     }
 }

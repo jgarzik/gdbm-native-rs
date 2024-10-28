@@ -416,8 +416,9 @@ impl Gdbm {
     }
 
     // API: does key exist?
-    pub fn contains_key(&mut self, key: &[u8]) -> Result<bool> {
-        self.int_get(key).map(|result| result.is_some())
+    pub fn contains_key<'a, K: Into<BytesRef<'a>>>(&mut self, key: K) -> Result<bool> {
+        self.int_get(key.into().as_ref())
+            .map(|result| result.is_some())
     }
 
     // retrieve record data, and element offset in bucket, for given key
@@ -721,11 +722,18 @@ impl Gdbm {
             })
     }
 
-    pub fn try_insert(&mut self, key: Vec<u8>, data: Vec<u8>) -> Result<(bool, Option<Vec<u8>>)> {
+    pub fn try_insert<K: Into<Bytes>, V: Into<Bytes>>(
+        &mut self,
+        key: K,
+        value: V,
+    ) -> Result<(bool, Option<Vec<u8>>)> {
+        let key = key.into();
         self.writeable().and_then(|_| {
-            self.get(&key).and_then(|olddata| match olddata {
+            self.get(key.as_ref()).and_then(|olddata| match olddata {
                 Some(_) => Ok((false, olddata)),
-                _ => self.int_insert(key, data).map(|_| (true, None)),
+                _ => self
+                    .int_insert(key.into_vec(), value.into().into_vec())
+                    .map(|_| (true, None)),
             })
         })
     }
