@@ -353,9 +353,7 @@ impl Gdbm {
 
             if let Some((evicted_offset, evicted_bucket)) = self.bucket_cache.insert(offset, bucket)
             {
-                self.f
-                    .seek(SeekFrom::Start(evicted_offset))
-                    .and_then(|_| evicted_bucket.serialize(&self.header.layout, &mut self.f))?;
+                self.write_bucket(&evicted_bucket, evicted_offset)?;
             }
         }
 
@@ -497,8 +495,11 @@ impl Gdbm {
                 new_elems,
             );
             let offset = self.allocate_record(block.extent(&self.header.layout))?;
+            let mut buffer = Vec::with_capacity(self.header.block_sz as usize);
+            block.serialize(&self.header.layout, &mut buffer)?;
             self.f.seek(SeekFrom::Start(offset))?;
-            block.serialize(&self.header.layout, &mut self.f)?;
+            self.f.write_all(&buffer)?;
+
             offset
         };
 
@@ -555,15 +556,27 @@ impl Gdbm {
         Ok(())
     }
 
+    fn write_bucket(&mut self, bucket: &Bucket, offset: u64) -> io::Result<()> {
+        let mut buffer = Vec::with_capacity(self.header.block_sz as usize);
+        bucket.serialize(&self.header.layout, &mut buffer)?;
+        self.f.seek(SeekFrom::Start(offset))?;
+        self.f.write_all(&buffer)?;
+
+        Ok(())
+    }
+
     // write out any cached, not-yet-written metadata and data to storage
     fn write_buckets(&mut self) -> io::Result<()> {
         self.bucket_cache
             .dirty_list()
             .iter()
             .try_for_each(|(offset, bucket)| {
-                self.f
-                    .seek(SeekFrom::Start(*offset))
-                    .and_then(|_| bucket.serialize(&self.header.layout, &mut self.f))
+                // Can't use self.write_bucket() here. We have a borrow in bucket list.
+                let mut buffer = Vec::with_capacity(self.header.block_sz as usize);
+                bucket
+                    .serialize(&self.header.layout, &mut buffer)
+                    .and_then(|_| self.f.seek(SeekFrom::Start(*offset)))
+                    .and_then(|_| self.f.write_all(&buffer))
             })
             .map(|_| self.bucket_cache.clear_dirty())
     }
@@ -574,8 +587,10 @@ impl Gdbm {
             return Ok(());
         }
 
+        let mut buffer = Vec::with_capacity(self.dir.extent(&self.header.layout) as usize);
+        self.dir.serialize(&self.header.layout, &mut buffer)?;
         self.f.seek(SeekFrom::Start(self.header.dir_ofs))?;
-        self.dir.serialize(&self.header.layout, &mut self.f)?;
+        self.f.write_all(&buffer)?;
 
         self.dir.dirty = false;
 
@@ -588,8 +603,10 @@ impl Gdbm {
             return Ok(());
         }
 
+        let mut buffer = Vec::with_capacity(self.header.block_sz as usize);
+        self.header.serialize(&mut buffer)?;
         self.f.seek(SeekFrom::Start(0))?;
-        self.header.serialize(&self.header.layout, &mut self.f)?;
+        self.f.write_all(&buffer)?;
 
         self.header.dirty = false;
 
@@ -737,8 +754,7 @@ impl Gdbm {
         if let Some((evicted_offset, evicted_bucket)) =
             self.bucket_cache.insert(new_bucket_offset, bucket1)
         {
-            self.f.seek(SeekFrom::Start(evicted_offset))?;
-            evicted_bucket.serialize(&self.header.layout, &mut self.f)?;
+            self.write_bucket(&evicted_bucket, evicted_offset)?;
         }
 
         self.dir.update_bucket_split(
