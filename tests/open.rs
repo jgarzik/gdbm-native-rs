@@ -5,7 +5,7 @@ use gdbm_native::{
     Endian::{Big, Little},
     Gdbm, GdbmOptions, Magic,
     Offset::{Small, LFS},
-    ReadOnly, ReadWrite,
+    OpenOptions, ReadWrite,
 };
 use tempfile::NamedTempFile;
 
@@ -158,20 +158,8 @@ fn api_open_newdb_magic() {
             alignment, offset, endian, numsync, expected_magic, e
         ))?;
 
-        Gdbm::<ReadOnly>::open(
+        OpenOptions::new().alignment(Some(alignment)).open(
             old_db.path().to_str().unwrap(),
-            &GdbmOptions {
-                readonly: true,
-                creat: false,
-                newdb: false,
-                alignment: Some(alignment),
-                offset: None,
-                endian: None,
-                block_size: None,
-                bsexact: false,
-                numsync: false,
-                cachesize: None,
-            },
         )
         .map_err(|e| format!(
             "alignment: {:?}, offset: {:?}, endian: {:?}, numsync: {}, expected: {:?}, open error: {}",
@@ -264,34 +252,22 @@ fn api_open_cachesize() {
         })?;
 
         // Read a database using configured cachesize.
-        Gdbm::<ReadOnly>::open(
-            db.path().to_str().unwrap(),
-            &GdbmOptions {
-                readonly: true,
-                creat: false,
-                newdb: false,
-                alignment: None,
-                offset: None,
-                endian: None,
-                block_size: None,
-                bsexact: false,
-                numsync: true,
-                cachesize,
-            },
-        )
-        .map_err(|e| format!("read open failed: {}", e))
-        .and_then(|mut db| {
-            (0..RECORD_COUNT).try_for_each(|n| {
-                db.get(&n)
-                    .map_err(|e| e.to_string())
-                    .and_then(|v| {
-                        (v == Some(vec![]))
-                            .then_some(())
-                            .ok_or_else(|| "wrong value".to_string())
-                    })
-                    .map_err(|e| format!("get failed: {}", e))
+        OpenOptions::new()
+            .cachesize(cachesize)
+            .open(db.path().to_str().unwrap())
+            .map_err(|e| format!("read open failed: {}", e))
+            .and_then(|mut db| {
+                (0..RECORD_COUNT).try_for_each(|n| {
+                    db.get(&n)
+                        .map_err(|e| e.to_string())
+                        .and_then(|v| {
+                            (v == Some(vec![]))
+                                .then_some(())
+                                .ok_or_else(|| "wrong value".to_string())
+                        })
+                        .map_err(|e| format!("get failed: {}", e))
+                })
             })
-        })
     }
 
     [Some(0), Some(100000)]

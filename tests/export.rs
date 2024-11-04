@@ -12,11 +12,10 @@ extern crate gdbm_native;
 
 mod common;
 
-use std::fs::OpenOptions;
 use tempfile::NamedTempFile;
 
-use common::{creat_cfg, default_cfg, init_tests};
-use gdbm_native::{ExportBinMode, Gdbm, ReadOnly};
+use common::{creat_cfg, init_tests};
+use gdbm_native::{ExportBinMode, Gdbm, OpenOptions};
 
 #[test]
 fn api_export_bin() {
@@ -29,12 +28,14 @@ fn api_export_bin() {
                     let mut dumpfile = NamedTempFile::new().unwrap();
 
                     // make an ascii dump
-                    OpenOptions::new()
+                    std::fs::OpenOptions::new()
                         .write(true)
                         .open(dumpfile.path())
                         .map_err(|e| e.to_string())
                         .and_then(|mut f| {
-                            Gdbm::<ReadOnly>::open(&test.db_path, &test.ro_cfg())
+                            OpenOptions::new()
+                                .alignment(test.alignment)
+                                .open(&test.db_path)
                                 .and_then(|mut db| db.export_bin(&mut f, mode))
                                 .map_err(|e| e.to_string())
                         })
@@ -49,7 +50,8 @@ fn api_export_bin() {
                         .unwrap();
 
                     // compare the databases
-                    Gdbm::<ReadOnly>::open(importdb.path().to_str().unwrap(), &default_cfg())
+                    OpenOptions::new()
+                        .open(importdb.path().to_str().unwrap())
                         .map_err(|e| e.to_string())
                         .and_then(|mut db| {
                             test.metadata.data.iter().try_for_each(|kv| {
@@ -73,12 +75,14 @@ fn api_export_ascii() {
         let mut dumpfile = NamedTempFile::new().unwrap();
 
         // make an ascii dump
-        OpenOptions::new()
+        std::fs::OpenOptions::new()
             .write(true)
             .open(dumpfile.path())
             .map_err(|e| e.to_string())
             .and_then(|mut f| {
-                Gdbm::<ReadOnly>::open(&testdb.db_path, &testdb.ro_cfg())
+                OpenOptions::new()
+                    .alignment(testdb.alignment)
+                    .open(&testdb.db_path)
                     .and_then(|mut db| db.export_ascii(&mut f))
                     .map_err(|e| e.to_string())
             })
@@ -91,7 +95,8 @@ fn api_export_ascii() {
             .unwrap();
 
         // compare the databases
-        Gdbm::<ReadOnly>::open(importdb.path().to_str().unwrap(), &default_cfg())
+        OpenOptions::new()
+            .open(importdb.path().to_str().unwrap())
             .map_err(|e| e.to_string())
             .and_then(|mut db| {
                 testdb.metadata.data.iter().try_for_each(|kv| {

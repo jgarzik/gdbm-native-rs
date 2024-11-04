@@ -54,22 +54,6 @@ impl TestInfo {
     }
 
     #[allow(dead_code)]
-    pub fn ro_cfg(&self) -> GdbmOptions {
-        GdbmOptions {
-            readonly: true,
-            creat: false,
-            alignment: self.alignment,
-            block_size: None,
-            bsexact: false,
-            endian: None,
-            newdb: false,
-            numsync: false,
-            offset: None,
-            cachesize: None,
-        }
-    }
-
-    #[allow(dead_code)]
     pub fn rw_cfg(&self) -> GdbmOptions {
         GdbmOptions {
             readonly: false,

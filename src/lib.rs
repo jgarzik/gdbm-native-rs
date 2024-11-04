@@ -11,10 +11,7 @@
 extern crate base64;
 
 use base64::Engine;
-use std::{
-    fs::OpenOptions,
-    io::{self, Read, Seek, SeekFrom, Write},
-};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 
 mod avail;
 mod bucket;
@@ -25,6 +22,7 @@ mod hashutil;
 mod header;
 mod import;
 mod magic;
+mod options;
 mod ser;
 
 use avail::AvailBlock;
@@ -36,8 +34,10 @@ use hashutil::{bucket_dir, key_loc, PartialKey};
 use header::Header;
 use import::{ASCIIImportIterator, BinaryImportIterator};
 pub use magic::Magic;
+pub use options::{ConvertOptions, OpenOptions};
 use ser::{write32, write64};
 pub use ser::{Alignment, Endian, Layout, Offset};
+use std::fs::File;
 use std::marker::PhantomData;
 
 #[cfg(target_os = "linux")]
@@ -108,11 +108,6 @@ pub struct GdbmOptions {
     pub cachesize: Option<usize>,
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct ConvertOptions {
-    pub numsync: bool,
-}
-
 // #[derive(Debug)]
 pub struct Gdbm<R> {
     pathname: String,
@@ -149,12 +144,57 @@ where
     Gdbm<R>: CacheBucket,
 {
     // API: open database file, read and validate header
+    pub fn open_ro<P: AsRef<std::path::Path>>(
+        mut f: File,
+        path: P,
+        alignment: Option<Alignment>,
+        cachesize: Option<usize>,
+    ) -> Result<Gdbm<R>> {
+        let metadata = f.metadata()?;
+
+        if metadata.len() == 0 {
+            return Err(Error::EmptyFile);
+        }
+
+        let header = Header::from_reader(alignment, metadata.len(), &mut f)?;
+
+        f.seek(SeekFrom::Start(header.dir_ofs))?;
+        let dir = Directory::from_reader(&header.layout, header.dir_sz, &mut f)?;
+
+        // ensure all bucket offsets are reasonable
+        if !dir.validate(header.block_sz as u64, header.next_block, header.block_sz) {
+            return Err(Error::BadDirectory {
+                offset: header.dir_ofs,
+                length: header.dir_sz,
+            });
+        }
+
+        let bucket_cache = {
+            let cache_buckets = {
+                let bytes = cachesize.unwrap_or(DEFAULT_CACHESIZE);
+                let buckets = bytes / header.bucket_sz as usize;
+                buckets.max(1)
+            };
+            BucketCache::new(cache_buckets, None)
+        };
+
+        Ok(Gdbm {
+            pathname: path.as_ref().to_string_lossy().to_string(),
+            f,
+            header,
+            dir,
+            bucket_cache,
+            _rw_phantom: PhantomData,
+        })
+    }
+
+    // API: open database file, read and validate header
     pub fn open(pathname: &str, dbcfg: &GdbmOptions) -> Result<Gdbm<R>> {
         if dbcfg.readonly && (dbcfg.newdb || dbcfg.creat) {
             return Err(Error::ConflictingOpenOptions);
         }
 
-        let mut f = OpenOptions::new()
+        let mut f = std::fs::OpenOptions::new()
             .read(true)
             .write(!dbcfg.readonly)
             .create(dbcfg.creat | dbcfg.newdb)
@@ -197,7 +237,7 @@ where
                 (header, dir, Some((bucket_offset, bucket)))
             }
             _ => {
-                let header = Header::from_reader(&dbcfg.alignment, metadata.len(), &mut f)?;
+                let header = Header::from_reader(dbcfg.alignment, metadata.len(), &mut f)?;
 
                 f.seek(SeekFrom::Start(header.dir_ofs))?;
                 let dir = Directory::from_reader(&header.layout, header.dir_sz, &mut f)?;

@@ -3,7 +3,7 @@ extern crate gdbm_native;
 mod common;
 
 use common::init_tests;
-use gdbm_native::{ConvertOptions, Gdbm, ReadOnly, ReadWrite};
+use gdbm_native::{ConvertOptions, Gdbm, OpenOptions, ReadWrite};
 
 #[test]
 fn api_convert() {
@@ -27,7 +27,9 @@ fn api_convert() {
                 .map_err(|e| format!("converting {} to numsync: {}", test.db_path, e))?;
 
             // reopen and ensure we're (non)numsync
-            Gdbm::<ReadOnly>::open(tempfile.path().to_str().unwrap(), &test.ro_cfg())
+            OpenOptions::new()
+                .alignment(test.alignment)
+                .open(tempfile.path().to_str().unwrap())
                 .map_err(|e| format!("opening: {}", e))
                 .and_then(|db| {
                     (db.header.magic.is_numsync() == convert_options.numsync)

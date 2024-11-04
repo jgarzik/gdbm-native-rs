@@ -68,7 +68,7 @@ impl Header {
     }
 
     pub fn from_reader(
-        alignment: &Option<Alignment>,
+        alignment: Option<Alignment>,
         file_size: u64,
         reader: &mut impl Read,
     ) -> Result<Self> {
