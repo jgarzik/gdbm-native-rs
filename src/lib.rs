@@ -144,7 +144,7 @@ where
     Gdbm<R>: CacheBucket,
 {
     // API: open database file, read and validate header
-    pub fn open_ro<P: AsRef<std::path::Path>>(
+    pub fn open<P: AsRef<std::path::Path>>(
         mut f: File,
         path: P,
         alignment: Option<Alignment>,
@@ -180,91 +180,6 @@ where
 
         Ok(Gdbm {
             pathname: path.as_ref().to_string_lossy().to_string(),
-            f,
-            header,
-            dir,
-            bucket_cache,
-            _rw_phantom: PhantomData,
-        })
-    }
-
-    // API: open database file, read and validate header
-    pub fn open(pathname: &str, dbcfg: &GdbmOptions) -> Result<Gdbm<R>> {
-        if dbcfg.readonly && (dbcfg.newdb || dbcfg.creat) {
-            return Err(Error::ConflictingOpenOptions);
-        }
-
-        let mut f = std::fs::OpenOptions::new()
-            .read(true)
-            .write(!dbcfg.readonly)
-            .create(dbcfg.creat | dbcfg.newdb)
-            .truncate(dbcfg.newdb)
-            .open(pathname)?;
-
-        let metadata = f.metadata()?;
-
-        if metadata.len() == 0 && !(dbcfg.creat || dbcfg.newdb) {
-            return Err(Error::EmptyFile);
-        }
-
-        let (header, dir, initial_bucket) = match metadata.len() {
-            0 => {
-                let layout = Layout {
-                    offset: dbcfg.offset.unwrap_or(Offset::LFS),
-                    alignment: dbcfg.alignment.unwrap_or(Alignment::Align64),
-                    endian: dbcfg.endian.unwrap_or(Endian::Little),
-                };
-                let (block_size, dir_bits) = build_dir_size(
-                    layout.offset,
-                    match dbcfg.block_size {
-                        Some(size) if size >= 512 => size,
-                        _ => f.metadata()?.st_blksize() as u32,
-                    },
-                );
-
-                if dbcfg.bsexact && Some(block_size) != dbcfg.block_size {
-                    return Err(Error::BadBlockSize {
-                        requested: dbcfg.block_size.unwrap_or(0),
-                        actual: block_size,
-                    });
-                }
-
-                let header = Header::new(block_size, &layout, dir_bits, dbcfg.numsync);
-                let bucket = Bucket::new(0, header.bucket_elems as usize, vec![], vec![]);
-                let bucket_offset = header.next_block - block_size as u64;
-                let dir = Directory::new(vec![bucket_offset; 1 << header.dir_bits]);
-
-                (header, dir, Some((bucket_offset, bucket)))
-            }
-            _ => {
-                let header = Header::from_reader(dbcfg.alignment, metadata.len(), &mut f)?;
-
-                f.seek(SeekFrom::Start(header.dir_ofs))?;
-                let dir = Directory::from_reader(&header.layout, header.dir_sz, &mut f)?;
-
-                // ensure all bucket offsets are reasonable
-                if !dir.validate(header.block_sz as u64, header.next_block, header.block_sz) {
-                    return Err(Error::BadDirectory {
-                        offset: header.dir_ofs,
-                        length: header.dir_sz,
-                    });
-                }
-
-                (header, dir, None)
-            }
-        };
-
-        let bucket_cache = {
-            let cache_buckets = {
-                let bytes = dbcfg.cachesize.unwrap_or(DEFAULT_CACHESIZE);
-                let buckets = bytes / header.bucket_sz as usize;
-                buckets.max(1)
-            };
-            BucketCache::new(cache_buckets, initial_bucket)
-        };
-
-        Ok(Gdbm {
-            pathname: pathname.to_string(),
             f,
             header,
             dir,
@@ -514,6 +429,91 @@ where
 }
 
 impl Gdbm<ReadWrite> {
+    // API: open database file, read and validate header
+    pub fn open_create(pathname: &str, dbcfg: &GdbmOptions) -> Result<Gdbm<ReadWrite>> {
+        if dbcfg.readonly && (dbcfg.newdb || dbcfg.creat) {
+            return Err(Error::ConflictingOpenOptions);
+        }
+
+        let mut f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(!dbcfg.readonly)
+            .create(dbcfg.creat | dbcfg.newdb)
+            .truncate(dbcfg.newdb)
+            .open(pathname)?;
+
+        let metadata = f.metadata()?;
+
+        if metadata.len() == 0 && !(dbcfg.creat || dbcfg.newdb) {
+            return Err(Error::EmptyFile);
+        }
+
+        let (header, dir, initial_bucket) = match metadata.len() {
+            0 => {
+                let layout = Layout {
+                    offset: dbcfg.offset.unwrap_or(Offset::LFS),
+                    alignment: dbcfg.alignment.unwrap_or(Alignment::Align64),
+                    endian: dbcfg.endian.unwrap_or(Endian::Little),
+                };
+                let (block_size, dir_bits) = build_dir_size(
+                    layout.offset,
+                    match dbcfg.block_size {
+                        Some(size) if size >= 512 => size,
+                        _ => f.metadata()?.st_blksize() as u32,
+                    },
+                );
+
+                if dbcfg.bsexact && Some(block_size) != dbcfg.block_size {
+                    return Err(Error::BadBlockSize {
+                        requested: dbcfg.block_size.unwrap_or(0),
+                        actual: block_size,
+                    });
+                }
+
+                let header = Header::new(block_size, &layout, dir_bits, dbcfg.numsync);
+                let bucket = Bucket::new(0, header.bucket_elems as usize, vec![], vec![]);
+                let bucket_offset = header.next_block - block_size as u64;
+                let dir = Directory::new(vec![bucket_offset; 1 << header.dir_bits]);
+
+                (header, dir, Some((bucket_offset, bucket)))
+            }
+            _ => {
+                let header = Header::from_reader(dbcfg.alignment, metadata.len(), &mut f)?;
+
+                f.seek(SeekFrom::Start(header.dir_ofs))?;
+                let dir = Directory::from_reader(&header.layout, header.dir_sz, &mut f)?;
+
+                // ensure all bucket offsets are reasonable
+                if !dir.validate(header.block_sz as u64, header.next_block, header.block_sz) {
+                    return Err(Error::BadDirectory {
+                        offset: header.dir_ofs,
+                        length: header.dir_sz,
+                    });
+                }
+
+                (header, dir, None)
+            }
+        };
+
+        let bucket_cache = {
+            let cache_buckets = {
+                let bytes = dbcfg.cachesize.unwrap_or(DEFAULT_CACHESIZE);
+                let buckets = bytes / header.bucket_sz as usize;
+                buckets.max(1)
+            };
+            BucketCache::new(cache_buckets, initial_bucket)
+        };
+
+        Ok(Gdbm {
+            pathname: pathname.to_string(),
+            f,
+            header,
+            dir,
+            bucket_cache,
+            _rw_phantom: PhantomData,
+        })
+    }
+
     pub fn import_ascii(&mut self, reader: &mut impl Read) -> Result<()> {
         ASCIIImportIterator::new(reader)
             .map_err(Error::Io)

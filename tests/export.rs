@@ -43,7 +43,7 @@ fn api_export_bin() {
 
                     // import into a fresh database
                     let importdb = NamedTempFile::new().unwrap();
-                    Gdbm::open(importdb.path().to_str().unwrap(), &creat_cfg())
+                    Gdbm::open_create(importdb.path().to_str().unwrap(), &creat_cfg())
                         .and_then(|mut db| {
                             db.import_bin(&mut dumpfile, mode).and_then(|_| db.sync())
                         })
@@ -90,7 +90,7 @@ fn api_export_ascii() {
 
         // import into a fresh database
         let importdb = NamedTempFile::new().unwrap();
-        Gdbm::open(importdb.path().to_str().unwrap(), &creat_cfg())
+        Gdbm::open_create(importdb.path().to_str().unwrap(), &creat_cfg())
             .and_then(|mut db| db.import_ascii(&mut dumpfile).and_then(|_| db.sync()))
             .unwrap();
 

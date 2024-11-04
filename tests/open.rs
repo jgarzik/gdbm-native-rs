@@ -29,7 +29,7 @@ fn api_open_conflicting() {
         std::fs::write(old_db.path(), "not a remotely valid database")
             .expect("creating a bad database");
 
-        Gdbm::<ReadWrite>::open(
+        Gdbm::<ReadWrite>::open_create(
             old_db.path().to_str().unwrap(),
             &GdbmOptions {
                 readonly,
@@ -81,7 +81,7 @@ fn api_open_creat_newdb() {
     .try_for_each(|(newdb, creat, content, expected)| {
         std::fs::write(old_db.path(), content).expect("creating a DB file");
 
-        match Gdbm::<ReadWrite>::open(
+        match Gdbm::<ReadWrite>::open_create(
             old_db.path().to_str().unwrap(),
             &GdbmOptions {
                 readonly: false,
@@ -135,7 +135,7 @@ fn api_open_newdb_magic() {
     ]
     .into_iter()
     .try_for_each(|(alignment, offset, endian, numsync, expected_magic)| {
-        Gdbm::<ReadWrite>::open(
+        Gdbm::<ReadWrite>::open_create(
             old_db.path().to_str().unwrap(),
             &GdbmOptions {
                 readonly: false,
@@ -193,7 +193,7 @@ fn api_open_bsexact() {
     ]
     .into_iter()
     .try_for_each(|(block_size, expected)| {
-        match Gdbm::<ReadWrite>::open(
+        match Gdbm::<ReadWrite>::open_create(
             old_db.path().to_str().unwrap(),
             &GdbmOptions {
                 readonly: false,
@@ -225,7 +225,7 @@ fn api_open_cachesize() {
         let db = NamedTempFile::new().unwrap();
 
         // Create a database using configured cachesize.
-        Gdbm::open(
+        Gdbm::open_create(
             db.path().to_str().unwrap(),
             &GdbmOptions {
                 readonly: false,

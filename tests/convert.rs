@@ -3,7 +3,7 @@ extern crate gdbm_native;
 mod common;
 
 use common::init_tests;
-use gdbm_native::{ConvertOptions, Gdbm, OpenOptions, ReadWrite};
+use gdbm_native::{ConvertOptions, OpenOptions};
 
 #[test]
 fn api_convert() {
@@ -17,7 +17,10 @@ fn api_convert() {
             };
 
             // open and convert to/from numsync
-            Gdbm::<ReadWrite>::open(tempfile.path().to_str().unwrap(), &test.rw_cfg())
+            OpenOptions::new()
+                .alignment(test.alignment)
+                .write()
+                .open(tempfile.path().to_str().unwrap())
                 .map_err(|e| format!("opening: {}", e))
                 .and_then(|mut db| {
                     db.convert(&convert_options)

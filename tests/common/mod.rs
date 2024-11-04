@@ -54,22 +54,6 @@ impl TestInfo {
     }
 
     #[allow(dead_code)]
-    pub fn rw_cfg(&self) -> GdbmOptions {
-        GdbmOptions {
-            readonly: false,
-            creat: false,
-            alignment: self.alignment,
-            block_size: None,
-            bsexact: false,
-            endian: None,
-            newdb: false,
-            numsync: false,
-            offset: None,
-            cachesize: None,
-        }
-    }
-
-    #[allow(dead_code)]
     pub fn tempfile(&self) -> NamedTempFile {
         let file = NamedTempFile::new().unwrap();
         let test_filename = file.path();
