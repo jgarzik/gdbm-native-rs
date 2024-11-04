@@ -68,7 +68,7 @@ impl Header {
     }
 
     pub fn from_reader(
-        alignment: &Option<Alignment>,
+        alignment: Option<Alignment>,
         file_size: u64,
         reader: &mut impl Read,
     ) -> Result<Self> {
@@ -192,7 +192,9 @@ impl Header {
         })
     }
 
-    pub fn serialize(&self, layout: &Layout, writer: &mut impl Write) -> io::Result<()> {
+    pub fn serialize(&self, writer: &mut impl Write) -> io::Result<()> {
+        let layout = &self.layout;
+
         writer.write_all(self.magic.as_bytes())?;
 
         write32(layout.endian, writer, self.block_sz)?;

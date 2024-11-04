@@ -1,6 +1,6 @@
 extern crate gdbm_native;
 
-use gdbm_native::{Alignment, GdbmOptions};
+use gdbm_native::Alignment;
 use serde::Deserialize;
 use std::fs;
 use std::path::PathBuf;
@@ -54,38 +54,6 @@ impl TestInfo {
     }
 
     #[allow(dead_code)]
-    pub fn ro_cfg(&self) -> GdbmOptions {
-        GdbmOptions {
-            readonly: true,
-            creat: false,
-            alignment: self.alignment,
-            block_size: None,
-            bsexact: false,
-            endian: None,
-            newdb: false,
-            numsync: false,
-            offset: None,
-            cachesize: None,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn rw_cfg(&self) -> GdbmOptions {
-        GdbmOptions {
-            readonly: false,
-            creat: false,
-            alignment: self.alignment,
-            block_size: None,
-            bsexact: false,
-            endian: None,
-            newdb: false,
-            numsync: false,
-            offset: None,
-            cachesize: None,
-        }
-    }
-
-    #[allow(dead_code)]
     pub fn tempfile(&self) -> NamedTempFile {
         let file = NamedTempFile::new().unwrap();
         let test_filename = file.path();
@@ -123,36 +91,4 @@ pub fn init_tests() -> Vec<TestInfo> {
             }))
     })
     .collect()
-}
-
-#[allow(dead_code)]
-pub fn default_cfg() -> GdbmOptions {
-    GdbmOptions {
-        readonly: true,
-        creat: false,
-        newdb: false,
-        block_size: None,
-        bsexact: false,
-        numsync: true,
-        alignment: None,
-        endian: None,
-        offset: None,
-        cachesize: None,
-    }
-}
-
-#[allow(dead_code)]
-pub fn creat_cfg() -> GdbmOptions {
-    GdbmOptions {
-        readonly: false,
-        creat: true,
-        newdb: false,
-        block_size: None,
-        bsexact: false,
-        numsync: true,
-        alignment: None,
-        endian: None,
-        offset: None,
-        cachesize: None,
-    }
 }

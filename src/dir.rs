@@ -14,6 +14,8 @@ use crate::hashutil::HASH_BITS;
 use crate::ser::{read32, read64, write32, write64, Layout, Offset};
 
 pub fn build_dir_size(offset: Offset, block_sz: u32) -> (u32, u32) {
+    let block_sz = block_sz.max(512);
+
     let mut dir_size = 8 * match offset {
         Offset::Small => 4,
         Offset::LFS => 8,

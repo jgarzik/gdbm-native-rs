@@ -13,18 +13,21 @@ extern crate gdbm_native;
 mod common;
 
 use common::init_tests;
-use gdbm_native::Gdbm;
+use gdbm_native::OpenOptions;
 
 #[test]
 fn api_exists_not() {
     let tests = init_tests();
 
     for testdb in tests {
-        let mut db = Gdbm::open(&testdb.db_path, &testdb.ro_cfg()).unwrap();
-        assert!(!db.contains_key(b"dummy").unwrap());
+        let mut db = OpenOptions::new()
+            .alignment(testdb.alignment)
+            .open(&testdb.db_path)
+            .unwrap();
+        assert!(!db.contains_key("dummy").unwrap());
 
         if testdb.is_basic {
-            assert!(!db.contains_key(b"key -111").unwrap());
+            assert!(!db.contains_key("key -111").unwrap());
         }
     }
 }
@@ -35,7 +38,10 @@ fn api_exists() {
 
     for testdb in tests {
         if testdb.is_basic {
-            let mut db = Gdbm::open(&testdb.db_path, &testdb.ro_cfg()).unwrap();
+            let mut db = OpenOptions::new()
+                .alignment(testdb.alignment)
+                .open(&testdb.db_path)
+                .unwrap();
 
             for n in 0..10001 {
                 let keystr = format!("key {}", n);
@@ -50,7 +56,10 @@ fn api_get_not() {
     let tests = init_tests();
 
     for testdb in tests {
-        let mut db = Gdbm::open(&testdb.db_path, &testdb.ro_cfg()).unwrap();
+        let mut db = OpenOptions::new()
+            .alignment(testdb.alignment)
+            .open(&testdb.db_path)
+            .unwrap();
         let res = db.get::<&str, String>("This key does not exist").unwrap();
         assert_eq!(res, None);
     }
@@ -62,7 +71,10 @@ fn api_get() {
 
     for testdb in tests {
         if testdb.is_basic {
-            let mut db = Gdbm::open(&testdb.db_path, &testdb.ro_cfg()).unwrap();
+            let mut db = OpenOptions::new()
+                .alignment(testdb.alignment)
+                .open(&testdb.db_path)
+                .unwrap();
 
             for n in 0..10001 {
                 let keystr = format!("key {}", n);
@@ -78,7 +90,10 @@ fn api_open_close() {
     let tests = init_tests();
 
     for testdb in tests {
-        let _res = Gdbm::open(&testdb.db_path, &testdb.ro_cfg()).unwrap();
+        let _res = OpenOptions::new()
+            .alignment(testdb.alignment)
+            .open(&testdb.db_path)
+            .unwrap();
         // implicit close when scope closes
     }
 }
@@ -88,7 +103,10 @@ fn api_len() {
     let tests = init_tests();
 
     for testdb in tests {
-        let mut db = Gdbm::open(&testdb.db_path, &testdb.ro_cfg()).unwrap();
+        let mut db = OpenOptions::new()
+            .alignment(testdb.alignment)
+            .open(&testdb.db_path)
+            .unwrap();
         let res = db.len().unwrap();
         assert_eq!(res, testdb.n_records);
     }

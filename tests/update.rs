@@ -13,7 +13,7 @@ extern crate gdbm_native;
 mod common;
 
 use common::init_tests;
-use gdbm_native::Gdbm;
+use gdbm_native::OpenOptions;
 use std::fs;
 use tempfile::NamedTempFile;
 
@@ -30,7 +30,11 @@ fn api_remove() {
             fs::copy(&testdb.db_path, &newdb_fn).expect("DB File copy failed");
 
             // Open database for testing
-            let mut db = Gdbm::open(&newdb_fn, &testdb.rw_cfg()).expect("GDBM open failed");
+            let mut db = OpenOptions::new()
+                .alignment(testdb.alignment)
+                .write()
+                .open(&newdb_fn)
+                .expect("GDBM open failed");
 
             // Test: remove non-existent key
             let res = db
@@ -63,14 +67,17 @@ fn api_insert() {
 
     tests
         .iter()
-        .filter_map(|test| (!test.is_basic).then_some((test.db_path.clone(), test.rw_cfg())))
-        .try_for_each(|(filename, cfg)| {
+        .filter_map(|test| (!test.is_basic).then_some((test.db_path.clone(), test.alignment)))
+        .try_for_each(|(filename, alignment)| {
             let file = NamedTempFile::new().unwrap();
             let test_filename = file.path();
             fs::copy(filename, test_filename).unwrap();
 
-            let mut db =
-                Gdbm::open(test_filename.to_str().unwrap(), &cfg).map_err(|e| e.to_string())?;
+            let mut db = OpenOptions::new()
+                .alignment(alignment)
+                .write()
+                .open(test_filename.to_str().unwrap())
+                .map_err(|e| e.to_string())?;
 
             // insert items
             (0..10000).try_for_each(|n| {
@@ -87,8 +94,11 @@ fn api_insert() {
             // reopen the database
             db.sync().map_err(|e| e.to_string())?;
             drop(db);
-            let mut db =
-                Gdbm::open(test_filename.to_str().unwrap(), &cfg).map_err(|e| e.to_string())?;
+            let mut db = OpenOptions::new()
+                .alignment(alignment)
+                .write()
+                .open(test_filename.to_str().unwrap())
+                .map_err(|e| e.to_string())?;
 
             // try_insert again (all should fail)
             (0..10000).try_for_each(|n| {
