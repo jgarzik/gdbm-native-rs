@@ -8,7 +8,33 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
-use crate::{Alignment, Error, Gdbm, ReadOnly, ReadWrite, Result};
+use crate::{Alignment, Endian, Error, Gdbm, Offset, ReadOnly, ReadWrite, Result};
+
+#[derive(Copy, Clone, Debug, PartialOrd, PartialEq, Default)]
+pub enum BlockSize {
+    #[default]
+    Filesystem,
+    Roughly(u32),
+    Exactly(u32),
+}
+
+#[derive(Default, Copy, Clone, Debug)]
+pub struct Create {
+    pub offset: Option<Offset>,
+    pub endian: Option<Endian>,
+    pub no_numsync: bool,
+    pub newdb: bool,
+    pub block_size: BlockSize,
+}
+#[derive(Default, Copy, Clone, Debug)]
+pub struct NotCreate;
+
+#[derive(Copy, Clone, Debug, Default)]
+pub struct NotWrite;
+#[derive(Copy, Clone, Debug, Default)]
+pub struct Write<C> {
+    pub create: C,
+}
 
 #[derive(Copy, Clone, Debug, Default)]
 pub struct OpenOptions<W> {
@@ -37,21 +63,108 @@ impl<W> OpenOptions<W> {
 }
 
 impl OpenOptions<NotWrite> {
-    pub fn write(self) -> OpenOptions<Write> {
+    pub fn write(self) -> OpenOptions<Write<NotCreate>> {
         OpenOptions {
             alignment: self.alignment,
             cachesize: self.cachesize,
-            write: Write,
+            write: Write { create: NotCreate },
         }
     }
 }
 
-impl OpenOptions<Write> {
+impl<C> OpenOptions<Write<C>> {
     pub fn not_write(self) -> OpenOptions<NotWrite> {
         OpenOptions {
             alignment: self.alignment,
             cachesize: self.cachesize,
             write: NotWrite,
+        }
+    }
+}
+
+impl OpenOptions<Write<NotCreate>> {
+    pub fn create(self) -> OpenOptions<Write<Create>> {
+        OpenOptions {
+            alignment: self.alignment,
+            cachesize: self.cachesize,
+            write: Write {
+                create: Create::default(),
+            },
+        }
+    }
+}
+
+impl OpenOptions<Write<Create>> {
+    pub fn not_create(self) -> OpenOptions<Write<NotCreate>> {
+        OpenOptions {
+            alignment: self.alignment,
+            cachesize: self.cachesize,
+            write: Write { create: NotCreate },
+        }
+    }
+
+    pub fn offset(self, offset: Option<Offset>) -> OpenOptions<Write<Create>> {
+        OpenOptions {
+            alignment: self.alignment,
+            cachesize: self.cachesize,
+            write: Write {
+                create: Create {
+                    offset,
+                    ..self.write.create
+                },
+            },
+        }
+    }
+
+    pub fn endian(self, endian: Option<Endian>) -> OpenOptions<Write<Create>> {
+        OpenOptions {
+            alignment: self.alignment,
+            cachesize: self.cachesize,
+            write: Write {
+                create: Create {
+                    endian,
+                    ..self.write.create
+                },
+            },
+        }
+    }
+
+    pub fn numsync(self, numsync: bool) -> OpenOptions<Write<Create>> {
+        OpenOptions {
+            alignment: self.alignment,
+            cachesize: self.cachesize,
+            write: Write {
+                create: Create {
+                    no_numsync: !numsync,
+                    ..self.write.create
+                },
+            },
+        }
+    }
+
+    pub fn newdb(self, newdb: bool) -> OpenOptions<Write<Create>> {
+        OpenOptions {
+            alignment: self.alignment,
+            cachesize: self.cachesize,
+            write: Write {
+                create: Create {
+                    newdb,
+                    ..self.write.create
+                },
+            },
+        }
+    }
+
+    pub fn block_size(self, block_size: BlockSize) -> OpenOptions<Write<Create>> {
+        OpenOptions {
+            alignment: self.alignment,
+            cachesize: self.cachesize,
+            write: Write {
+                create: Create {
+                    block_size,
+                    ..self.write.create
+                },
+            },
         }
     }
 }
@@ -66,7 +179,7 @@ impl OpenOptions<NotWrite> {
     }
 }
 
-impl OpenOptions<Write> {
+impl OpenOptions<Write<NotCreate>> {
     pub fn open<P: AsRef<std::path::Path>>(&self, path: P) -> Result<Gdbm<ReadWrite>> {
         std::fs::OpenOptions::new()
             .read(true)
@@ -77,10 +190,35 @@ impl OpenOptions<Write> {
     }
 }
 
-#[derive(Copy, Clone, Debug, Default)]
-pub struct NotWrite;
-#[derive(Copy, Clone, Debug, Default)]
-pub struct Write;
+impl OpenOptions<Write<Create>> {
+    pub fn open<P: AsRef<std::path::Path>>(&self, path: P) -> Result<Gdbm<ReadWrite>> {
+        if self.write.create.newdb {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(path.as_ref())
+                .map_err(Error::Io)
+                .and_then(|f| Gdbm::create(f, path, self))
+        } else {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(path.as_ref())
+                .map_err(Error::Io)
+                .and_then(|f| {
+                    Gdbm::<ReadWrite>::open(f, path.as_ref(), self.alignment, self.cachesize)
+                        .or_else(|e| match e {
+                            Error::EmptyFile(f) => Gdbm::create(f, path, self),
+                            e => Err(e),
+                        })
+                })
+        }
+    }
+}
 
 #[derive(Copy, Clone, Debug)]
 pub struct ConvertOptions {

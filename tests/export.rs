@@ -14,8 +14,8 @@ mod common;
 
 use tempfile::NamedTempFile;
 
-use common::{creat_cfg, init_tests};
-use gdbm_native::{ExportBinMode, Gdbm, OpenOptions};
+use common::init_tests;
+use gdbm_native::{ExportBinMode, OpenOptions};
 
 #[test]
 fn api_export_bin() {
@@ -43,7 +43,11 @@ fn api_export_bin() {
 
                     // import into a fresh database
                     let importdb = NamedTempFile::new().unwrap();
-                    Gdbm::open_create(importdb.path().to_str().unwrap(), &creat_cfg())
+                    OpenOptions::new()
+                        .write()
+                        .create()
+                        .newdb(true)
+                        .open(importdb.path().to_str().unwrap())
                         .and_then(|mut db| {
                             db.import_bin(&mut dumpfile, mode).and_then(|_| db.sync())
                         })
@@ -90,7 +94,11 @@ fn api_export_ascii() {
 
         // import into a fresh database
         let importdb = NamedTempFile::new().unwrap();
-        Gdbm::open_create(importdb.path().to_str().unwrap(), &creat_cfg())
+        OpenOptions::new()
+            .write()
+            .create()
+            .newdb(true)
+            .open(importdb.path().to_str().unwrap())
             .and_then(|mut db| db.import_ascii(&mut dumpfile).and_then(|_| db.sync()))
             .unwrap();
 

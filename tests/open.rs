@@ -2,61 +2,13 @@ extern crate gdbm_native;
 
 use gdbm_native::{
     Alignment::{Align32, Align64},
+    BlockSize,
     Endian::{Big, Little},
-    Gdbm, GdbmOptions, Magic,
+    Magic,
     Offset::{Small, LFS},
-    OpenOptions, ReadWrite,
+    OpenOptions,
 };
 use tempfile::NamedTempFile;
-
-#[test]
-// Test for conflicting newdb, creat and readonly flags.
-fn api_open_conflicting() {
-    let old_db = NamedTempFile::new().expect("creating a temporary file");
-
-    [
-        (false, false, false, false),
-        (false, false, true, false),
-        (false, true, false, false),
-        (false, true, true, false),
-        (true, false, false, false),
-        (true, false, true, true),
-        (true, true, false, true),
-        (true, true, true, true),
-    ]
-    .into_iter()
-    .try_for_each(|(readonly, creat, newdb, expected_arg_conflict)| {
-        std::fs::write(old_db.path(), "not a remotely valid database")
-            .expect("creating a bad database");
-
-        Gdbm::<ReadWrite>::open_create(
-            old_db.path().to_str().unwrap(),
-            &GdbmOptions {
-                readonly,
-                creat,
-                newdb,
-                alignment: None,
-                offset: None,
-                endian: None,
-                block_size: None,
-                bsexact: false,
-                numsync: false,
-                cachesize: None,
-            },
-        )
-        .map_err(|e| e.to_string())
-        .and_then(|_| Err("success".to_string()))
-        .or_else(|e| match e == "ConflictingOpenOptions" {
-            true if expected_arg_conflict => Ok(()),
-            false if !expected_arg_conflict => Ok(()),
-            _ => Err(format!(
-                "readonly: {}, creat: {}, newdb: {}, expecting_confilict: {}",
-                readonly, creat, newdb, expected_arg_conflict
-            )),
-        })
-    })
-    .unwrap_or_else(|e: String| panic!("{}", e));
-}
 
 #[test]
 // Non-empty, but invalid, DB causes creat to fail (bad format)
@@ -68,40 +20,26 @@ fn api_open_creat_newdb() {
     let baddb_content = b"bad DB content".to_vec();
     let empty_content = vec![];
     [
-        (false, false, &baddb_content, Err(())),
-        (false, false, &empty_content, Err(())),
-        (false, true, &baddb_content, Err(())),
-        (false, true, &empty_content, Ok(())),
-        (true, false, &baddb_content, Ok(())),
-        (true, false, &empty_content, Ok(())),
-        (true, true, &baddb_content, Ok(())),
-        (true, true, &empty_content, Ok(())),
+        (false, &baddb_content, Err(())),
+        (false, &empty_content, Ok(())),
+        (true, &baddb_content, Ok(())),
+        (true, &empty_content, Ok(())),
     ]
     .into_iter()
-    .try_for_each(|(newdb, creat, content, expected)| {
+    .try_for_each(|(newdb, content, expected)| {
         std::fs::write(old_db.path(), content).expect("creating a DB file");
 
-        match Gdbm::<ReadWrite>::open_create(
-            old_db.path().to_str().unwrap(),
-            &GdbmOptions {
-                readonly: false,
-                creat,
-                newdb,
-                alignment: None,
-                offset: None,
-                endian: None,
-                block_size: None,
-                bsexact: false,
-                numsync: false,
-                cachesize: None,
-            },
-        ) {
+        match OpenOptions::new()
+            .write()
+            .create()
+            .newdb(newdb)
+            .open(old_db.path())
+        {
             Ok(_) if expected.is_ok() => Ok(()),
             Err(_) if expected.is_err() => Ok(()),
             _ => Err(format!(
-                "newdb: {}, creat: {}, empty content: {}, expected: {:?}",
+                "newdb: {}, empty content: {}, expected: {:?}",
                 newdb,
-                creat,
                 content.is_empty(),
                 expected
             )),
@@ -135,26 +73,14 @@ fn api_open_newdb_magic() {
     ]
     .into_iter()
     .try_for_each(|(alignment, offset, endian, numsync, expected_magic)| {
-        Gdbm::<ReadWrite>::open_create(
-            old_db.path().to_str().unwrap(),
-            &GdbmOptions {
-                readonly: false,
-                creat: false,
-                newdb: true,
-                alignment: Some(alignment),
-                offset: Some(offset),
-                endian: Some(endian),
-                block_size: None,
-                bsexact: false,
-                numsync,
-                cachesize: None,
-            },
+        OpenOptions::new().write().create().newdb(true).alignment(Some(alignment)).offset(Some(offset)).endian(Some(endian)).numsync(numsync).open(
+            old_db.path().to_str().unwrap()
         )
         .and_then(|mut db| {
             println!("magic: {:?}", db.header.magic);
             db.sync()})
         .map_err(|e| format!(
-            "alignment: {:?}, offset: {:?}, endian: {:?}, numsync: {}, expected: {:?}, newdb error: {}",
+            "creating: alignment: {:?}, offset: {:?}, endian: {:?}, numsync: {}, expected: {:?}, newdb error: {}",
             alignment, offset, endian, numsync, expected_magic, e
         ))?;
 
@@ -162,7 +88,7 @@ fn api_open_newdb_magic() {
             old_db.path().to_str().unwrap(),
         )
         .map_err(|e| format!(
-            "alignment: {:?}, offset: {:?}, endian: {:?}, numsync: {}, expected: {:?}, open error: {}",
+            "opening: alignment: {:?}, offset: {:?}, endian: {:?}, numsync: {}, expected: {:?}, open error: {}",
             alignment, offset, endian, numsync, expected_magic, e
         ))
         .and_then(|db| {
@@ -170,7 +96,7 @@ fn api_open_newdb_magic() {
                 .then_some(())
                 .ok_or_else(|| {
                     format!(
-                        "alignment: {:?}, offset: {:?}, endian: {:?}, numsync: {}, expected: {:?}, got: {:?}",
+                        "wrong magic: alignment: {:?}, offset: {:?}, endian: {:?}, numsync: {}, expected: {:?}, got: {:?}",
                         alignment, offset, endian, numsync, expected_magic, db.header.magic
                     )
                 })
@@ -193,21 +119,12 @@ fn api_open_bsexact() {
     ]
     .into_iter()
     .try_for_each(|(block_size, expected)| {
-        match Gdbm::<ReadWrite>::open_create(
-            old_db.path().to_str().unwrap(),
-            &GdbmOptions {
-                readonly: false,
-                creat: false,
-                newdb: true,
-                alignment: None,
-                offset: None,
-                endian: None,
-                block_size: Some(block_size),
-                bsexact: true,
-                numsync: false,
-                cachesize: None,
-            },
-        ) {
+        match OpenOptions::new()
+            .write()
+            .create()
+            .block_size(BlockSize::Exactly(block_size))
+            .open(old_db.path().to_str().unwrap())
+        {
             Ok(_) if expected.is_ok() => Ok(()),
             Err(_) if expected.is_err() => Ok(()),
             Ok(_) => Err(format!("blocksize: {}, newdb opened", block_size)),
@@ -225,31 +142,22 @@ fn api_open_cachesize() {
         let db = NamedTempFile::new().unwrap();
 
         // Create a database using configured cachesize.
-        Gdbm::open_create(
-            db.path().to_str().unwrap(),
-            &GdbmOptions {
-                readonly: false,
-                creat: false,
-                newdb: true,
-                alignment: None,
-                offset: None,
-                endian: None,
-                block_size: None,
-                bsexact: false,
-                numsync: true,
-                cachesize,
-            },
-        )
-        .map_err(|e| format!("write open failed: {}", e))
-        .and_then(|mut db| {
-            (0..RECORD_COUNT)
-                .try_for_each(|n| {
-                    db.insert(n, vec![])
-                        .map(|_| ())
-                        .map_err(|e| format!("insert failed: {}", e))
-                })
-                .and_then(|()| db.sync().map_err(|e| format!("sync failed: {}", e)))
-        })?;
+        OpenOptions::new()
+            .cachesize(cachesize)
+            .write()
+            .create()
+            .newdb(true)
+            .open(db.path().to_str().unwrap())
+            .map_err(|e| format!("write open failed: {}", e))
+            .and_then(|mut db| {
+                (0..RECORD_COUNT)
+                    .try_for_each(|n| {
+                        db.insert(n, vec![])
+                            .map(|_| ())
+                            .map_err(|e| format!("insert failed: {}", e))
+                    })
+                    .and_then(|()| db.sync().map_err(|e| format!("sync failed: {}", e)))
+            })?;
 
         // Read a database using configured cachesize.
         OpenOptions::new()

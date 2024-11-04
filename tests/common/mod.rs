@@ -1,6 +1,6 @@
 extern crate gdbm_native;
 
-use gdbm_native::{Alignment, GdbmOptions};
+use gdbm_native::Alignment;
 use serde::Deserialize;
 use std::fs;
 use std::path::PathBuf;
@@ -91,36 +91,4 @@ pub fn init_tests() -> Vec<TestInfo> {
             }))
     })
     .collect()
-}
-
-#[allow(dead_code)]
-pub fn default_cfg() -> GdbmOptions {
-    GdbmOptions {
-        readonly: true,
-        creat: false,
-        newdb: false,
-        block_size: None,
-        bsexact: false,
-        numsync: true,
-        alignment: None,
-        endian: None,
-        offset: None,
-        cachesize: None,
-    }
-}
-
-#[allow(dead_code)]
-pub fn creat_cfg() -> GdbmOptions {
-    GdbmOptions {
-        readonly: false,
-        creat: true,
-        newdb: false,
-        block_size: None,
-        bsexact: false,
-        numsync: true,
-        alignment: None,
-        endian: None,
-        offset: None,
-        cachesize: None,
-    }
 }

@@ -34,7 +34,7 @@ use hashutil::{bucket_dir, key_loc, PartialKey};
 use header::Header;
 use import::{ASCIIImportIterator, BinaryImportIterator};
 pub use magic::Magic;
-pub use options::{ConvertOptions, OpenOptions};
+pub use options::{BlockSize, ConvertOptions, Create, OpenOptions};
 use ser::{write32, write64};
 pub use ser::{Alignment, Endian, Layout, Offset};
 use std::fs::File;
@@ -81,33 +81,6 @@ fn read_ofs(f: &mut std::fs::File, ofs: u64, total_size: usize) -> io::Result<Ve
     Ok(data)
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct GdbmOptions {
-    /// Override default alignement when opening a database.
-    /// Explicitly sel alignment when creating a new DB. Default is 64bit.
-    pub alignment: Option<Alignment>,
-    /// Explicitly set offset width when creating a new DB. Default is 64bit (LFS).
-    pub offset: Option<Offset>,
-    /// Explicitly set edianness when creating a new DB. Default is LE.
-    pub endian: Option<Endian>,
-    /// Open readonly, conflicts with creat and newdb.
-    pub readonly: bool,
-    /// Create a new database if DB file is non-existent or has 0 length.
-    /// Conflicts with readonly.
-    pub creat: bool,
-    /// Force creation of new DB. Conflicts with readonly.
-    pub newdb: bool,
-    /// Explicitly set block size, or use system default.
-    /// If block size is less than 512, the system default is used.
-    pub block_size: Option<u32>,
-    /// Only create DB if exact block_size can be accommodated.
-    pub bsexact: bool,
-    /// use numsync when creating a new DB.
-    pub numsync: bool,
-    /// Bytesize of in-memory bucket cache (defaults to DEFAULT_CACHESIZE)
-    pub cachesize: Option<usize>,
-}
-
 // #[derive(Debug)]
 pub struct Gdbm<R> {
     pathname: String,
@@ -116,7 +89,7 @@ pub struct Gdbm<R> {
     pub dir: Directory,
     bucket_cache: BucketCache,
 
-    _rw_phantom: PhantomData<R>,
+    rw_phantom: PhantomData<R>,
 }
 
 // cache_bucket for ReadOnly variant ignores (never receives) dirty displaced buckets.
@@ -153,7 +126,7 @@ where
         let metadata = f.metadata()?;
 
         if metadata.len() == 0 {
-            return Err(Error::EmptyFile);
+            return Err(Error::EmptyFile(f));
         }
 
         let header = Header::from_reader(alignment, metadata.len(), &mut f)?;
@@ -184,7 +157,7 @@ where
             header,
             dir,
             bucket_cache,
-            _rw_phantom: PhantomData,
+            rw_phantom: PhantomData,
         })
     }
 
@@ -430,87 +403,58 @@ where
 
 impl Gdbm<ReadWrite> {
     // API: open database file, read and validate header
-    pub fn open_create(pathname: &str, dbcfg: &GdbmOptions) -> Result<Gdbm<ReadWrite>> {
-        if dbcfg.readonly && (dbcfg.newdb || dbcfg.creat) {
-            return Err(Error::ConflictingOpenOptions);
-        }
-
-        let mut f = std::fs::OpenOptions::new()
-            .read(true)
-            .write(!dbcfg.readonly)
-            .create(dbcfg.creat | dbcfg.newdb)
-            .truncate(dbcfg.newdb)
-            .open(pathname)?;
-
-        let metadata = f.metadata()?;
-
-        if metadata.len() == 0 && !(dbcfg.creat || dbcfg.newdb) {
-            return Err(Error::EmptyFile);
-        }
-
-        let (header, dir, initial_bucket) = match metadata.len() {
-            0 => {
-                let layout = Layout {
-                    offset: dbcfg.offset.unwrap_or(Offset::LFS),
-                    alignment: dbcfg.alignment.unwrap_or(Alignment::Align64),
-                    endian: dbcfg.endian.unwrap_or(Endian::Little),
-                };
-                let (block_size, dir_bits) = build_dir_size(
-                    layout.offset,
-                    match dbcfg.block_size {
-                        Some(size) if size >= 512 => size,
-                        _ => f.metadata()?.st_blksize() as u32,
-                    },
-                );
-
-                if dbcfg.bsexact && Some(block_size) != dbcfg.block_size {
-                    return Err(Error::BadBlockSize {
-                        requested: dbcfg.block_size.unwrap_or(0),
-                        actual: block_size,
-                    });
-                }
-
-                let header = Header::new(block_size, &layout, dir_bits, dbcfg.numsync);
-                let bucket = Bucket::new(0, header.bucket_elems as usize, vec![], vec![]);
-                let bucket_offset = header.next_block - block_size as u64;
-                let dir = Directory::new(vec![bucket_offset; 1 << header.dir_bits]);
-
-                (header, dir, Some((bucket_offset, bucket)))
-            }
-            _ => {
-                let header = Header::from_reader(dbcfg.alignment, metadata.len(), &mut f)?;
-
-                f.seek(SeekFrom::Start(header.dir_ofs))?;
-                let dir = Directory::from_reader(&header.layout, header.dir_sz, &mut f)?;
-
-                // ensure all bucket offsets are reasonable
-                if !dir.validate(header.block_sz as u64, header.next_block, header.block_sz) {
-                    return Err(Error::BadDirectory {
-                        offset: header.dir_ofs,
-                        length: header.dir_sz,
-                    });
-                }
-
-                (header, dir, None)
-            }
+    pub fn create<P: AsRef<std::path::Path>>(
+        f: File,
+        path: P,
+        open_options: &OpenOptions<options::Write<Create>>,
+    ) -> Result<Gdbm<ReadWrite>> {
+        let layout = Layout {
+            offset: open_options.write.create.offset.unwrap_or(Offset::LFS),
+            alignment: open_options.alignment.unwrap_or(Alignment::Align64),
+            endian: open_options.write.create.endian.unwrap_or(Endian::Little),
         };
+
+        let (block_size, dir_bits) = match open_options.write.create.block_size {
+            BlockSize::Roughly(size) => build_dir_size(layout.offset, size),
+            BlockSize::Exactly(size) => build_dir_size(layout.offset, size),
+            _ => build_dir_size(layout.offset, f.metadata()?.st_blksize() as u32),
+        };
+
+        if let BlockSize::Exactly(size) = open_options.write.create.block_size {
+            if block_size != size {
+                return Err(Error::BadBlockSize {
+                    requested: size,
+                    actual: block_size,
+                });
+            }
+        }
+
+        let header = Header::new(
+            block_size,
+            &layout,
+            dir_bits,
+            !open_options.write.create.no_numsync,
+        );
+        let bucket = Bucket::new(0, header.bucket_elems as usize, vec![], vec![]);
+        let bucket_offset = header.next_block - block_size as u64;
+        let dir = Directory::new(vec![bucket_offset; 1 << header.dir_bits]);
 
         let bucket_cache = {
             let cache_buckets = {
-                let bytes = dbcfg.cachesize.unwrap_or(DEFAULT_CACHESIZE);
+                let bytes = open_options.cachesize.unwrap_or(DEFAULT_CACHESIZE);
                 let buckets = bytes / header.bucket_sz as usize;
                 buckets.max(1)
             };
-            BucketCache::new(cache_buckets, initial_bucket)
+            BucketCache::new(cache_buckets, Some((bucket_offset, bucket)))
         };
 
         Ok(Gdbm {
-            pathname: pathname.to_string(),
+            pathname: path.as_ref().to_string_lossy().to_string(),
             f,
             header,
             dir,
             bucket_cache,
-            _rw_phantom: PhantomData,
+            rw_phantom: PhantomData,
         })
     }
 
