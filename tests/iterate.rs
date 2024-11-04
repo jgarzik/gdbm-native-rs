@@ -15,7 +15,7 @@ mod common;
 use std::collections::{HashMap, HashSet};
 
 use common::init_tests;
-use gdbm_native::Gdbm;
+use gdbm_native::{Gdbm, ReadOnly};
 
 #[test]
 fn api_iter() {
@@ -29,7 +29,7 @@ fn api_iter() {
                 .map(|kv| (kv[0].clone(), kv[1].clone()))
                 .collect::<HashMap<_, _>>();
 
-            Gdbm::open(&test.db_path, &test.ro_cfg())
+            Gdbm::<ReadOnly>::open(&test.db_path, &test.ro_cfg())
                 .map_err(|e| e.to_string())
                 .and_then(|mut db| {
                     db.iter::<String, String>().try_for_each(|kv| {
@@ -63,7 +63,7 @@ fn api_keys() {
                 .map(|kv| kv[0].clone())
                 .collect::<HashSet<_>>();
 
-            Gdbm::open(&test.db_path, &test.ro_cfg())
+            Gdbm::<ReadOnly>::open(&test.db_path, &test.ro_cfg())
                 .map_err(|e| e.to_string())
                 .and_then(|mut db| {
                     db.keys::<String>().try_for_each(|kv| {
@@ -96,7 +96,7 @@ fn api_values() {
                 .map(|kv| kv[1].clone())
                 .collect::<HashSet<_>>();
 
-            Gdbm::open(&test.db_path, &test.ro_cfg())
+            Gdbm::<ReadOnly>::open(&test.db_path, &test.ro_cfg())
                 .map_err(|e| e.to_string())
                 .and_then(|mut db| {
                     db.values::<String>().try_for_each(|kv| {

@@ -16,7 +16,7 @@ use std::fs::OpenOptions;
 use tempfile::NamedTempFile;
 
 use common::{creat_cfg, default_cfg, init_tests};
-use gdbm_native::{ExportBinMode, Gdbm};
+use gdbm_native::{ExportBinMode, Gdbm, ReadOnly};
 
 #[test]
 fn api_export_bin() {
@@ -34,7 +34,7 @@ fn api_export_bin() {
                         .open(dumpfile.path())
                         .map_err(|e| e.to_string())
                         .and_then(|mut f| {
-                            Gdbm::open(&test.db_path, &test.ro_cfg())
+                            Gdbm::<ReadOnly>::open(&test.db_path, &test.ro_cfg())
                                 .and_then(|mut db| db.export_bin(&mut f, mode))
                                 .map_err(|e| e.to_string())
                         })
@@ -49,7 +49,7 @@ fn api_export_bin() {
                         .unwrap();
 
                     // compare the databases
-                    Gdbm::open(importdb.path().to_str().unwrap(), &default_cfg())
+                    Gdbm::<ReadOnly>::open(importdb.path().to_str().unwrap(), &default_cfg())
                         .map_err(|e| e.to_string())
                         .and_then(|mut db| {
                             test.metadata.data.iter().try_for_each(|kv| {
@@ -78,7 +78,7 @@ fn api_export_ascii() {
             .open(dumpfile.path())
             .map_err(|e| e.to_string())
             .and_then(|mut f| {
-                Gdbm::open(&testdb.db_path, &testdb.ro_cfg())
+                Gdbm::<ReadOnly>::open(&testdb.db_path, &testdb.ro_cfg())
                     .and_then(|mut db| db.export_ascii(&mut f))
                     .map_err(|e| e.to_string())
             })
@@ -91,7 +91,7 @@ fn api_export_ascii() {
             .unwrap();
 
         // compare the databases
-        Gdbm::open(importdb.path().to_str().unwrap(), &default_cfg())
+        Gdbm::<ReadOnly>::open(importdb.path().to_str().unwrap(), &default_cfg())
             .map_err(|e| e.to_string())
             .and_then(|mut db| {
                 testdb.metadata.data.iter().try_for_each(|kv| {
