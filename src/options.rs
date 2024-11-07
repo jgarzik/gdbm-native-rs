@@ -33,6 +33,7 @@ pub struct NotCreate;
 pub struct NotWrite;
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Write<C> {
+    pub sync: bool,
     pub create: C,
 }
 
@@ -67,7 +68,10 @@ impl OpenOptions<NotWrite> {
         OpenOptions {
             alignment: self.alignment,
             cachesize: self.cachesize,
-            write: Write { create: NotCreate },
+            write: Write {
+                sync: false,
+                create: NotCreate,
+            },
         }
     }
 }
@@ -80,6 +84,17 @@ impl<C> OpenOptions<Write<C>> {
             write: NotWrite,
         }
     }
+
+    pub fn sync(self, sync: bool) -> OpenOptions<Write<C>> {
+        OpenOptions {
+            alignment: self.alignment,
+            cachesize: self.cachesize,
+            write: Write {
+                sync,
+                create: self.write.create,
+            },
+        }
+    }
 }
 
 impl OpenOptions<Write<NotCreate>> {
@@ -89,6 +104,7 @@ impl OpenOptions<Write<NotCreate>> {
             cachesize: self.cachesize,
             write: Write {
                 create: Create::default(),
+                sync: self.write.sync,
             },
         }
     }
@@ -99,7 +115,10 @@ impl OpenOptions<Write<Create>> {
         OpenOptions {
             alignment: self.alignment,
             cachesize: self.cachesize,
-            write: Write { create: NotCreate },
+            write: Write {
+                create: NotCreate,
+                sync: self.write.sync,
+            },
         }
     }
 
@@ -112,6 +131,7 @@ impl OpenOptions<Write<Create>> {
                     offset,
                     ..self.write.create
                 },
+                ..self.write
             },
         }
     }
@@ -125,6 +145,7 @@ impl OpenOptions<Write<Create>> {
                     endian,
                     ..self.write.create
                 },
+                ..self.write
             },
         }
     }
@@ -138,6 +159,7 @@ impl OpenOptions<Write<Create>> {
                     no_numsync: !numsync,
                     ..self.write.create
                 },
+                ..self.write
             },
         }
     }
@@ -151,6 +173,7 @@ impl OpenOptions<Write<Create>> {
                     newdb,
                     ..self.write.create
                 },
+                ..self.write
             },
         }
     }
@@ -164,6 +187,7 @@ impl OpenOptions<Write<Create>> {
                     block_size,
                     ..self.write.create
                 },
+                ..self.write
             },
         }
     }
@@ -187,6 +211,10 @@ impl OpenOptions<Write<NotCreate>> {
             .open(path.as_ref())
             .map_err(Error::Io)
             .and_then(|f| Gdbm::<ReadWrite>::open(f, path, self.alignment, self.cachesize))
+            .map(|mut db| {
+                db.set_sync(self.write.sync);
+                db
+            })
     }
 }
 
@@ -217,6 +245,10 @@ impl OpenOptions<Write<Create>> {
                         })
                 })
         }
+        .map(|mut db| {
+            db.set_sync(self.write.sync);
+            db
+        })
     }
 }
 

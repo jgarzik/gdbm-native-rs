@@ -4,6 +4,8 @@ use std::{fmt::Display, fmt::Formatter, io};
 pub enum Error {
     /// IO error.
     Io(io::Error),
+    /// Database may be inconsistent since an earlier error. Writes are disabled.
+    Inconsistent,
     /// Bucket has too many elements or bucket bits > directory bits.
     BadBucket {
         /// Bucket file offset.
