@@ -60,11 +60,20 @@ pub enum ExportBinMode {
     Exp64,
 }
 
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+enum WriteState {
+    #[default]
+    Clean,
+    Dirty,
+    Inconsistent,
+}
+
 #[derive(Copy, Clone, Debug, Default)]
 pub struct ReadOnly;
 #[derive(Copy, Clone, Debug, Default)]
 pub struct ReadWrite {
     sync: bool,
+    state: WriteState,
 }
 
 pub trait CacheBucket {
@@ -458,6 +467,7 @@ impl Gdbm<ReadWrite> {
             bucket_cache,
             read_write: ReadWrite {
                 sync: open_options.write.sync,
+                state: WriteState::Dirty,
             },
         };
 
@@ -646,19 +656,29 @@ impl Gdbm<ReadWrite> {
 
     // write out any cached, not-yet-written metadata and data to storage
     fn write_dirty(&mut self) -> io::Result<()> {
+        self.read_write.state = WriteState::Inconsistent;
+
         self.write_buckets()?;
         self.write_dir()?;
         self.write_header()?;
+
+        self.read_write.state = WriteState::Clean;
 
         Ok(())
     }
 
     // API: ensure database is flushed to stable storage
     pub fn sync(&mut self) -> Result<()> {
-        self.header.increment_numsync();
-        self.write_dirty()
-            .and_then(|_| self.f.sync_data())
-            .map_err(Error::Io)
+        match self.read_write.state {
+            WriteState::Clean => Ok(()),
+            WriteState::Inconsistent => Err(Error::Inconsistent),
+            WriteState::Dirty => {
+                self.header.increment_numsync();
+                self.write_dirty()
+                    .and_then(|_| self.f.sync_data())
+                    .map_err(Error::Io)
+            }
+        }
     }
 
     fn int_remove(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
@@ -667,6 +687,13 @@ impl Gdbm<ReadWrite> {
         if get_opt.is_none() {
             return Ok(None);
         }
+
+        if self.read_write.state == WriteState::Inconsistent {
+            return Err(Error::Inconsistent);
+        }
+
+        self.read_write.state = WriteState::Inconsistent;
+
         let (elem_ofs, data) = get_opt.unwrap();
 
         let elem = self
@@ -677,6 +704,8 @@ impl Gdbm<ReadWrite> {
 
         // release record bytes to available-space pool
         self.free_record(elem.data_ofs, elem.key_size + elem.data_size)?;
+
+        self.read_write.state = WriteState::Dirty;
 
         Ok(Some(data))
     }
@@ -718,6 +747,12 @@ impl Gdbm<ReadWrite> {
     }
 
     fn int_insert(&mut self, key: Vec<u8>, data: Vec<u8>) -> Result<()> {
+        if self.read_write.state == WriteState::Inconsistent {
+            return Err(Error::Inconsistent);
+        }
+
+        self.read_write.state = WriteState::Inconsistent;
+
         let offset = self.allocate_record((key.len() + data.len()) as u32)?;
 
         self.f
@@ -737,6 +772,8 @@ impl Gdbm<ReadWrite> {
             .current_bucket_mut()
             .unwrap()
             .insert(bucket_elem);
+
+        self.read_write.state = WriteState::Dirty;
 
         Ok(())
     }
@@ -842,11 +879,21 @@ impl Gdbm<ReadWrite> {
 
     // API: convert
     pub fn convert(&mut self, options: &ConvertOptions) -> Result<()> {
+        if self.read_write.state == WriteState::Inconsistent {
+            return Err(Error::Inconsistent);
+        }
+
+        self.read_write.state = WriteState::Inconsistent;
+
         self.header
             .convert_numsync(options.numsync)
             .into_iter()
             .try_for_each(|(offset, length)| self.free_record(offset, length))
-            .map_err(Error::Io)
+            .map_err(Error::Io)?;
+
+        self.read_write.state = WriteState::Dirty;
+
+        Ok(())
     }
 }
 
