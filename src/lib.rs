@@ -38,7 +38,6 @@ pub use options::{BlockSize, ConvertOptions, Create, OpenOptions};
 use ser::{write32, write64};
 pub use ser::{Alignment, Endian, Layout, Offset};
 use std::fs::File;
-use std::marker::PhantomData;
 
 #[cfg(target_os = "linux")]
 use std::os::linux::fs::MetadataExt;
@@ -61,10 +60,12 @@ pub enum ExportBinMode {
     Exp64,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct ReadOnly;
-#[derive(Copy, Clone, Debug)]
-pub struct ReadWrite;
+#[derive(Copy, Clone, Debug, Default)]
+pub struct ReadWrite {
+    sync: bool,
+}
 
 pub trait CacheBucket {
     fn cache_bucket(&mut self, offset: u64, bucket: Bucket) -> Result<()>;
@@ -89,7 +90,7 @@ pub struct Gdbm<R> {
     pub dir: Directory,
     bucket_cache: BucketCache,
 
-    rw_phantom: PhantomData<R>,
+    read_write: R,
 }
 
 // cache_bucket for ReadOnly variant ignores (never receives) dirty displaced buckets.
@@ -115,6 +116,7 @@ impl CacheBucket for Gdbm<ReadWrite> {
 impl<R> Gdbm<R>
 where
     Gdbm<R>: CacheBucket,
+    R: Default,
 {
     // API: open database file, read and validate header
     pub fn open<P: AsRef<std::path::Path>>(
@@ -157,7 +159,7 @@ where
             header,
             dir,
             bucket_cache,
-            rw_phantom: PhantomData,
+            read_write: R::default(),
         })
     }
 
@@ -448,14 +450,26 @@ impl Gdbm<ReadWrite> {
             BucketCache::new(cache_buckets, Some((bucket_offset, bucket)))
         };
 
-        Ok(Gdbm {
+        let mut db = Gdbm {
             pathname: path.as_ref().to_string_lossy().to_string(),
             f,
             header,
             dir,
             bucket_cache,
-            rw_phantom: PhantomData,
-        })
+            read_write: ReadWrite {
+                sync: open_options.write.sync,
+            },
+        };
+
+        if db.read_write.sync {
+            db.sync()?;
+        }
+
+        Ok(db)
+    }
+
+    pub fn set_sync(&mut self, sync: bool) {
+        self.read_write.sync = sync;
     }
 
     pub fn import_ascii(&mut self, reader: &mut impl Read) -> Result<()> {
@@ -647,9 +661,8 @@ impl Gdbm<ReadWrite> {
             .map_err(Error::Io)
     }
 
-    // API: remove a key/value pair from db, given a key
-    pub fn remove<'a, K: Into<BytesRef<'a>>>(&mut self, key: K) -> Result<Option<Vec<u8>>> {
-        let get_opt = self.int_get(key.into().as_ref())?;
+    fn int_remove(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        let get_opt = self.int_get(key)?;
 
         if get_opt.is_none() {
             return Ok(None);
@@ -665,10 +678,18 @@ impl Gdbm<ReadWrite> {
         // release record bytes to available-space pool
         self.free_record(elem.data_ofs, elem.key_size + elem.data_size)?;
 
-        // flush any dirty pages to OS
-        self.write_dirty()?;
-
         Ok(Some(data))
+    }
+
+    // API: remove a key/value pair from db, given a key
+    pub fn remove<'a, K: Into<BytesRef<'a>>>(&mut self, key: K) -> Result<Option<Vec<u8>>> {
+        self.int_remove(key.into().as_ref()).and_then(|old_value| {
+            if old_value.is_some() && self.read_write.sync {
+                self.sync()?;
+            }
+
+            Ok(old_value)
+        })
     }
 
     fn allocate_record(&mut self, size: u32) -> io::Result<u64> {
@@ -726,10 +747,18 @@ impl Gdbm<ReadWrite> {
         value: V,
     ) -> Result<Option<Vec<u8>>> {
         let key = key.into();
-        self.remove(key.as_ref()).and_then(|oldkey| {
-            self.int_insert(key.into_vec(), value.into().into_vec())
-                .map(|_| oldkey)
-        })
+        self.int_remove(key.as_ref())
+            .and_then(|oldvalue| {
+                self.int_insert(key.into_vec(), value.into().into_vec())
+                    .map(|_| oldvalue)
+            })
+            .and_then(|oldvalue| {
+                if self.read_write.sync {
+                    self.sync()?;
+                }
+
+                Ok(oldvalue)
+            })
     }
 
     pub fn try_insert<K: Into<Bytes>, V: Into<Bytes>>(
@@ -742,7 +771,14 @@ impl Gdbm<ReadWrite> {
             Some(_) => Ok((false, olddata)),
             _ => self
                 .int_insert(key.into_vec(), value.into().into_vec())
-                .map(|_| (true, None)),
+                .map(|_| (true, None))
+                .and_then(|result| {
+                    if self.read_write.sync {
+                        self.sync()?;
+                    }
+
+                    Ok(result)
+                }),
         })
     }
 
@@ -835,6 +871,7 @@ struct Slot {
 impl<'a, R> GDBMIterator<'a, R>
 where
     Gdbm<R>: CacheBucket,
+    R: Default,
 {
     fn next_slot(db: &Gdbm<R>, slot: Slot) -> Option<Slot> {
         match slot {
@@ -901,6 +938,7 @@ where
 impl<'a, R> Iterator for GDBMIterator<'a, R>
 where
     Gdbm<R>: CacheBucket,
+    R: Default,
 {
     type Item = Result<(Vec<u8>, Vec<u8>)>;
 
