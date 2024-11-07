@@ -11,6 +11,7 @@
 extern crate base64;
 
 use base64::Engine;
+use std::any::Any;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
 mod avail;
@@ -92,7 +93,7 @@ fn read_ofs(f: &mut std::fs::File, ofs: u64, total_size: usize) -> io::Result<Ve
 }
 
 // #[derive(Debug)]
-pub struct Gdbm<R> {
+pub struct Gdbm<R: 'static> {
     pathname: String,
     f: std::fs::File,
     pub header: Header,
@@ -897,7 +898,16 @@ impl Gdbm<ReadWrite> {
     }
 }
 
-struct GDBMIterator<'a, R> {
+impl<R> Drop for Gdbm<R> {
+    fn drop(&mut self) {
+        let db: &mut dyn Any = self as &mut dyn Any;
+        if let Some(db) = db.downcast_mut::<Gdbm<ReadWrite>>() {
+            let _ = db.sync();
+        }
+    }
+}
+
+struct GDBMIterator<'a, R: 'static> {
     key_or_value: KeyOrValue,
     db: &'a mut Gdbm<R>,
     slot: Option<Result<Slot>>,
@@ -918,7 +928,7 @@ struct Slot {
 impl<'a, R> GDBMIterator<'a, R>
 where
     Gdbm<R>: CacheBucket,
-    R: Default,
+    R: Default + 'static,
 {
     fn next_slot(db: &Gdbm<R>, slot: Slot) -> Option<Slot> {
         match slot {
@@ -985,7 +995,7 @@ where
 impl<'a, R> Iterator for GDBMIterator<'a, R>
 where
     Gdbm<R>: CacheBucket,
-    R: Default,
+    R: Default + 'static,
 {
     type Item = Result<(Vec<u8>, Vec<u8>)>;
 

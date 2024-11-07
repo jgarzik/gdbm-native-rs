@@ -122,6 +122,7 @@ fn api_open_bsexact() {
         match OpenOptions::new()
             .write()
             .create()
+            .newdb(true)
             .block_size(BlockSize::Exactly(block_size))
             .open(old_db.path().to_str().unwrap())
         {
