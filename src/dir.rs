@@ -37,11 +37,6 @@ pub struct Directory {
 }
 
 impl Directory {
-    #[allow(clippy::len_without_is_empty)]
-    pub fn len(&self) -> usize {
-        self.dir.len()
-    }
-
     pub fn new(bucket_offsets: Vec<u64>) -> Self {
         Self {
             dir: bucket_offsets,

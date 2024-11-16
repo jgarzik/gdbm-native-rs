@@ -35,7 +35,7 @@ fn api_convert() {
                 .open(tempfile.path().to_str().unwrap())
                 .map_err(|e| format!("opening: {}", e))
                 .and_then(|db| {
-                    (db.header.magic.is_numsync() == convert_options.numsync)
+                    (db.magic().is_numsync() == convert_options.numsync)
                         .then_some(())
                         .ok_or_else(|| "file is not numsync".to_string())
                 })

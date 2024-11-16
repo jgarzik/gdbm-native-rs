@@ -77,7 +77,7 @@ fn api_open_newdb_magic() {
             old_db.path().to_str().unwrap()
         )
         .and_then(|mut db| {
-            println!("magic: {:?}", db.header.magic);
+            println!("magic: {:?}", db.magic());
             db.sync()})
         .map_err(|e| format!(
             "creating: alignment: {:?}, offset: {:?}, endian: {:?}, numsync: {}, expected: {:?}, newdb error: {}",
@@ -92,12 +92,12 @@ fn api_open_newdb_magic() {
             alignment, offset, endian, numsync, expected_magic, e
         ))
         .and_then(|db| {
-            (db.header.magic == expected_magic)
+            (db.magic() == expected_magic)
                 .then_some(())
                 .ok_or_else(|| {
                     format!(
                         "wrong magic: alignment: {:?}, offset: {:?}, endian: {:?}, numsync: {}, expected: {:?}, got: {:?}",
-                        alignment, offset, endian, numsync, expected_magic, db.header.magic
+                        alignment, offset, endian, numsync, expected_magic, db.magic()
                     )
                 })
         })

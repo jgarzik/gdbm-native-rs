@@ -96,8 +96,8 @@ fn read_ofs(f: &mut std::fs::File, ofs: u64, total_size: usize) -> io::Result<Ve
 pub struct Gdbm<R: 'static> {
     pathname: String,
     f: std::fs::File,
-    pub header: Header,
-    pub dir: Directory,
+    header: Header,
+    dir: Directory,
     bucket_cache: BucketCache,
 
     read_write: R,
@@ -410,6 +410,41 @@ where
             None => Ok(None),
             Some(data) => Ok(Some(Bytes::from(data.1).into())),
         }
+    }
+
+    pub fn magic(&self) -> Magic {
+        self.header.magic
+    }
+
+    #[cfg(feature = "diagnostic")]
+    pub fn show_header(&self, w: &mut impl Write) -> io::Result<()> {
+        let (dir_sz, dir_bits) = build_dir_size(self.header.layout.offset, self.header.block_sz);
+
+        writeln!(w, "magic {}", self.header.magic)?;
+        writeln!(w, "dir-offset {}", self.header.dir_ofs)?;
+        writeln!(w, "dir-size {}", dir_sz)?;
+        writeln!(w, "dir-bits {}", dir_bits)?;
+        writeln!(w, "block-size {}", self.header.block_sz)?;
+        writeln!(w, "bucket-elems {}", self.header.bucket_elems)?;
+        writeln!(w, "bucket-size {}", self.header.bucket_sz)?;
+        writeln!(w, "next-block {}", self.header.next_block)?;
+        writeln!(w, "avail-size {}", self.header.avail.sz)?;
+        writeln!(w, "avail-count {}", self.header.avail.elems.len())?;
+        writeln!(w, "avail-next-block {}", self.header.avail.next_block)?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "diagnostic")]
+    pub fn show_directory(&self, w: &mut impl Write) -> io::Result<()> {
+        writeln!(w, "size {}", self.header.dir_sz)?;
+        writeln!(w, "bits {}", self.header.dir_bits)?;
+
+        for n in 0..self.dir.dir.len() {
+            writeln!(w, "{}: {}", n, self.dir.dir[n])?;
+        }
+
+        Ok(())
     }
 }
 
