@@ -141,6 +141,7 @@ where
             return Err(Error::EmptyFile(f));
         }
 
+        f.seek(SeekFrom::Start(0))?;
         let header = Header::from_reader(alignment, metadata.len(), &mut f)?;
 
         f.seek(SeekFrom::Start(header.dir_ofs))?;
