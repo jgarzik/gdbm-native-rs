@@ -8,6 +8,39 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
+//! Rust native implementation of GDBM key-value database.
+//!
+//! An efficient disk based key-value store for new applications, while retaining compatibility
+//! with legacy GDBM data files.
+//!
+//! # Examples
+//! ```
+//! use gdbm_native as gdbm;
+//!
+//! # use tempfile::tempdir;
+//! # fn main() -> Result<(), String> {
+//! #     let tmp_dir = tempdir().map_err(|e| e.to_string())?;
+//! #     let passwords = tmp_dir.path().join("top-level-doc-test");
+//! #     || -> gdbm::Result<()> {
+//! // Create a new database at path
+//! let mut db = gdbm::OpenOptions::new()
+//!     .write()
+//!     .create()
+//!     .open(passwords)?;
+//!
+//! // Insert key/value pairs
+//! db.insert("286755fad04869ca523320acce0dc6a4", "chal28griffin@example.com")?;
+//! db.insert("4aacf9c858c82716ab0034320bd2efe9", "floribund@gmail.com")?;
+//! db.insert("d577273ff885c3f84dadb8578bb41399", "peterxentwhisle@me.com")?;
+//!
+//! // Read the value back. The database has no knowledge of the original type of the value stored
+//! // so we need to add type hints.
+//! let value: Option<String> = db.get("4aacf9c858c82716ab0034320bd2efe9")?;
+//! assert!(value == Some("floribund@gmail.com".to_string()));
+//! #         Ok(())
+//! #     }().map_err(|e| e.to_string())
+//! # }
+//! ```
 extern crate base64;
 
 use base64::Engine;
@@ -45,19 +78,29 @@ use std::os::linux::fs::MetadataExt;
 #[cfg(target_os = "macos")]
 use std::os::macos::fs::MetadataExt;
 
-// Our claimed GDBM lib version compatibility.  Appears in dump files.
-const COMPAT_GDBM_VERSION: &str = "1.23";
+/// Our claimed GDBM lib version compatibility. Appears in dump files.
+pub const COMPAT_GDBM_VERSION: &str = "1.23";
 
 const IGNORE_SMALL: usize = 4;
 
+/// The default approximate size of heap memory used by each open database.
+/// The actual value used can be set when opening the database.
 pub const DEFAULT_CACHESIZE: usize = 4 * 1024 * 1024;
 
+/// The crate Result type.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Mode to use when exporting a binary dump. It affects the number of bytes used to store
+/// length metadata within the dump. There is no indication of this mode stored in a dump file
+/// so the same mode must be used when restoring the dumped data. For this reason it is preferable
+/// to use the ASCII dump format.
 #[derive(Copy, Clone, Debug)]
 pub enum ExportBinMode {
+    /// Use 32 bits to store lengths if the database has 32bit alignment, otherwise use 64 bits.
     ExpNative,
+    /// Store lengths as 32bit values.
     Exp32,
+    /// Store lengths as 64bit values.
     Exp64,
 }
 
@@ -69,8 +112,10 @@ enum WriteState {
     Inconsistent,
 }
 
+/// Struct used as type parameter to open a database in read-only mode.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct ReadOnly;
+/// Struct used as type parameter to open a database in read-write mode.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct ReadWrite {
     sync: bool,
@@ -93,6 +138,7 @@ fn read_ofs(f: &mut std::fs::File, ofs: u64, total_size: usize) -> io::Result<Ve
 }
 
 // #[derive(Debug)]
+/// GDBM database type.
 pub struct Gdbm<R: 'static> {
     f: std::fs::File,
     header: Header,
@@ -224,7 +270,26 @@ where
         Ok(())
     }
 
-    // API: export database to ASCII dump file
+    /// Dumps the database in ASCII format.
+    ///
+    /// Dumps the database in ASCII format to the supplied [`io::Write`]. If a filename is
+    /// provided it will be used to set the `#:file=<filename>` header line.
+    ///
+    /// # Examples
+    /// ```
+    /// # use tempfile::tempdir;
+    /// # fn main() -> Result<(), String> {
+    /// #     let tmp_dir = tempdir().unwrap();
+    /// #     let path = tmp_dir.path().join("test");
+    /// #     || -> gdbm_native::Result<()> {
+    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// let mut buffer = Vec::new();
+    /// db.export_ascii(&mut buffer, None::<&str>)?;
+    /// println!("{}", std::str::from_utf8(&buffer).unwrap());
+    /// #         Ok(())
+    /// #     }().map_err(|e| e.to_string())
+    /// # }
+    /// ```
     pub fn export_ascii<P: AsRef<std::path::Path>>(
         &mut self,
         outf: &mut impl Write,
@@ -272,7 +337,31 @@ where
         })
     }
 
-    // API: export database to binary dump file
+    /// Dumps the database in binary format.
+    ///
+    /// Dumps the database in binary format to the supplied [`io::Write`]. The binary encoding stores
+    /// key and value lengths as big endian integers, and [`mode`](ExportBinMode) can be used to
+    /// select whether these are stored as 4 or 8 byte values.
+    ///
+    /// Note: The binary format is more conpact than the ASCII equivalent, but decoding requires
+    /// knowing the `mode` used to export, and so ASCII dumps are preferred.
+    ///
+    /// # Examples
+    /// ```
+    /// # use tempfile::tempdir;
+    /// use gdbm_native::ExportBinMode;
+    /// # fn main() -> Result<(), String> {
+    /// #     let tmp_dir = tempdir().unwrap();
+    /// #     let path = tmp_dir.path().join("test");
+    /// #     || -> gdbm_native::Result<()> {
+    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// let mut buffer = Vec::new();
+    /// db.export_bin(&mut buffer, ExportBinMode::Exp32)?;
+    /// println!("{:?}", buffer);
+    /// #         Ok(())
+    /// #     }().map_err(|e| e.to_string())
+    /// # }
+    /// ```
     pub fn export_bin(&mut self, outf: &mut impl Write, mode: ExportBinMode) -> Result<()> {
         let alignment = match mode {
             ExportBinMode::ExpNative => self.header.layout.alignment,
@@ -330,7 +419,24 @@ where
         bucket_dir
     }
 
-    // API: count entries in database
+    /// Gets the number of key-value pairs in the database.
+    ///
+    /// Note: This is an expensive operation as it involves loading all the database metadata in
+    /// order to calculate the number of entries.
+    ///
+    /// # Examples
+    /// ```
+    /// # use tempfile::tempdir;
+    /// # fn main() -> Result<(), String> {
+    /// #     let tmp_dir = tempdir().unwrap();
+    /// #     let path = tmp_dir.path().join("test");
+    /// #     || -> gdbm_native::Result<()> {
+    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// let count = db.len()?;
+    /// #         Ok(())
+    /// #     }().map_err(|e| e.to_string())
+    /// # }
+    /// ```
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&mut self) -> Result<usize> {
         let mut len: usize = 0;
@@ -344,19 +450,77 @@ where
         Ok(len)
     }
 
-    // API: get an iterator over values
+    /// Get an [`Iterator`] over the values in the database.
+    ///
+    /// # Examples
+    /// ```
+    /// # use tempfile::tempdir;
+    /// # fn main() -> Result<(), String> {
+    /// #     let tmp_dir = tempdir().unwrap();
+    /// #     let path = tmp_dir.path().join("test");
+    /// #     || -> gdbm_native::Result<()> {
+    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// #         let spam = |_| ();
+    /// for address in db.values::<String>() {
+    ///     let address = address?;
+    ///     spam(address);
+    /// }
+    /// #         Ok(())
+    /// #     }().map_err(|e| e.to_string())
+    /// # }
+    /// ```
     pub fn values<V: FromBytes>(&mut self) -> impl std::iter::Iterator<Item = Result<V>> + '_ {
         GDBMIterator::<R>::new(self, KeyOrValue::Value)
             .map(|data| data.and_then(|(_, value)| V::from_bytes(&value)))
     }
 
-    // API: get an iterator over keys
+    /// Get an [`Iterator`] over the keys in the database.
+    ///
+    /// # Examples
+    /// ```
+    /// # use tempfile::tempdir;
+    /// # fn main() -> Result<(), String> {
+    /// #     let tmp_dir = tempdir().map_err(|e| e.to_string())?;
+    /// #     let path = tmp_dir.path().join("test");
+    /// #     || -> gdbm_native::Result<()> {
+    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// let mut longest = None::<String>;
+    ///
+    /// for key in db.keys::<String>() {
+    ///     let key = key?;
+    ///     longest = Some(match longest {
+    ///         Some(longest) if longest.len() >= key.len() => longest,
+    ///         _ => key,
+    ///     });
+    /// }
+    ///
+    /// println!("{longest:?}");
+    /// #         Ok(())
+    /// #     }().map_err(|e| e.to_string())
+    /// # }
+    /// ```
     pub fn keys<K: FromBytes>(&mut self) -> impl std::iter::Iterator<Item = Result<K>> + '_ {
         GDBMIterator::<R>::new(self, KeyOrValue::Key)
             .map(|data| data.and_then(|(key, _)| K::from_bytes(&key)))
     }
 
-    // API: get an iterator
+    /// Get an [`Iterator`] over the entries (key, value) pairs in the database.
+    ///
+    /// ```
+    /// # use tempfile::tempdir;
+    /// # fn main() -> Result<(), String> {
+    /// #     let tmp_dir = tempdir().map_err(|e| e.to_string())?;
+    /// #     let path = tmp_dir.path().join("test");
+    /// #     || -> gdbm_native::Result<()> {
+    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// for kv in db.iter::<String, u32>() {
+    ///     let (button, count) = kv?;
+    ///     println!("button <{button}> was clicked {count} times")
+    /// }
+    /// #         Ok(())
+    /// #     }().map_err(|e| e.to_string())
+    /// # }
+    /// ```
     pub fn iter<K: FromBytes, V: FromBytes>(
         &mut self,
     ) -> impl std::iter::Iterator<Item = Result<(K, V)>> + '_ {
@@ -367,7 +531,24 @@ where
         })
     }
 
-    // API: does key exist?
+    /// Checks whether the database contains a specific key.
+    ///
+    /// # Examples
+    /// ```
+    /// # use tempfile::tempdir;
+    /// # fn main() -> Result<(), String> {
+    /// #     let tmp_dir = tempdir().unwrap();
+    /// #     let path = tmp_dir.path().join("test");
+    /// #     let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// #     db.insert("fred", "dibnah");
+    /// #     let username = "fred";
+    /// if db.contains_key(username).unwrap() {
+    ///     Ok(())
+    /// } else {
+    ///     Err("Access deied".to_string())
+    /// }
+    /// # }
+    /// ```
     pub fn contains_key<K: ToBytesRef>(&mut self, key: K) -> Result<bool> {
         self.int_get(key.to_bytes_ref().as_ref())
             .map(|result| result.is_some())
@@ -413,7 +594,25 @@ where
         Ok(result)
     }
 
-    // API: Fetch record value, given a key
+    /// Get the value for a specific key from the database.
+    ///
+    /// # Examples
+    /// ```
+    /// # use tempfile::tempdir;
+    /// # fn main() -> Result<(), String> {
+    /// #     let tmp_dir = tempdir().unwrap();
+    /// #     let path = tmp_dir.path().join("test");
+    /// #     || -> gdbm_native::Result<()> {
+    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// #     let display = |_: Vec<u8>| ();
+    /// #     let image_name = "";
+    /// if let Some(image) = db.get(image_name)? {
+    ///     display(image);
+    /// }
+    /// #         Ok(())
+    /// #     }().map_err(|e| e.to_string())
+    /// # }
+    /// ```
     pub fn get<K: ToBytesRef, V: FromBytes>(&mut self, key: K) -> Result<Option<V>> {
         match self.int_get(key.to_bytes_ref().as_ref())? {
             None => Ok(None),
@@ -421,11 +620,26 @@ where
         }
     }
 
+    /// Gets the database [`Magic`] number.
+    ///
+    /// # Examples
+    /// ```
+    /// # use tempfile::tempdir;
+    /// # fn main() {
+    /// #     let tmp_dir = tempdir().unwrap();
+    /// #     let path = tmp_dir.path().join("test");
+    /// #     let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// println!("database magic: {:?}", db.magic());
+    /// # }
+    /// ```
     pub fn magic(&self) -> Magic {
         self.header.magic
     }
 
     #[cfg(feature = "diagnostic")]
+    /// Show diagnostic information about the database header.
+    ///
+    /// Only available when the `diagnostic` feature is enabled.
     pub fn show_header(&self, w: &mut impl Write) -> io::Result<()> {
         let (dir_sz, dir_bits) = build_dir_size(self.header.layout.offset, self.header.block_sz);
 
@@ -445,6 +659,9 @@ where
     }
 
     #[cfg(feature = "diagnostic")]
+    /// Show diagnostic information about the database directory.
+    ///
+    /// Only available when the `diagnostic` feature is enabled.
     pub fn show_directory(&self, w: &mut impl Write) -> io::Result<()> {
         writeln!(w, "size {}", self.header.dir_sz)?;
         writeln!(w, "bits {}", self.header.dir_bits)?;
@@ -520,10 +737,57 @@ impl Gdbm<ReadWrite> {
         Ok(db)
     }
 
+    /// Set the database sync mode.
+    ///
+    /// When sync mode is enabled, database metadata is written for every write operation.
+    /// This impacts performance, but increases the chances of the database surviving a system
+    /// crash.
+    ///
+    /// By default sync mode is disabled.
+    ///
+    /// Sync mode is not stored with the database and should be selected whenever the database is
+    /// opened using either [`set_sync()`](Gdbm::set_sync) or [`OpenOptions::sync()`].
+    ///
+    /// # Examples
+    /// ```
+    /// # use tempfile::tempdir;
+    /// # fn main() {
+    /// #     let tmp_dir = tempdir().unwrap();
+    /// #     let path = tmp_dir.path().join("test");
+    /// #     let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// // Turn on sync mode.
+    /// db.set_sync(true);
+    /// # }
+    /// ```
     pub fn set_sync(&mut self, sync: bool) {
         self.read_write.sync = sync;
     }
 
+    /// Imports entries from an ASCII dump into the database.
+    ///
+    /// Adds all entries from a dump created with [`export_ascii`](Gdbm::export_ascii) to the
+    /// database. Values are overwritten for keys that already exist in the database.
+    ///
+    /// # Examples
+    /// ```
+    /// # use tempfile::tempdir;
+    /// # fn main() -> Result<(), String> {
+    /// #     let tmp_dir = tempdir().unwrap();
+    /// #     let path = tmp_dir.path().join("test");
+    /// #     let new_path = tmp_dir.path().join("test1");
+    /// #     || -> gdbm_native::Result<()> {
+    /// #         let mut old_db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// use gdbm_native::OpenOptions;
+    ///
+    /// let mut buf = Vec::new();
+    /// old_db.export_ascii(&mut buf, None::<&str>)?;
+    ///
+    /// let mut new_db = OpenOptions::new().write().create().open(new_path)?;
+    /// new_db.import_ascii(&mut buf.as_slice())?;
+    /// #         Ok(())
+    /// #     }().map_err(|e| e.to_string())
+    /// # }
+    /// ```
     pub fn import_ascii(&mut self, reader: &mut impl Read) -> Result<()> {
         ASCIIImportIterator::new(reader)
             .map_err(Error::Io)
@@ -535,6 +799,31 @@ impl Gdbm<ReadWrite> {
             })
     }
 
+    /// Imports entries from a binary dump into the database.
+    ///
+    /// Adds all entries from a dump created with [`export_bin`](Gdbm::export_bin) to the database.
+    /// Values are overwritten for keys that already exist in the database.
+    ///
+    /// # Examples
+    /// ```
+    /// # use tempfile::tempdir;
+    /// # fn main() -> Result<(), String> {
+    /// #     let tmp_dir = tempdir().unwrap();
+    /// #     let path = tmp_dir.path().join("test");
+    /// #     let new_path = tmp_dir.path().join("test1");
+    /// #     || -> gdbm_native::Result<()> {
+    /// #         let mut old_db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// use gdbm_native::{OpenOptions, ExportBinMode};
+    ///
+    /// let mut buf = Vec::new();
+    /// old_db.export_bin(&mut buf, ExportBinMode::Exp32)?;
+    ///
+    /// let mut new_db = OpenOptions::new().write().create().open(new_path)?;
+    /// new_db.import_bin(&mut buf.as_slice(), ExportBinMode::Exp32)?;
+    /// #         Ok(())
+    /// #     }().map_err(|e| e.to_string())
+    /// # }
+    /// ```
     pub fn import_bin(&mut self, reader: &mut impl Read, mode: ExportBinMode) -> Result<()> {
         let alignment = match mode {
             ExportBinMode::ExpNative => self.header.layout.alignment,
@@ -709,7 +998,25 @@ impl Gdbm<ReadWrite> {
         Ok(())
     }
 
-    // API: ensure database is flushed to stable storage
+    /// Writes all database state to the database file.
+    ///
+    /// # Examples
+    /// ```
+    /// # use tempfile::tempdir;
+    /// # fn main() {
+    /// #     let tmp_dir = tempdir().unwrap();
+    /// #     let path = tmp_dir.path().join("test");
+    /// #     let new_path = tmp_dir.path().join("test1");
+    /// #     std::panic::catch_unwind(|| {
+    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// // Ensure all data is saved ...
+    /// db.sync();
+    ///
+    /// // ... otherwise this could cause an inconsistent state.
+    /// panic!("pulled the plug");
+    /// #     });
+    /// # }
+    /// ```
     pub fn sync(&mut self) -> Result<()> {
         match self.read_write.state {
             WriteState::Clean => Ok(()),
@@ -752,7 +1059,28 @@ impl Gdbm<ReadWrite> {
         Ok(Some(data))
     }
 
-    // API: remove a key/value pair from db, given a key
+    /// Remove an entry from the database.
+    ///
+    /// Remove the entry for the specified `key` from the database, and return the raw bytes value
+    /// if the entry existed before [`remove`](Gdbm::remove) was called.
+    ///
+    /// # Examples
+    /// ```
+    /// # use tempfile::tempdir;
+    /// # fn main() -> Result<(), String> {
+    /// #     let tmp_dir = tempdir().unwrap();
+    /// #     let path = tmp_dir.path().join("test");
+    /// #     let new_path = tmp_dir.path().join("test1");
+    /// #     || -> gdbm_native::Result<()> {
+    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// match db.remove("sylvian")? {
+    ///     Some(old) => println!("removed \"{:?}\" from the database.", std::str::from_utf8(&old)),
+    ///     None => println!("\"sylvian\" wasn't in the database."),
+    /// };
+    /// #         Ok(())
+    /// #     }().map_err(|e| e.to_string())
+    /// # }
+    /// ```
     pub fn remove<K: ToBytesRef>(&mut self, key: K) -> Result<Option<Vec<u8>>> {
         self.int_remove(key.to_bytes_ref().as_ref())
             .and_then(|old_value| {
@@ -821,6 +1149,24 @@ impl Gdbm<ReadWrite> {
         Ok(())
     }
 
+    /// Insert an entry into the database.
+    ///
+    /// Adds an entry with the specified `key` an `value` to the database.
+    ///
+    /// # Examples
+    /// ```
+    /// # use tempfile::tempdir;
+    /// # fn main() -> Result<(), String> {
+    /// #     let tmp_dir = tempdir().unwrap();
+    /// #     let path = tmp_dir.path().join("test");
+    /// #     let new_path = tmp_dir.path().join("test1");
+    /// #     || -> gdbm_native::Result<()> {
+    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// db.insert("marmite", "dog")?;
+    /// #         Ok(())
+    /// #     }().map_err(|e| e.to_string())
+    /// # }
+    /// ```
     pub fn insert<V: ToBytesRef, K: ToBytesRef>(
         &mut self,
         key: K,
@@ -841,6 +1187,30 @@ impl Gdbm<ReadWrite> {
             })
     }
 
+    /// Try to insert an entry into the database.
+    ///
+    /// Adds an entry with the specified `key` an `value` to the database. Fails if an entry with
+    /// the specified key already exists and returns the existing value as raw bytes.
+    ///
+    /// # Examples
+    /// ```
+    /// # use tempfile::tempdir;
+    /// # fn main() -> Result<(), String> {
+    /// #     let tmp_dir = tempdir().unwrap();
+    /// #     let path = tmp_dir.path().join("test");
+    /// #     let new_path = tmp_dir.path().join("test1");
+    /// #     || -> gdbm_native::Result<()> {
+    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// match db.try_insert("marmite", "cat")? {
+    ///     Some(v) => {
+    ///         println!("marmite exists and is a {}", std::str::from_utf8(&v).unwrap())
+    ///     }
+    ///     None => println!("added marmite to the database"),
+    /// };
+    /// #         Ok(())
+    /// #     }().map_err(|e| e.to_string())
+    /// # }
+    /// ```
     pub fn try_insert<K: ToBytesRef, V: ToBytesRef>(
         &mut self,
         key: K,
@@ -920,6 +1290,29 @@ impl Gdbm<ReadWrite> {
         Ok(())
     }
 
+    /// Adds or removes numsync from the database.
+    ///
+    /// For information on `numsync` refer to the [original GDBM
+    /// documentaion](https://www.gnu.org.ua/software/gdbm/manual/Numsync.html).
+    ///
+    /// By default `numsync` is enabled for new databases.
+    ///
+    /// # Examples
+    /// ```
+    /// # use tempfile::tempdir;
+    /// # fn main() -> Result<(), String> {
+    /// #     let tmp_dir = tempdir().unwrap();
+    /// #     let path = tmp_dir.path().join("test");
+    /// #     let new_path = tmp_dir.path().join("test1");
+    /// #     || -> gdbm_native::Result<()> {
+    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// // Turn on numsync for this database.
+    /// db.set_numsync(true);
+    /// assert!(db.magic().is_numsync());
+    /// #         Ok(())
+    /// #     }().map_err(|e| e.to_string())
+    /// # }
+    /// ```
     pub fn set_numsync(&mut self, numsync: bool) -> Result<()> {
         if self.read_write.state == WriteState::Inconsistent {
             return Err(Error::Inconsistent);
