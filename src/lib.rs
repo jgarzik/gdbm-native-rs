@@ -77,7 +77,7 @@ pub struct ReadWrite {
     state: WriteState,
 }
 
-pub trait CacheBucket {
+trait CacheBucket {
     fn cache_bucket(&mut self, offset: u64, bucket: Bucket) -> Result<()>;
 }
 
@@ -123,6 +123,7 @@ impl CacheBucket for Gdbm<ReadWrite> {
     }
 }
 
+#[allow(private_bounds)]
 impl<R> Gdbm<R>
 where
     Gdbm<R>: CacheBucket,
