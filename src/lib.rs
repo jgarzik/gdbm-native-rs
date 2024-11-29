@@ -94,7 +94,6 @@ fn read_ofs(f: &mut std::fs::File, ofs: u64, total_size: usize) -> io::Result<Ve
 
 // #[derive(Debug)]
 pub struct Gdbm<R: 'static> {
-    pathname: String,
     f: std::fs::File,
     header: Header,
     dir: Directory,
@@ -129,10 +128,8 @@ where
     Gdbm<R>: CacheBucket,
     R: Default,
 {
-    // API: open database file, read and validate header
-    pub fn open<P: AsRef<std::path::Path>>(
+    pub fn open(
         mut f: File,
-        path: P,
         alignment: Option<Alignment>,
         cachesize: Option<usize>,
     ) -> Result<Gdbm<R>> {
@@ -166,7 +163,6 @@ where
         };
 
         Ok(Gdbm {
-            pathname: path.as_ref().to_string_lossy().to_string(),
             f,
             header,
             dir,
@@ -175,17 +171,23 @@ where
         })
     }
 
-    fn export_ascii_header(&self, outf: &mut std::fs::File) -> io::Result<()> {
+    fn export_ascii_header(
+        &self,
+        outf: &mut impl Write,
+        pathname: Option<&std::path::Path>,
+    ) -> io::Result<()> {
         // TODO: add ctime() to "created by" output line
         writeln!(outf, "# GDBM dump file created by {}", COMPAT_GDBM_VERSION)?;
         writeln!(outf, "#:version=1.1")?;
-        writeln!(outf, "#:file={}", self.pathname)?;
+        if let Some(pathname) = pathname {
+            writeln!(outf, "#:file={}", pathname.to_string_lossy())?;
+        }
         writeln!(outf, "#:format=standard")?;
         writeln!(outf, "# End of header")?;
         Ok(())
     }
 
-    fn export_ascii_datum(outf: &mut std::fs::File, bindata: Vec<u8>) -> io::Result<()> {
+    fn export_ascii_datum(outf: &mut impl Write, bindata: Vec<u8>) -> io::Result<()> {
         const MAX_DUMP_LINE_LEN: usize = 76;
 
         writeln!(outf, "#:len={}", bindata.len())?;
@@ -205,7 +207,7 @@ where
         Ok(())
     }
 
-    fn export_ascii_records(&mut self, outf: &mut std::fs::File) -> Result<usize> {
+    fn export_ascii_records(&mut self, outf: &mut impl Write) -> Result<usize> {
         self.iter().try_fold(0, |count, kv| {
             kv.and_then(|(key, value)| {
                 Self::export_ascii_datum(outf, key)
@@ -216,21 +218,25 @@ where
         })
     }
 
-    fn export_ascii_footer(&self, outf: &mut std::fs::File, n_written: usize) -> io::Result<()> {
+    fn export_ascii_footer(&self, outf: &mut impl Write, n_written: usize) -> io::Result<()> {
         writeln!(outf, "#:count={}", n_written)?;
         writeln!(outf, "# End of data")?;
         Ok(())
     }
 
     // API: export database to ASCII dump file
-    pub fn export_ascii(&mut self, outf: &mut std::fs::File) -> Result<()> {
-        self.export_ascii_header(outf)
+    pub fn export_ascii<P: AsRef<std::path::Path>>(
+        &mut self,
+        outf: &mut impl Write,
+        pathname: Option<P>,
+    ) -> Result<()> {
+        self.export_ascii_header(outf, pathname.as_ref().map(|p| p.as_ref()))
             .map_err(Error::Io)
             .and_then(|_| self.export_ascii_records(outf))
             .and_then(|n_written| self.export_ascii_footer(outf, n_written).map_err(Error::Io))
     }
 
-    fn export_bin_header(&self, outf: &mut std::fs::File) -> io::Result<()> {
+    fn export_bin_header(&self, outf: &mut impl Write) -> io::Result<()> {
         write!(
             outf,
             "!\r\n! GDBM FLAT FILE DUMP -- THIS IS NOT A TEXT FILE\r\n"
@@ -240,7 +246,7 @@ where
     }
 
     fn export_bin_datum(
-        outf: &mut std::fs::File,
+        outf: &mut impl Write,
         alignment: Alignment,
         bindata: Vec<u8>,
     ) -> io::Result<()> {
@@ -256,7 +262,7 @@ where
         Ok(())
     }
 
-    fn export_bin_records(&mut self, outf: &mut std::fs::File, alignment: Alignment) -> Result<()> {
+    fn export_bin_records(&mut self, outf: &mut impl Write, alignment: Alignment) -> Result<()> {
         self.iter().try_for_each(|kv| {
             kv.and_then(|(key, value)| {
                 Self::export_bin_datum(outf, alignment, key)
@@ -267,7 +273,7 @@ where
     }
 
     // API: export database to binary dump file
-    pub fn export_bin(&mut self, outf: &mut std::fs::File, mode: ExportBinMode) -> Result<()> {
+    pub fn export_bin(&mut self, outf: &mut impl Write, mode: ExportBinMode) -> Result<()> {
         let alignment = match mode {
             ExportBinMode::ExpNative => self.header.layout.alignment,
             ExportBinMode::Exp32 => Alignment::Align32,
@@ -452,9 +458,8 @@ where
 
 impl Gdbm<ReadWrite> {
     // API: open database file, read and validate header
-    pub fn create<P: AsRef<std::path::Path>>(
+    pub fn create(
         f: File,
-        path: P,
         open_options: &OpenOptions<options::Write<Create>>,
     ) -> Result<Gdbm<ReadWrite>> {
         let layout = Layout {
@@ -498,7 +503,6 @@ impl Gdbm<ReadWrite> {
         };
 
         let mut db = Gdbm {
-            pathname: path.as_ref().to_string_lossy().to_string(),
             f,
             header,
             dir,

@@ -87,7 +87,7 @@ fn api_export_ascii() {
                 OpenOptions::new()
                     .alignment(testdb.alignment)
                     .open(&testdb.db_path)
-                    .and_then(|mut db| db.export_ascii(&mut f))
+                    .and_then(|mut db| db.export_ascii(&mut f, None::<&str>))
                     .map_err(|e| e.to_string())
             })
             .unwrap();

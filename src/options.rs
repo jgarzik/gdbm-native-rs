@@ -197,9 +197,9 @@ impl OpenOptions<NotWrite> {
     pub fn open<P: AsRef<std::path::Path>>(&self, path: P) -> Result<Gdbm<ReadOnly>> {
         std::fs::OpenOptions::new()
             .read(true)
-            .open(path.as_ref())
+            .open(path)
             .map_err(Error::Io)
-            .and_then(|f| Gdbm::<ReadOnly>::open(f, path, self.alignment, self.cachesize))
+            .and_then(|f| Gdbm::<ReadOnly>::open(f, self.alignment, self.cachesize))
     }
 }
 
@@ -208,9 +208,9 @@ impl OpenOptions<Write<NotCreate>> {
         std::fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .open(path.as_ref())
+            .open(path)
             .map_err(Error::Io)
-            .and_then(|f| Gdbm::<ReadWrite>::open(f, path, self.alignment, self.cachesize))
+            .and_then(|f| Gdbm::<ReadWrite>::open(f, self.alignment, self.cachesize))
             .map(|mut db| {
                 db.set_sync(self.write.sync);
                 db
@@ -226,23 +226,24 @@ impl OpenOptions<Write<Create>> {
                 .write(true)
                 .create(true)
                 .truncate(true)
-                .open(path.as_ref())
+                .open(path)
                 .map_err(Error::Io)
-                .and_then(|f| Gdbm::create(f, path, self))
+                .and_then(|f| Gdbm::create(f, self))
         } else {
             std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create(true)
                 .truncate(false)
-                .open(path.as_ref())
+                .open(path)
                 .map_err(Error::Io)
                 .and_then(|f| {
-                    Gdbm::<ReadWrite>::open(f, path.as_ref(), self.alignment, self.cachesize)
-                        .or_else(|e| match e {
-                            Error::EmptyFile(f) => Gdbm::create(f, path, self),
+                    Gdbm::<ReadWrite>::open(f, self.alignment, self.cachesize).or_else(
+                        |e| match e {
+                            Error::EmptyFile(f) => Gdbm::create(f, self),
                             e => Err(e),
-                        })
+                        },
+                    )
                 })
         }
         .map(|mut db| {
