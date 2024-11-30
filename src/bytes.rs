@@ -1,4 +1,4 @@
-pub struct Bytes(Vec<u8>);
+pub struct Bytes(pub Vec<u8>);
 
 impl Bytes {
     pub fn into_vec(self) -> Vec<u8> {
@@ -36,11 +36,12 @@ impl From<&[u8]> for Bytes {
     }
 }
 
-impl From<Bytes> for String {
-    fn from(b: Bytes) -> Self {
+impl TryFrom<Bytes> for String {
+    type Error = ();
+    fn try_from(b: Bytes) -> std::result::Result<Self, ()> {
         std::str::from_utf8(&b.0)
             .map(|s| s.to_string())
-            .unwrap_or_else(|_| Self::from_utf8_lossy(&b.0).as_ref().to_string())
+            .map_err(|_| ())
     }
 }
 

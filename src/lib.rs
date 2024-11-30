@@ -345,23 +345,33 @@ where
     }
 
     // API: get an iterator over values
-    pub fn values<V: From<Bytes>>(&mut self) -> impl std::iter::Iterator<Item = Result<V>> + '_ {
-        GDBMIterator::<R>::new(self, KeyOrValue::Value)
-            .map(|data| data.map(|(_, value)| Bytes::from(value).into()))
+    pub fn values<V: TryFrom<Bytes>>(&mut self) -> impl std::iter::Iterator<Item = Result<V>> + '_ {
+        GDBMIterator::<R>::new(self, KeyOrValue::Value).map(|data| {
+            data.and_then(|(_, value)| V::try_from(Bytes(value)).map_err(|_| Error::ConvertValue))
+        })
     }
 
     // API: get an iterator over keys
-    pub fn keys<K: From<Bytes>>(&mut self) -> impl std::iter::Iterator<Item = Result<K>> + '_ {
-        GDBMIterator::<R>::new(self, KeyOrValue::Key)
-            .map(|data| data.map(|(key, _)| Bytes::from(key).into()))
+    pub fn keys<K: TryFrom<Bytes>>(&mut self) -> impl std::iter::Iterator<Item = Result<K>> + '_ {
+        GDBMIterator::<R>::new(self, KeyOrValue::Key).map(|data| {
+            data.and_then(|(key, _)| K::try_from(Bytes(key)).map_err(|_| Error::ConvertKey))
+        })
     }
 
     // API: get an iterator
-    pub fn iter<K: From<Bytes>, V: From<Bytes>>(
+    pub fn iter<K: TryFrom<Bytes>, V: TryFrom<Bytes>>(
         &mut self,
     ) -> impl std::iter::Iterator<Item = Result<(K, V)>> + '_ {
         GDBMIterator::<R>::new(self, KeyOrValue::Both).map(|data| {
-            data.map(|(key, value)| (Bytes::from(key).into(), Bytes::from(value).into()))
+            data.and_then(|(key, value)| {
+                K::try_from(Bytes(key))
+                    .map_err(|_| Error::ConvertKey)
+                    .and_then(|k| {
+                        V::try_from(Bytes(value))
+                            .map(|v| (k, v))
+                            .map_err(|_| Error::ConvertValue)
+                    })
+            })
         })
     }
 
@@ -412,11 +422,16 @@ where
     }
 
     // API: Fetch record value, given a key
-    pub fn get<'a, K: Into<BytesRef<'a>>, V: From<Bytes>>(&mut self, key: K) -> Result<Option<V>> {
-        let get_opt = self.int_get(key.into().as_ref())?;
-        match get_opt {
+    pub fn get<'a, K: Into<BytesRef<'a>>, V: TryFrom<Bytes>>(
+        &mut self,
+        key: K,
+    ) -> Result<Option<V>> {
+        match self.int_get(key.into().as_ref())? {
             None => Ok(None),
-            Some(data) => Ok(Some(Bytes::from(data.1).into())),
+            Some(data) => match V::try_from(Bytes(data.1)) {
+                Ok(v) => Ok(Some(v)),
+                Err(_) => Err(Error::ConvertValue),
+            },
         }
     }
 
