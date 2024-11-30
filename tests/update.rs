@@ -84,7 +84,7 @@ fn api_insert() {
                 let key = format!("key {}", n);
                 let value = format!("value {}", n);
 
-                db.insert(key.clone(), value.clone())
+                db.insert(&key, &value)
                     .map_err(|e| {
                         format!("inserting key \"{}\" with value \"{}\": {}", key, value, e)
                     })
@@ -105,7 +105,7 @@ fn api_insert() {
                 let key = format!("key {}", n);
                 let value = format!("value {}", n);
 
-                db.try_insert(key.as_bytes().to_vec(), value.as_bytes().to_vec())
+                db.try_insert(&key, &value)
                     .map_err(|e| {
                         format!("inserting key \"{}\" with value \"{}\": {}", key, value, e)
                     })

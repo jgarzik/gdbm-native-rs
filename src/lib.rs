@@ -526,7 +526,7 @@ impl Gdbm<ReadWrite> {
             .and_then(|mut lines| {
                 lines.try_for_each(|l| {
                     let (key, value) = l.map_err(Error::Io)?;
-                    self.insert(key, value).map(|_| ())
+                    self.insert(&key, &value).map(|_| ())
                 })
             })
     }
@@ -543,7 +543,7 @@ impl Gdbm<ReadWrite> {
             .and_then(|mut lines| {
                 lines.try_for_each(|l| {
                     let (key, value) = l.map_err(Error::Io)?;
-                    self.insert(key, value).map(|_| ())
+                    self.insert(&key, &value).map(|_| ())
                 })
             })
     }
@@ -784,7 +784,7 @@ impl Gdbm<ReadWrite> {
         Ok(offset)
     }
 
-    fn int_insert(&mut self, key: Vec<u8>, data: Vec<u8>) -> Result<()> {
+    fn int_insert(&mut self, key: &[u8], data: &[u8]) -> Result<()> {
         if self.read_write.state == WriteState::Inconsistent {
             return Err(Error::Inconsistent);
         }
@@ -795,10 +795,10 @@ impl Gdbm<ReadWrite> {
 
         self.f
             .seek(SeekFrom::Start(offset))
-            .and_then(|_| self.f.write_all(&key))
-            .and_then(|_| self.f.write_all(&data))?;
+            .and_then(|_| self.f.write_all(key))
+            .and_then(|_| self.f.write_all(data))?;
 
-        let bucket_elem = BucketElement::new(&key, &data, offset);
+        let bucket_elem = BucketElement::new(key, data, offset);
         self.cache_load_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash))?;
 
         while self.bucket_cache.current_bucket().unwrap().count == self.header.bucket_elems {
@@ -816,7 +816,7 @@ impl Gdbm<ReadWrite> {
         Ok(())
     }
 
-    pub fn insert<K: Into<Bytes>, V: Into<Bytes>>(
+    pub fn insert<'a, V: Into<BytesRef<'a>>, K: Into<BytesRef<'a>>>(
         &mut self,
         key: K,
         value: V,
@@ -824,7 +824,7 @@ impl Gdbm<ReadWrite> {
         let key = key.into();
         self.int_remove(key.as_ref())
             .and_then(|oldvalue| {
-                self.int_insert(key.into_vec(), value.into().into_vec())
+                self.int_insert(key.as_ref(), value.into().as_ref())
                     .map(|_| oldvalue)
             })
             .and_then(|oldvalue| {
@@ -836,7 +836,7 @@ impl Gdbm<ReadWrite> {
             })
     }
 
-    pub fn try_insert<K: Into<Bytes>, V: Into<Bytes>>(
+    pub fn try_insert<'a, K: Into<BytesRef<'a>>, V: Into<BytesRef<'a>>>(
         &mut self,
         key: K,
         value: V,
@@ -845,7 +845,7 @@ impl Gdbm<ReadWrite> {
         self.get(key.as_ref()).and_then(|olddata| match olddata {
             Some(_) => Ok((false, olddata)),
             _ => self
-                .int_insert(key.into_vec(), value.into().into_vec())
+                .int_insert(key.as_ref(), value.into().as_ref())
                 .map(|_| (true, None))
                 .and_then(|result| {
                     if self.read_write.sync {

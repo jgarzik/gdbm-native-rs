@@ -153,7 +153,7 @@ fn api_open_cachesize() {
             .and_then(|mut db| {
                 (0..RECORD_COUNT)
                     .try_for_each(|n| {
-                        db.insert(n, vec![])
+                        db.insert(&n, &vec![])
                             .map(|_| ())
                             .map_err(|e| format!("insert failed: {}", e))
                     })
