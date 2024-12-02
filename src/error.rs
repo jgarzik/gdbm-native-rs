@@ -2,10 +2,8 @@ use std::{fmt::Display, fmt::Formatter, io};
 
 #[derive(Debug)]
 pub enum Error {
-    /// Failed to convert a stored key into requested type (['std::convert::TryFrom'] failed)
-    ConvertKey,
-    /// Failed to convert a stored value into requested type (['std::convert::TryFrom'] failed)
-    ConvertValue,
+    /// Failed to convert a stored key or value into requested type.
+    BadData(String),
     /// IO error.
     Io(io::Error),
     /// Database may be inconsistent since an earlier error. Writes are disabled.

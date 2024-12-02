@@ -28,7 +28,7 @@ mod ser;
 
 use avail::AvailBlock;
 use bucket::{Bucket, BucketCache, BucketElement};
-use bytes::{Bytes, BytesRef};
+use bytes::{FromBytes, ToBytesRef};
 use dir::{build_dir_size, Directory};
 pub use error::Error;
 use hashutil::{bucket_dir, key_loc, PartialKey};
@@ -345,39 +345,31 @@ where
     }
 
     // API: get an iterator over values
-    pub fn values<V: TryFrom<Bytes>>(&mut self) -> impl std::iter::Iterator<Item = Result<V>> + '_ {
-        GDBMIterator::<R>::new(self, KeyOrValue::Value).map(|data| {
-            data.and_then(|(_, value)| V::try_from(Bytes(value)).map_err(|_| Error::ConvertValue))
-        })
+    pub fn values<V: FromBytes>(&mut self) -> impl std::iter::Iterator<Item = Result<V>> + '_ {
+        GDBMIterator::<R>::new(self, KeyOrValue::Value)
+            .map(|data| data.and_then(|(_, value)| V::from_bytes(&value)))
     }
 
     // API: get an iterator over keys
-    pub fn keys<K: TryFrom<Bytes>>(&mut self) -> impl std::iter::Iterator<Item = Result<K>> + '_ {
-        GDBMIterator::<R>::new(self, KeyOrValue::Key).map(|data| {
-            data.and_then(|(key, _)| K::try_from(Bytes(key)).map_err(|_| Error::ConvertKey))
-        })
+    pub fn keys<K: FromBytes>(&mut self) -> impl std::iter::Iterator<Item = Result<K>> + '_ {
+        GDBMIterator::<R>::new(self, KeyOrValue::Key)
+            .map(|data| data.and_then(|(key, _)| K::from_bytes(&key)))
     }
 
     // API: get an iterator
-    pub fn iter<K: TryFrom<Bytes>, V: TryFrom<Bytes>>(
+    pub fn iter<K: FromBytes, V: FromBytes>(
         &mut self,
     ) -> impl std::iter::Iterator<Item = Result<(K, V)>> + '_ {
         GDBMIterator::<R>::new(self, KeyOrValue::Both).map(|data| {
             data.and_then(|(key, value)| {
-                K::try_from(Bytes(key))
-                    .map_err(|_| Error::ConvertKey)
-                    .and_then(|k| {
-                        V::try_from(Bytes(value))
-                            .map(|v| (k, v))
-                            .map_err(|_| Error::ConvertValue)
-                    })
+                K::from_bytes(&key).and_then(|k| V::from_bytes(&value).map(|v| (k, v)))
             })
         })
     }
 
     // API: does key exist?
-    pub fn contains_key<'a, K: Into<BytesRef<'a>>>(&mut self, key: K) -> Result<bool> {
-        self.int_get(key.into().as_ref())
+    pub fn contains_key<K: ToBytesRef>(&mut self, key: K) -> Result<bool> {
+        self.int_get(key.to_bytes_ref().as_ref())
             .map(|result| result.is_some())
     }
 
@@ -422,16 +414,10 @@ where
     }
 
     // API: Fetch record value, given a key
-    pub fn get<'a, K: Into<BytesRef<'a>>, V: TryFrom<Bytes>>(
-        &mut self,
-        key: K,
-    ) -> Result<Option<V>> {
-        match self.int_get(key.into().as_ref())? {
+    pub fn get<K: ToBytesRef, V: FromBytes>(&mut self, key: K) -> Result<Option<V>> {
+        match self.int_get(key.to_bytes_ref().as_ref())? {
             None => Ok(None),
-            Some(data) => match V::try_from(Bytes(data.1)) {
-                Ok(v) => Ok(Some(v)),
-                Err(_) => Err(Error::ConvertValue),
-            },
+            Some(data) => V::from_bytes(&data.1).map(|v| Some(v)),
         }
     }
 
@@ -768,14 +754,15 @@ impl Gdbm<ReadWrite> {
     }
 
     // API: remove a key/value pair from db, given a key
-    pub fn remove<'a, K: Into<BytesRef<'a>>>(&mut self, key: K) -> Result<Option<Vec<u8>>> {
-        self.int_remove(key.into().as_ref()).and_then(|old_value| {
-            if old_value.is_some() && self.read_write.sync {
-                self.sync()?;
-            }
+    pub fn remove<K: ToBytesRef>(&mut self, key: K) -> Result<Option<Vec<u8>>> {
+        self.int_remove(key.to_bytes_ref().as_ref())
+            .and_then(|old_value| {
+                if old_value.is_some() && self.read_write.sync {
+                    self.sync()?;
+                }
 
-            Ok(old_value)
-        })
+                Ok(old_value)
+            })
     }
 
     fn allocate_record(&mut self, size: u32) -> io::Result<u64> {
@@ -835,15 +822,15 @@ impl Gdbm<ReadWrite> {
         Ok(())
     }
 
-    pub fn insert<'a, V: Into<BytesRef<'a>>, K: Into<BytesRef<'a>>>(
+    pub fn insert<V: ToBytesRef, K: ToBytesRef>(
         &mut self,
         key: K,
         value: V,
     ) -> Result<Option<Vec<u8>>> {
-        let key = key.into();
+        let key = key.to_bytes_ref();
         self.int_remove(key.as_ref())
             .and_then(|oldvalue| {
-                self.int_insert(key.as_ref(), value.into().as_ref())
+                self.int_insert(key.as_ref(), value.to_bytes_ref().as_ref())
                     .map(|_| oldvalue)
             })
             .and_then(|oldvalue| {
@@ -855,16 +842,16 @@ impl Gdbm<ReadWrite> {
             })
     }
 
-    pub fn try_insert<'a, K: Into<BytesRef<'a>>, V: Into<BytesRef<'a>>>(
+    pub fn try_insert<K: ToBytesRef, V: ToBytesRef>(
         &mut self,
         key: K,
         value: V,
     ) -> Result<(bool, Option<Vec<u8>>)> {
-        let key = key.into();
+        let key = key.to_bytes_ref();
         self.get(key.as_ref()).and_then(|olddata| match olddata {
             Some(_) => Ok((false, olddata)),
             _ => self
-                .int_insert(key.as_ref(), value.into().as_ref())
+                .int_insert(key.as_ref(), value.to_bytes_ref().as_ref())
                 .map(|_| (true, None))
                 .and_then(|result| {
                     if self.read_write.sync {
