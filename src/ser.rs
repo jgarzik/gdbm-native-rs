@@ -45,7 +45,7 @@ pub enum Offset {
 
 /// Container for layout possibilities.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Layout {
+pub(super) struct Layout {
     pub alignment: Alignment,
     pub endian: Endian,
     pub offset: Offset,

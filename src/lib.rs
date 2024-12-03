@@ -69,8 +69,8 @@ use header::Header;
 use import::{ASCIIImportIterator, BinaryImportIterator};
 pub use magic::Magic;
 pub use options::{BlockSize, Create, OpenOptions};
-use ser::{write32, write64};
-pub use ser::{Alignment, Endian, Layout, Offset};
+use ser::{write32, write64, Layout};
+pub use ser::{Alignment, Endian, Offset};
 use std::fs::File;
 
 #[cfg(target_os = "linux")]
