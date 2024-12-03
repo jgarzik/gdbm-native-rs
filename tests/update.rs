@@ -109,10 +109,9 @@ fn api_insert() {
                     .map_err(|e| {
                         format!("inserting key \"{}\" with value \"{}\": {}", key, value, e)
                     })
-                    .and_then(|(success, _)| {
-                        (!success)
-                            .then_some(())
-                            .ok_or_else(|| format!("overwriting key \"{}\"", key))
+                    .and_then(|old| {
+                        old.ok_or_else(|| "try_insert should fail".to_string())
+                            .map(|_| ())
                     })
             })?;
 

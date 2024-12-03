@@ -846,13 +846,13 @@ impl Gdbm<ReadWrite> {
         &mut self,
         key: K,
         value: V,
-    ) -> Result<(bool, Option<Vec<u8>>)> {
+    ) -> Result<Option<Vec<u8>>> {
         let key = key.to_bytes_ref();
         self.get(key.as_ref()).and_then(|olddata| match olddata {
-            Some(_) => Ok((false, olddata)),
+            Some(_) => Ok(olddata),
             _ => self
                 .int_insert(key.as_ref(), value.to_bytes_ref().as_ref())
-                .map(|_| (true, None))
+                .map(|_| None)
                 .and_then(|result| {
                     if self.read_write.sync {
                         self.sync()?;
