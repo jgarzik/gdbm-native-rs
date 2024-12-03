@@ -77,14 +77,6 @@ impl OpenOptions<NotWrite> {
 }
 
 impl<C> OpenOptions<Write<C>> {
-    pub fn not_write(self) -> OpenOptions<NotWrite> {
-        OpenOptions {
-            alignment: self.alignment,
-            cachesize: self.cachesize,
-            write: NotWrite,
-        }
-    }
-
     pub fn sync(self, sync: bool) -> OpenOptions<Write<C>> {
         OpenOptions {
             alignment: self.alignment,
@@ -111,17 +103,6 @@ impl OpenOptions<Write<NotCreate>> {
 }
 
 impl OpenOptions<Write<Create>> {
-    pub fn not_create(self) -> OpenOptions<Write<NotCreate>> {
-        OpenOptions {
-            alignment: self.alignment,
-            cachesize: self.cachesize,
-            write: Write {
-                create: NotCreate,
-                sync: self.write.sync,
-            },
-        }
-    }
-
     pub fn offset(self, offset: Option<Offset>) -> OpenOptions<Write<Create>> {
         OpenOptions {
             alignment: self.alignment,
