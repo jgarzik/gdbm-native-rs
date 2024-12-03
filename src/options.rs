@@ -252,8 +252,3 @@ impl OpenOptions<Write<Create>> {
         })
     }
 }
-
-#[derive(Copy, Clone, Debug)]
-pub struct ConvertOptions {
-    pub numsync: bool,
-}

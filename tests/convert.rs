@@ -3,7 +3,7 @@ extern crate gdbm_native;
 mod common;
 
 use common::init_tests;
-use gdbm_native::{ConvertOptions, OpenOptions};
+use gdbm_native::OpenOptions;
 
 #[test]
 fn api_convert() {
@@ -12,9 +12,7 @@ fn api_convert() {
         .filter(|test| test.is_basic)
         .try_for_each(|test| -> Result<(), String> {
             let tempfile = test.tempfile();
-            let convert_options = ConvertOptions {
-                numsync: !test.db_path.ends_with("numsync"),
-            };
+            let numsync = !test.db_path.ends_with("numsync");
 
             // open and convert to/from numsync
             OpenOptions::new()
@@ -23,7 +21,7 @@ fn api_convert() {
                 .open(tempfile.path().to_str().unwrap())
                 .map_err(|e| format!("opening: {}", e))
                 .and_then(|mut db| {
-                    db.convert(&convert_options)
+                    db.set_numsync(numsync)
                         .map_err(|e| format!("converting: {}", e))
                         .and_then(|_| db.sync().map_err(|e| format!("synching: {}", e)))
                 })
@@ -35,7 +33,7 @@ fn api_convert() {
                 .open(tempfile.path().to_str().unwrap())
                 .map_err(|e| format!("opening: {}", e))
                 .and_then(|db| {
-                    (db.magic().is_numsync() == convert_options.numsync)
+                    (db.magic().is_numsync() == numsync)
                         .then_some(())
                         .ok_or_else(|| "file is not numsync".to_string())
                 })

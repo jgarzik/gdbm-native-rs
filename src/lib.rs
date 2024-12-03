@@ -35,7 +35,7 @@ use hashutil::{bucket_dir, key_loc, PartialKey};
 use header::Header;
 use import::{ASCIIImportIterator, BinaryImportIterator};
 pub use magic::Magic;
-pub use options::{BlockSize, ConvertOptions, Create, OpenOptions};
+pub use options::{BlockSize, Create, OpenOptions};
 use ser::{write32, write64};
 pub use ser::{Alignment, Endian, Layout, Offset};
 use std::fs::File;
@@ -920,8 +920,7 @@ impl Gdbm<ReadWrite> {
         Ok(())
     }
 
-    // API: convert
-    pub fn convert(&mut self, options: &ConvertOptions) -> Result<()> {
+    pub fn set_numsync(&mut self, numsync: bool) -> Result<()> {
         if self.read_write.state == WriteState::Inconsistent {
             return Err(Error::Inconsistent);
         }
@@ -929,7 +928,7 @@ impl Gdbm<ReadWrite> {
         self.read_write.state = WriteState::Inconsistent;
 
         self.header
-            .convert_numsync(options.numsync)
+            .convert_numsync(numsync)
             .into_iter()
             .try_for_each(|(offset, length)| self.free_record(offset, length))
             .map_err(Error::Io)?;
