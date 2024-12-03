@@ -128,7 +128,7 @@ where
     Gdbm<R>: CacheBucket,
     R: Default,
 {
-    pub fn open(
+    fn open(
         mut f: File,
         alignment: Option<Alignment>,
         cachesize: Option<usize>,
@@ -458,8 +458,7 @@ where
 }
 
 impl Gdbm<ReadWrite> {
-    // API: open database file, read and validate header
-    pub fn create(
+    fn create(
         f: File,
         open_options: &OpenOptions<options::Write<Create>>,
     ) -> Result<Gdbm<ReadWrite>> {
