@@ -8,51 +8,24 @@ use gdbm_native::{
     Offset::{Small, LFS},
     OpenOptions,
 };
-use tempfile::NamedTempFile;
+use tempfile::tempdir;
 
 #[test]
-// Non-empty, but invalid, DB causes creat to fail (bad format)
-// Empty DB allows creat to succeed.
-// Regardless of content, newdb always succeeds.
-fn api_open_creat_newdb() {
-    let old_db = NamedTempFile::new().expect("creating a temporary file");
+// Create fails if the file exists, but isn't a db.
+fn api_open_create() {
+    let dir = tempdir().unwrap();
 
-    let baddb_content = b"bad DB content".to_vec();
-    let empty_content = vec![];
-    [
-        (false, &baddb_content, Err(())),
-        (false, &empty_content, Ok(())),
-        (true, &baddb_content, Ok(())),
-        (true, &empty_content, Ok(())),
-    ]
-    .into_iter()
-    .try_for_each(|(newdb, content, expected)| {
-        std::fs::write(old_db.path(), content).expect("creating a DB file");
+    let no_db = dir.path().join("no");
+    let bad_db = dir.path().join("bad");
+    std::fs::write(&bad_db, "stuff").expect("creating a DB file");
 
-        match OpenOptions::new()
-            .write()
-            .create()
-            .newdb(newdb)
-            .open(old_db.path())
-        {
-            Ok(_) if expected.is_ok() => Ok(()),
-            Err(_) if expected.is_err() => Ok(()),
-            _ => Err(format!(
-                "newdb: {}, empty content: {}, expected: {:?}",
-                newdb,
-                content.is_empty(),
-                expected
-            )),
-        }
-    })
-    .unwrap_or_else(|e: String| panic!("{}", e));
+    assert!(OpenOptions::new().write().create().open(no_db).is_ok());
+    assert!(OpenOptions::new().write().create().open(bad_db).is_err());
 }
 
 #[test]
 // Test for correct magic for new databases.
 fn api_open_newdb_magic() {
-    let old_db = NamedTempFile::new().expect("creating a temporary file");
-
     [
         (Align32, LFS, Big, false, Magic::BE64),
         (Align32, LFS, Little, false, Magic::LE64),
@@ -73,19 +46,19 @@ fn api_open_newdb_magic() {
     ]
     .into_iter()
     .try_for_each(|(alignment, offset, endian, numsync, expected_magic)| {
-        OpenOptions::new().write().create().newdb(true).alignment(Some(alignment)).offset(Some(offset)).endian(Some(endian)).numsync(numsync).open(
-            old_db.path().to_str().unwrap()
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("db");
+
+        OpenOptions::new().write().create().alignment(Some(alignment)).offset(Some(offset)).endian(Some(endian)).numsync(numsync).open(
+            &path
         )
-        .and_then(|mut db| {
-            println!("magic: {:?}", db.magic());
-            db.sync()})
         .map_err(|e| format!(
             "creating: alignment: {:?}, offset: {:?}, endian: {:?}, numsync: {}, expected: {:?}, newdb error: {}",
             alignment, offset, endian, numsync, expected_magic, e
         ))?;
 
         OpenOptions::new().alignment(Some(alignment)).open(
-            old_db.path().to_str().unwrap(),
+            &path,
         )
         .map_err(|e| format!(
             "opening: alignment: {:?}, offset: {:?}, endian: {:?}, numsync: {}, expected: {:?}, open error: {}",
@@ -108,8 +81,6 @@ fn api_open_newdb_magic() {
 #[test]
 // Test for valid blocksizes.
 fn api_open_bsexact() {
-    let old_db = NamedTempFile::new().expect("creating a temporary file");
-
     [
         (256, Err(())), // aligned, but too small
         (511, Err(())), // not aligned and too small
@@ -119,12 +90,13 @@ fn api_open_bsexact() {
     ]
     .into_iter()
     .try_for_each(|(block_size, expected)| {
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("db");
         match OpenOptions::new()
             .write()
             .create()
-            .newdb(true)
             .block_size(BlockSize::Exactly(block_size))
-            .open(old_db.path().to_str().unwrap())
+            .open(&db)
         {
             Ok(_) if expected.is_ok() => Ok(()),
             Err(_) if expected.is_err() => Ok(()),
@@ -140,30 +112,28 @@ fn api_open_cachesize() {
     const RECORD_COUNT: usize = 1000; // buckets will occupy around 20k
 
     fn the_test(cachesize: Option<usize>) -> Result<(), String> {
-        let db = NamedTempFile::new().unwrap();
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("testdb");
 
         // Create a database using configured cachesize.
         OpenOptions::new()
             .cachesize(cachesize)
             .write()
             .create()
-            .newdb(true)
-            .open(db.path().to_str().unwrap())
+            .open(&db)
             .map_err(|e| format!("write open failed: {}", e))
             .and_then(|mut db| {
-                (0..RECORD_COUNT)
-                    .try_for_each(|n| {
-                        db.insert(&n, &vec![])
-                            .map(|_| ())
-                            .map_err(|e| format!("insert failed: {}", e))
-                    })
-                    .and_then(|()| db.sync().map_err(|e| format!("sync failed: {}", e)))
+                (0..RECORD_COUNT).try_for_each(|n| {
+                    db.insert(&n, &vec![])
+                        .map(|_| ())
+                        .map_err(|e| format!("insert failed: {}", e))
+                })
             })?;
 
         // Read a database using configured cachesize.
         OpenOptions::new()
             .cachesize(cachesize)
-            .open(db.path().to_str().unwrap())
+            .open(&db)
             .map_err(|e| format!("read open failed: {}", e))
             .and_then(|mut db| {
                 (0..RECORD_COUNT).try_for_each(|n| {

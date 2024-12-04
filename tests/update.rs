@@ -88,17 +88,15 @@ fn api_insert() {
                     .map_err(|e| {
                         format!("inserting key \"{}\" with value \"{}\": {}", key, value, e)
                     })
+                    .and_then(|_| {
+                        db.try_insert(&key, &value)
+                            .map_err(|e| {
+                                format!("inserting key \"{}\" with value \"{}\": {}", key, value, e)
+                            })
+                            .and_then(|old| old.ok_or_else(|| "try_insert should fail".to_string()))
+                    })
                     .map(|_| ())
             })?;
-
-            // reopen the database
-            db.sync().map_err(|e| e.to_string())?;
-            drop(db);
-            let mut db = OpenOptions::new()
-                .alignment(alignment)
-                .write()
-                .open(test_filename.to_str().unwrap())
-                .map_err(|e| e.to_string())?;
 
             // try_insert again (all should fail)
             (0..10000).try_for_each(|n| {

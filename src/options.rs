@@ -23,7 +23,6 @@ pub struct Create {
     pub offset: Option<Offset>,
     pub endian: Option<Endian>,
     pub no_numsync: bool,
-    pub newdb: bool,
     pub block_size: BlockSize,
 }
 #[derive(Default, Copy, Clone, Debug)]
@@ -145,20 +144,6 @@ impl OpenOptions<Write<Create>> {
         }
     }
 
-    pub fn newdb(self, newdb: bool) -> OpenOptions<Write<Create>> {
-        OpenOptions {
-            alignment: self.alignment,
-            cachesize: self.cachesize,
-            write: Write {
-                create: Create {
-                    newdb,
-                    ..self.write.create
-                },
-                ..self.write
-            },
-        }
-    }
-
     pub fn block_size(self, block_size: BlockSize) -> OpenOptions<Write<Create>> {
         OpenOptions {
             alignment: self.alignment,
@@ -201,35 +186,24 @@ impl OpenOptions<Write<NotCreate>> {
 
 impl OpenOptions<Write<Create>> {
     pub fn open<P: AsRef<std::path::Path>>(&self, path: P) -> Result<Gdbm<ReadWrite>> {
-        if self.write.create.newdb {
-            std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(path)
-                .map_err(Error::Io)
-                .and_then(|f| Gdbm::create(f, self))
-        } else {
-            std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(path)
-                .map_err(Error::Io)
-                .and_then(|f| {
-                    Gdbm::<ReadWrite>::open(f, self.alignment, self.cachesize).or_else(
-                        |e| match e {
-                            Error::EmptyFile(f) => Gdbm::create(f, self),
-                            e => Err(e),
-                        },
-                    )
-                })
-        }
-        .map(|mut db| {
-            db.set_sync(self.write.sync);
-            db
-        })
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(Error::Io)
+            .and_then(|f| Gdbm::<ReadWrite>::open(f, self.alignment, self.cachesize))
+            .or_else(|_| {
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                    .map_err(Error::Io)
+                    .and_then(|f| Gdbm::create(f, self))
+            })
+            .map(|mut db| {
+                db.set_sync(self.write.sync);
+                db
+            })
     }
 }

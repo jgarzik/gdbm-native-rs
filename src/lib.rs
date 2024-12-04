@@ -181,10 +181,6 @@ where
     ) -> Result<Gdbm<R>> {
         let metadata = f.metadata()?;
 
-        if metadata.len() == 0 {
-            return Err(Error::EmptyFile(f));
-        }
-
         f.seek(SeekFrom::Start(0))?;
         let header = Header::from_reader(alignment, metadata.len(), &mut f)?;
 

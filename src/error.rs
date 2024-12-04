@@ -21,8 +21,6 @@ pub enum Error {
         /// Directory bits.
         dir_bits: u32,
     },
-    /// Tried to open with readonly and either creat or write.
-    EmptyFile(std::fs::File),
     /// Could not use supplied block size and bsexact was specified.
     BadBlockSize {
         /// Requested blocksize.
