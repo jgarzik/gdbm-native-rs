@@ -632,6 +632,22 @@ where
         self.header.magic
     }
 
+    /// Get the database alignment.
+    ///
+    /// # Examples
+    /// ```
+    /// # use tempfile::tempdir;
+    /// # fn main() {
+    /// #     let tmp_dir = tempdir().unwrap();
+    /// #     let path = tmp_dir.path().join("test");
+    /// #     let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// println!("database alignment: {:?}", db.alignment());
+    /// # }
+    /// ```
+    pub fn alignment(&self) -> Alignment {
+        self.header.layout.alignment
+    }
+
     #[cfg(feature = "diagnostic")]
     /// Show diagnostic information about the database header.
     ///
