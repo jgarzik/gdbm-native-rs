@@ -930,11 +930,10 @@ impl Gdbm<ReadWrite> {
         } else {
             // larger items go into the header avail list
             // (and also when bucket avail list is full)
+            self.header.free(addr, sz);
             if self.header.avail.elems.len() == self.header.avail.sz as usize {
                 self.push_avail_block()?;
             }
-
-            self.header.free(addr, sz);
         }
 
         Ok(())
