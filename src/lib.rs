@@ -1002,7 +1002,6 @@ impl Gdbm<ReadWrite> {
     /// # fn main() {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
-    /// #     let new_path = tmp_dir.path().join("test1");
     /// #     std::panic::catch_unwind(|| {
     /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
     /// // Ensure all data is saved ...
@@ -1066,7 +1065,6 @@ impl Gdbm<ReadWrite> {
     /// # fn main() -> Result<(), String> {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
-    /// #     let new_path = tmp_dir.path().join("test1");
     /// #     || -> gdbm_native::Result<()> {
     /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
     /// match db.remove("sylvian")? {
@@ -1155,7 +1153,6 @@ impl Gdbm<ReadWrite> {
     /// # fn main() -> Result<(), String> {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
-    /// #     let new_path = tmp_dir.path().join("test1");
     /// #     || -> gdbm_native::Result<()> {
     /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
     /// db.insert("marmite", "dog")?;
@@ -1194,7 +1191,6 @@ impl Gdbm<ReadWrite> {
     /// # fn main() -> Result<(), String> {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
-    /// #     let new_path = tmp_dir.path().join("test1");
     /// #     || -> gdbm_native::Result<()> {
     /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
     /// match db.try_insert("marmite", "cat")? {
@@ -1299,7 +1295,6 @@ impl Gdbm<ReadWrite> {
     /// # fn main() -> Result<(), String> {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
-    /// #     let new_path = tmp_dir.path().join("test1");
     /// #     || -> gdbm_native::Result<()> {
     /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
     /// // Turn on numsync for this database.
