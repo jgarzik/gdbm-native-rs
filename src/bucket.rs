@@ -283,7 +283,7 @@ impl Bucket {
 
 #[derive(Debug)]
 pub struct BucketCache {
-    cachesize: usize,
+    pub cachesize: usize,
     buckets: HashMap<u64, Bucket>,
     // 1st element is MRU
     queue: Vec<u64>,

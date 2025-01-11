@@ -1336,6 +1336,67 @@ impl Gdbm<ReadWrite> {
 
         Ok(())
     }
+
+    /// Compact the database.
+    ///
+    /// This is an expensive operation that involves creating a new database file with all entries
+    /// from `self` and then copying the new database file over the current one. As a worst case,
+    /// this operation requires free disk space equal to the size of the current database file.
+    ///
+    /// # Examples
+    /// ```
+    /// # use tempfile::tempdir;
+    /// # fn main() -> Result<(), String> {
+    /// #     let tmp_dir = tempdir().unwrap();
+    /// #     let path = tmp_dir.path().join("test");
+    /// #     || -> gdbm_native::Result<()> {
+    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// let result = db.compact();
+    /// #         result
+    /// #     }().map_err(|e| e.to_string())
+    /// # }
+    /// ```
+    pub fn compact(&mut self) -> Result<()> {
+        let mut tmpdb = {
+            let magic = self.magic();
+            OpenOptions::new()
+                .write()
+                .create()
+                .alignment(Some(self.header.layout.alignment))
+                .endian(Some(magic.endian()))
+                .offset(Some(magic.offset()))
+                .numsync(magic.is_numsync())
+                .tempfile()
+        }?;
+
+        tmpdb.header.numsync = self.header.numsync;
+
+        self.iter::<Vec<u8>, Vec<u8>>()
+            .try_for_each(|entry| {
+                let (key, value) = entry?;
+                tmpdb.insert(&key, &value).map(|_| ())
+            })
+            .and_then(|_| tmpdb.sync())?;
+
+        tmpdb.f.seek(SeekFrom::Start(0))?;
+        self.f.seek(SeekFrom::Start(0))?;
+        std::io::copy(&mut tmpdb.f, &mut self.f)?;
+        self.f.set_len(tmpdb.header.next_block)?;
+
+        self.f.seek(SeekFrom::Start(0))?;
+        self.header = Header::from_reader(
+            Some(self.header.layout.alignment),
+            tmpdb.header.next_block,
+            &mut self.f,
+        )?;
+
+        self.f.seek(SeekFrom::Start(self.header.dir_ofs))?;
+        self.dir = Directory::from_reader(&self.header.layout, self.header.dir_sz, &mut self.f)?;
+
+        self.bucket_cache = BucketCache::new(self.bucket_cache.cachesize, None);
+
+        Ok(())
+    }
 }
 
 impl<R> Drop for Gdbm<R> {

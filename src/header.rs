@@ -28,7 +28,7 @@ pub struct Header {
     pub bucket_sz: u32,
     pub bucket_elems: u32,
     pub next_block: u64,
-    numsync: Option<u32>,
+    pub numsync: Option<u32>,
 
     pub avail: AvailBlock,
 
