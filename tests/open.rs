@@ -24,6 +24,11 @@ fn api_open_create() {
 }
 
 #[test]
+fn tempfile() {
+    assert!(OpenOptions::new().write().create().tempfile().is_ok());
+}
+
+#[test]
 // Test for correct magic for new databases.
 fn api_open_newdb_magic() {
     [

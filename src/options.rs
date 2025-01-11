@@ -206,4 +206,34 @@ impl OpenOptions<Write<Create>> {
                 db
             })
     }
+
+    /// Open a temporary database.
+    ///
+    /// The database file is created using `tempfile::tempfile` and therefore is never visible in
+    /// the filesystem, and is deleted when the `Gdbm` struct is dropped/closed. This is useful for
+    /// creating a key-value dataset that is too large to fit in system memory, but is not required
+    /// to be opened again.
+    ///
+    /// # Example
+    /// ```
+    /// # fn main() -> Result<(), String> {
+    /// #     || -> gdbm_native::Result<()> {
+    /// let db = gdbm_native::OpenOptions::new()
+    ///     .cachesize(Some(100 * 1024))
+    ///     .write()
+    ///     .create()
+    ///     .tempfile()?;
+    /// #         Ok(())
+    /// #     }().map_err(|e| e.to_string())
+    /// # }
+    /// ```
+    pub fn tempfile(&self) -> Result<Gdbm<ReadWrite>> {
+        tempfile::tempfile()
+            .map_err(Error::Io)
+            .and_then(|f| Gdbm::create(f, self))
+            .map(|mut db| {
+                db.set_sync(self.write.sync);
+                db
+            })
+    }
 }
