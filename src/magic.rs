@@ -14,21 +14,35 @@ const GDBM_MAGIC_BE_64: [u8; 4] = [0x13, 0x57, 0x9a, 0xcf];
 const GDBM_NUMSYNC_MAGIC_BE_32: [u8; 4] = [0x13, 0x57, 0x9a, 0xd0];
 const GDBM_NUMSYNC_MAGIC_BE_64: [u8; 4] = [0x13, 0x57, 0x9a, 0xd1];
 
+/// Database magic numbers stored in the first 4 bytes of the database file. The value describes
+/// the layout options used internally by the database instance, and can be inspected using
+/// [`magic()`](crate::Gdbm::magic()`).
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Magic {
+    /// [`Offset::Small`], [`Endian::Little`], [`numsync`](crate::OpenOptions::numsync): `false`
     LE,
+    /// [`Offset::Small`], [`Endian::Big`], [`numsync`](crate::OpenOptions::numsync): `false`
     BE,
+    /// [`Offset::Small`], [`Endian::Little`], [`numsync`](crate::OpenOptions::numsync): `false`
     LE32,
+    /// [`Offset::Small`], [`Endian::Big`], [`numsync`](crate::OpenOptions::numsync): `false`
     BE32,
+    /// [`Offset::LFS`], [`Endian::Little`], [`numsync`](crate::OpenOptions::numsync): `false`
     LE64,
+    /// [`Offset::LFS`], [`Endian::Big`], [`numsync`](crate::OpenOptions::numsync): `false`
     BE64,
+    /// [`Offset::Small`], [`Endian::Little`], [`numsync`](crate::OpenOptions::numsync): `true`
     LE32NS,
+    /// [`Offset::Small`], [`Endian::Big`], [`numsync`](crate::OpenOptions::numsync): `true`
     BE32NS,
+    /// [`Offset::LFS`], [`Endian::Little`], [`numsync`](crate::OpenOptions::numsync): `true`
     LE64NS,
+    /// [`Offset::LFS`], [`Endian::Big`], [`numsync`](crate::OpenOptions::numsync): `true`
     BE64NS,
 }
 
 impl Magic {
+    /// Create a new [`Magic`].
     pub fn new(endian: Endian, offset: Offset, numsync: bool) -> Self {
         match (endian, offset, numsync) {
             (Endian::Little, Offset::Small, false) => Magic::LE32,
@@ -63,6 +77,7 @@ impl Magic {
         }
     }
 
+    /// Get [`Magic`] [`Endian`].
     pub fn endian(&self) -> Endian {
         match self {
             Magic::LE | Magic::LE32 | Magic::LE64 | Magic::LE32NS | Magic::LE64NS => Endian::Little,
@@ -70,6 +85,7 @@ impl Magic {
         }
     }
 
+    /// Get [`Magic`] [`Offset`].
     pub fn offset(&self) -> Offset {
         match self {
             Magic::LE64 | Magic::BE64 | Magic::LE64NS | Magic::BE64NS => Offset::LFS,
@@ -77,6 +93,7 @@ impl Magic {
         }
     }
 
+    /// Get [`Magic`] `numsync`.
     pub fn is_numsync(&self) -> bool {
         matches!(
             self,
@@ -84,6 +101,9 @@ impl Magic {
         )
     }
 
+    /// Get the default alignment for this [`Magic`]. A flaw in the design of GNU GDBM is that the
+    /// alignment cannot be derived from the database [`Magic`]. We can guess, based on the
+    /// [`Offset`], but this sometimes needs to be overridden.
     pub fn default_alignment(&self) -> Alignment {
         match self {
             Magic::BE64 | Magic::LE64 | Magic::BE64NS | Magic::LE64NS => Alignment::Align64,
