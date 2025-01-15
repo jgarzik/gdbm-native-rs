@@ -308,7 +308,7 @@ impl BucketCache {
             .filter_map(|(offset, bucket)| bucket.dirty.then_some(offset))
             .copied()
             .collect::<Vec<_>>();
-        dl.sort();
+        dl.sort_unstable();
         dl.iter()
             .map(|offset| (*offset, self.buckets.get(offset).unwrap()))
             .collect()

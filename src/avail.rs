@@ -155,7 +155,7 @@ impl AvailBlock {
             .collect::<Vec<_>>();
 
         // sort by offsets
-        offsets_and_lengths.sort();
+        offsets_and_lengths.sort_unstable();
 
         // fold resulting regions whilst joining adjacent regions
         let mut elems = offsets_and_lengths.into_iter().fold(
