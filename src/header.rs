@@ -260,8 +260,8 @@ fn read_numsync(endian: Endian, reader: &mut impl Read) -> Result<u32> {
     (0..8)
         .map(|_| read32(endian, reader).map_err(Error::Io))
         .collect::<Result<Vec<_>>>()
-        .and_then(|ext| match ext[0] {
-            0 => Ok(ext[1]),
+        .and_then(|ext| match ext.first().copied().unwrap() {
+            0 => Ok(ext.get(1).copied().unwrap()),
             v => Err(Error::BadNumsyncVersion { version: v }),
         })
 }
