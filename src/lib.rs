@@ -286,10 +286,10 @@ where
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
-    pub fn export_ascii<P: AsRef<std::path::Path>>(
+    pub fn export_ascii<P: AsRef<std::path::Path> + ?Sized>(
         &mut self,
         outf: &mut impl Write,
-        pathname: Option<P>,
+        pathname: Option<&P>,
     ) -> Result<()> {
         self.export_ascii_header(outf, pathname.as_ref().map(|p| p.as_ref()))
             .map_err(Error::Io)
@@ -309,7 +309,7 @@ where
     fn export_bin_datum(
         outf: &mut impl Write,
         alignment: Alignment,
-        bindata: Vec<u8>,
+        bindata: &[u8],
     ) -> io::Result<()> {
         // write metadata:  big-endian datum size, 32b or 64b
         match alignment {
@@ -318,16 +318,16 @@ where
         }
 
         // write datum
-        outf.write_all(&bindata)?;
+        outf.write_all(bindata)?;
 
         Ok(())
     }
 
     fn export_bin_records(&mut self, outf: &mut impl Write, alignment: Alignment) -> Result<()> {
-        self.iter().try_for_each(|kv| {
+        self.iter::<Vec<_>, Vec<_>>().try_for_each(|kv| {
             kv.and_then(|(key, value)| {
-                Self::export_bin_datum(outf, alignment, key)
-                    .and_then(|()| Self::export_bin_datum(outf, alignment, value))
+                Self::export_bin_datum(outf, alignment, &key)
+                    .and_then(|()| Self::export_bin_datum(outf, alignment, &value))
                     .map_err(Error::Io)
             })
         })
@@ -1430,16 +1430,16 @@ where
     Gdbm<R>: CacheBucket,
     R: Default + 'static,
 {
-    fn next_slot(db: &Gdbm<R>, slot: Slot) -> Option<Slot> {
+    fn next_slot(db: &Gdbm<R>, slot: &Slot) -> Option<Slot> {
         match slot {
             Slot { bucket, element } if element + 1 < db.header.bucket_elems as usize => {
                 Some(Slot {
-                    bucket,
+                    bucket: *bucket,
                     element: element + 1,
                 })
             }
             Slot { bucket, .. } => {
-                let current_bucket_offset = db.dir.dir[bucket];
+                let current_bucket_offset = db.dir.dir[*bucket];
                 (db.dir.dir)
                     .iter()
                     .enumerate()
@@ -1450,7 +1450,7 @@ where
         }
     }
 
-    fn next_occupied_slot(db: &mut Gdbm<R>, slot: Slot) -> Option<Result<Slot>> {
+    fn next_occupied_slot(db: &mut Gdbm<R>, slot: &Slot) -> Option<Result<Slot>> {
         let mut next_slot = Self::next_slot(db, slot);
         while let Some(slot) = next_slot {
             let is_occupied = db
@@ -1461,7 +1461,7 @@ where
                 Ok(true) => return Some(Ok(slot)),
                 Err(e) => return Some(Err(e)),
             }
-            next_slot = Self::next_slot(db, slot);
+            next_slot = Self::next_slot(db, &slot);
         }
 
         None
@@ -1478,7 +1478,7 @@ where
                     if bucket.tab.first().unwrap().is_occupied() {
                         Some(Ok(slot))
                     } else {
-                        Self::next_occupied_slot(db, slot)
+                        Self::next_occupied_slot(db, &slot)
                     }
                 }
                 Err(e) => Some(Err(e)),
@@ -1538,7 +1538,7 @@ where
 
                 match data {
                     Ok(data) => {
-                        self.slot = Self::next_occupied_slot(self.db, slot);
+                        self.slot = Self::next_occupied_slot(self.db, &slot);
                         Some(Ok(data))
                     }
                     Err(e) => Some(Err(e)),

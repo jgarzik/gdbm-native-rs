@@ -131,30 +131,30 @@ mod tests {
 
     #[test]
     fn test_numerics() {
-        fn test_conversion<T>(value: T)
+        fn test_conversion<T>(value: &T)
         where
             T: ToBytesRef,
             T: FromBytes,
             T: PartialEq,
         {
-            assert!(value == T::from_bytes((value).to_bytes_ref().as_ref()).unwrap());
+            assert!(*value == T::from_bytes((value).to_bytes_ref().as_ref()).unwrap());
             assert!(T::from_bytes(&[]).is_err());
         }
 
-        test_conversion::<usize>(42);
-        test_conversion::<u8>(42);
-        test_conversion::<u16>(42);
-        test_conversion::<u32>(42);
-        test_conversion::<u64>(42);
-        test_conversion::<u128>(42);
-        test_conversion::<isize>(42);
-        test_conversion::<i8>(42);
-        test_conversion::<i16>(42);
-        test_conversion::<i32>(42);
-        test_conversion::<i64>(42);
-        test_conversion::<i128>(42);
-        test_conversion::<f32>(4.2);
-        test_conversion::<f64>(4.2);
+        test_conversion::<usize>(&42);
+        test_conversion::<u8>(&42);
+        test_conversion::<u16>(&42);
+        test_conversion::<u32>(&42);
+        test_conversion::<u64>(&42);
+        test_conversion::<u128>(&42);
+        test_conversion::<isize>(&42);
+        test_conversion::<i8>(&42);
+        test_conversion::<i16>(&42);
+        test_conversion::<i32>(&42);
+        test_conversion::<i64>(&42);
+        test_conversion::<i128>(&42);
+        test_conversion::<f32>(&4.2);
+        test_conversion::<f64>(&4.2);
     }
 
     #[test]
