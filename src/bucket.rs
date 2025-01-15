@@ -27,7 +27,7 @@ pub struct BucketElement {
 impl Default for BucketElement {
     fn default() -> Self {
         Self {
-            hash: 0xffffffff,
+            hash: 0xffff_ffff,
             key_start: PartialKey::default(),
             data_ofs: 0,
             key_size: 0,
@@ -93,7 +93,7 @@ impl BucketElement {
     }
 
     pub fn is_occupied(&self) -> bool {
-        self.hash != 0xffffffff
+        self.hash != 0xffff_ffff
     }
 }
 
@@ -391,39 +391,39 @@ mod test {
         [
             Test {
                 name: "first and only",
-                hashes: [0, 0xffffffff, 0xffffffff, 0xffffffff],
+                hashes: [0, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff],
                 offset: 0,
-                expected: [0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff],
+                expected: [0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff],
             },
             Test {
                 name: "last and only",
-                hashes: [0xffffffff, 0xffffffff, 0xffffffff, 1],
+                hashes: [0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 1],
                 offset: 3,
-                expected: [0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff],
+                expected: [0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff],
             },
             Test {
                 name: "dup hash",
-                hashes: [0, 0, 0xffffffff, 0xffffffff],
+                hashes: [0, 0, 0xffff_ffff, 0xffff_ffff],
                 offset: 0,
-                expected: [0, 0xffffffff, 0xffffffff, 0xffffffff],
+                expected: [0, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff],
             },
             Test {
                 name: "dup hash, non-sequential",
-                hashes: [0, 1, 0, 0xffffffff],
+                hashes: [0, 1, 0, 0xffff_ffff],
                 offset: 0,
-                expected: [0, 1, 0xffffffff, 0xffffffff],
+                expected: [0, 1, 0xffff_ffff, 0xffff_ffff],
             },
             Test {
                 name: "dup hash, wrapped",
                 hashes: [3, 1, 2, 3],
                 offset: 3,
-                expected: [0xffffffff, 1, 2, 3],
+                expected: [0xffff_ffff, 1, 2, 3],
             },
             Test {
                 name: "dup hash, wrapped, non-sequential",
                 hashes: [2, 2, 2, 3],
                 offset: 2,
-                expected: [2, 0xffffffff, 2, 3],
+                expected: [2, 0xffff_ffff, 2, 3],
             },
         ]
         .into_iter()
@@ -437,7 +437,7 @@ mod test {
                 let tab = hashes
                     .iter()
                     .map(|&hash| match hash {
-                        0xffffffff => BucketElement::default(),
+                        0xffff_ffff => BucketElement::default(),
                         hash => BucketElement {
                             hash,
                             ..Default::default()

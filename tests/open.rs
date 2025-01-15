@@ -152,7 +152,7 @@ fn api_open_cachesize() {
             })
     }
 
-    [Some(0), Some(100000)]
+    [Some(0), Some(100_000)]
         .into_iter()
         .try_for_each(|cachesize| {
             the_test(cachesize).map_err(|e| format!("cachesize: {cachesize:?}]: {e}"))

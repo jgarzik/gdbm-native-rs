@@ -45,12 +45,12 @@ impl PartialKey {
 // core gdbm hashing function
 pub fn hash_key(key: &[u8]) -> u32 {
     let mut value: u32 = key.len() as u32;
-    value = value.wrapping_mul(0x238F13AF);
+    value = value.wrapping_mul(0x238F_13AF);
 
     for (index, ch) in key.iter().enumerate() {
-        value = (value + ((*ch as u32) << (index * 5 % 24))) & 0x7FFFFFFF;
+        value = (value + ((*ch as u32) << (index * 5 % 24))) & 0x7FFF_FFFF;
     }
-    value = (value.wrapping_mul(1103515243) + 12345) & 0x7FFFFFFF;
+    value = (value.wrapping_mul(1_103_515_243) + 12345) & 0x7FFF_FFFF;
 
     value
 }
@@ -75,8 +75,8 @@ mod tests {
 
     #[test]
     fn test_hash() {
-        assert_eq!(hash_key(b"hello"), 1730502474);
-        assert_eq!(hash_key(b"hello\0"), 72084335);
+        assert_eq!(hash_key(b"hello"), 1_730_502_474);
+        assert_eq!(hash_key(b"hello\0"), 72_084_335);
         assert_eq!(hash_key(b""), 12345);
     }
 }
