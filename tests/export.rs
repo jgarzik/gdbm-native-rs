@@ -67,15 +67,15 @@ fn api_export_bin() {
                         .and_then(|mut db| {
                             test.metadata.data.iter().try_for_each(|kv| {
                                 db.get(&kv[0]).map_err(|e| e.to_string()).and_then(|v| {
-                                    (v == Some(kv[1].clone())).then_some(()).ok_or_else(|| {
-                                        format!("expected: {:?}, got: {:?}", v, kv[1])
-                                    })
+                                    (v == Some(kv[1].clone()))
+                                        .then_some(())
+                                        .ok_or_else(|| format!("expected: {v:?}, got: {:?}", kv[1]))
                                 })
                             })
                         })
                 })
         })
-        .unwrap_or_else(|e| panic!("{}", e));
+        .unwrap_or_else(|e| panic!("{e}"));
 }
 
 #[test]
@@ -131,6 +131,6 @@ fn api_export_ascii() {
                     })
                 })
             })
-            .unwrap_or_else(|e| panic!("{}", e));
+            .unwrap_or_else(|e| panic!("{e}"));
     }
 }

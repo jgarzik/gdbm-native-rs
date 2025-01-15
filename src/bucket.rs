@@ -457,14 +457,11 @@ mod test {
 
                 let got = bucket.tab.iter().map(|elem| elem.hash).collect::<Vec<_>>();
                 (got == expected).then_some(()).ok_or_else(|| {
-                    format!(
-                        "  failed: {}\nexpected: {:?}\n     got: {:?}",
-                        name, expected, got
-                    )
+                    format!("  failed: {name}\nexpected: {expected:?}\n     got: {got:?}",)
                 })
             },
         )
-        .map_err(|e| println!("{}", e))
+        .map_err(|e| println!("{e}"))
         .unwrap()
     }
 
@@ -506,7 +503,7 @@ mod test {
                 }),
             );
 
-            println!("{:?}", cache);
+            println!("{cache:?}");
             let evicted = cache.insert(200, Bucket::new(0, 0, vec![], vec![]));
 
             (evicted.is_some() == test.expected)

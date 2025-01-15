@@ -219,7 +219,7 @@ where
         pathname: Option<&std::path::Path>,
     ) -> io::Result<()> {
         // TODO: add ctime() to "created by" output line
-        writeln!(outf, "# GDBM dump file created by {}", COMPAT_GDBM_VERSION)?;
+        writeln!(outf, "# GDBM dump file created by {COMPAT_GDBM_VERSION}")?;
         writeln!(outf, "#:version=1.1")?;
         if let Some(pathname) = pathname {
             writeln!(outf, "#:file={}", pathname.to_string_lossy())?;
@@ -240,11 +240,11 @@ where
             let line = &b64[..MAX_DUMP_LINE_LEN];
             let rem = &b64[MAX_DUMP_LINE_LEN..];
 
-            writeln!(outf, "{}", line)?;
+            writeln!(outf, "{line}")?;
 
             b64 = rem.to_string();
         }
-        writeln!(outf, "{}", b64)?;
+        writeln!(outf, "{b64}")?;
 
         Ok(())
     }
@@ -261,7 +261,7 @@ where
     }
 
     fn export_ascii_footer(&self, outf: &mut impl Write, n_written: usize) -> io::Result<()> {
-        writeln!(outf, "#:count={}", n_written)?;
+        writeln!(outf, "#:count={n_written}")?;
         writeln!(outf, "# End of data")?;
         Ok(())
     }
@@ -302,7 +302,7 @@ where
             outf,
             "!\r\n! GDBM FLAT FILE DUMP -- THIS IS NOT A TEXT FILE\r\n"
         )?;
-        write!(outf, "! {}\r\n!\r\n", COMPAT_GDBM_VERSION)?;
+        write!(outf, "! {COMPAT_GDBM_VERSION}\r\n!\r\n")?;
         Ok(())
     }
 
@@ -353,7 +353,7 @@ where
     /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
     /// let mut buffer = Vec::new();
     /// db.export_bin(&mut buffer, ExportBinMode::Exp32)?;
-    /// println!("{:?}", buffer);
+    /// println!("{buffer:?}");
     /// #         Ok(())
     /// #     }().map_err(|e| e.to_string())
     /// # }
@@ -679,7 +679,7 @@ where
         writeln!(w, "bits {}", self.header.dir_bits)?;
 
         for n in 0..self.dir.dir.len() {
-            writeln!(w, "{}: {}", n, self.dir.dir[n])?;
+            writeln!(w, "{n}: {}", self.dir.dir[n])?;
         }
 
         Ok(())

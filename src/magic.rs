@@ -141,6 +141,6 @@ impl fmt::Display for Magic {
             Magic::BE32NS => "GDBM_NUMSYNC_MAGIC32_SWAP",
             Magic::BE64NS => "GDBM_NUMSYNC_MAGIC64_SWAP",
         };
-        write!(f, "{}", name)
+        write!(f, "{name}")
     }
 }

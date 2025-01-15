@@ -58,29 +58,27 @@ fn api_open_newdb_magic() {
             &path
         )
         .map_err(|e| format!(
-            "creating: alignment: {:?}, offset: {:?}, endian: {:?}, numsync: {}, expected: {:?}, newdb error: {}",
-            alignment, offset, endian, numsync, expected_magic, e
+            "creating: alignment: {alignment:?}, offset: {offset:?}, endian: {endian:?}, numsync: {numsync}, expected: {expected_magic:?}, newdb error: {e}",
         ))?;
 
         OpenOptions::new().alignment(Some(alignment)).open(
             &path,
         )
         .map_err(|e| format!(
-            "opening: alignment: {:?}, offset: {:?}, endian: {:?}, numsync: {}, expected: {:?}, open error: {}",
-            alignment, offset, endian, numsync, expected_magic, e
+            "opening: alignment: {alignment:?}, offset: {offset:?}, endian: {endian:?}, numsync: {numsync}, expected: {expected_magic:?}, open error: {e}",
         ))
         .and_then(|db| {
             (db.magic() == expected_magic)
                 .then_some(())
                 .ok_or_else(|| {
                     format!(
-                        "wrong magic: alignment: {:?}, offset: {:?}, endian: {:?}, numsync: {}, expected: {:?}, got: {:?}",
-                        alignment, offset, endian, numsync, expected_magic, db.magic()
+                        "wrong magic: alignment: {alignment:?}, offset: {offset:?}, endian: {endian:?}, numsync: {numsync}, expected: {expected_magic:?}, got: {:?}",
+                        db.magic()
                     )
                 })
         })
     })
-    .unwrap_or_else(|e: String| panic!("{}", e));
+    .unwrap_or_else(|e: String| panic!("{e}"));
 }
 
 #[test]
@@ -105,11 +103,11 @@ fn api_open_bsexact() {
         {
             Ok(_) if expected.is_ok() => Ok(()),
             Err(_) if expected.is_err() => Ok(()),
-            Ok(_) => Err(format!("blocksize: {}, newdb opened", block_size)),
-            Err(e) => Err(format!("blocksize: {}, newdb error: {}", block_size, e)),
+            Ok(_) => Err(format!("blocksize: {block_size}, newdb opened")),
+            Err(e) => Err(format!("blocksize: {block_size}, newdb error: {e}")),
         }
     })
-    .unwrap_or_else(|e: String| panic!("bsexact unexpected: {}", e));
+    .unwrap_or_else(|e: String| panic!("bsexact unexpected: {e}"));
 }
 
 #[test]
@@ -126,12 +124,12 @@ fn api_open_cachesize() {
             .write()
             .create()
             .open(&db)
-            .map_err(|e| format!("write open failed: {}", e))
+            .map_err(|e| format!("write open failed: {e}"))
             .and_then(|mut db| {
                 (0..RECORD_COUNT).try_for_each(|n| {
                     db.insert(&n, &vec![])
                         .map(|_| ())
-                        .map_err(|e| format!("insert failed: {}", e))
+                        .map_err(|e| format!("insert failed: {e}"))
                 })
             })?;
 
@@ -139,7 +137,7 @@ fn api_open_cachesize() {
         OpenOptions::new()
             .cachesize(cachesize)
             .open(&db)
-            .map_err(|e| format!("read open failed: {}", e))
+            .map_err(|e| format!("read open failed: {e}"))
             .and_then(|mut db| {
                 (0..RECORD_COUNT).try_for_each(|n| {
                     db.get(&n)
@@ -149,7 +147,7 @@ fn api_open_cachesize() {
                                 .then_some(())
                                 .ok_or_else(|| "wrong value".to_string())
                         })
-                        .map_err(|e| format!("get failed: {}", e))
+                        .map_err(|e| format!("get failed: {e}"))
                 })
             })
     }
@@ -157,7 +155,7 @@ fn api_open_cachesize() {
     [Some(0), Some(100000)]
         .into_iter()
         .try_for_each(|cachesize| {
-            the_test(cachesize).map_err(|e| format!("cachesize: {:?}]: {}", cachesize, e))
+            the_test(cachesize).map_err(|e| format!("cachesize: {cachesize:?}]: {e}"))
         })
-        .unwrap_or_else(|e| panic!("{}", e));
+        .unwrap_or_else(|e| panic!("{e}"));
 }

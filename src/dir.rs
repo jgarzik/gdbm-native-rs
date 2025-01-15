@@ -171,8 +171,8 @@ mod test {
             let got = test.dir.extend();
             if got != test.expected {
                 panic!(
-                    "test: {}\nexpected: {:?}\ngot: {:?}",
-                    test.name, test.expected, got
+                    "test: {}\nexpected: {:?}\ngot: {got:?}",
+                    test.name, test.expected
                 );
             }
         })

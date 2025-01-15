@@ -44,7 +44,7 @@ fn api_exists() {
                 .unwrap();
 
             for n in 0..10001 {
-                let keystr = format!("key {}", n);
+                let keystr = format!("key {n}");
                 assert!(db.contains_key(&keystr).unwrap());
             }
         }
@@ -77,8 +77,8 @@ fn api_get() {
                 .unwrap();
 
             for n in 0..10001 {
-                let keystr = format!("key {}", n);
-                let valstr = format!("value {}", n);
+                let keystr = format!("key {n}");
+                let valstr = format!("value {n}");
                 assert_eq!(db.get(&keystr).unwrap(), Some(valstr));
             }
         }
