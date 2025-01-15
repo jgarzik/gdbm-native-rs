@@ -218,7 +218,6 @@ where
     }
 
     fn export_ascii_header(
-        &self,
         outf: &mut impl Write,
         pathname: Option<&std::path::Path>,
     ) -> io::Result<()> {
@@ -264,7 +263,7 @@ where
         })
     }
 
-    fn export_ascii_footer(&self, outf: &mut impl Write, n_written: usize) -> io::Result<()> {
+    fn export_ascii_footer(outf: &mut impl Write, n_written: usize) -> io::Result<()> {
         writeln!(outf, "#:count={n_written}")?;
         writeln!(outf, "# End of data")?;
         Ok(())
@@ -295,13 +294,13 @@ where
         outf: &mut impl Write,
         pathname: Option<&P>,
     ) -> Result<()> {
-        self.export_ascii_header(outf, pathname.as_ref().map(|p| p.as_ref()))
+        Gdbm::export_ascii_header(outf, pathname.as_ref().map(|p| p.as_ref()))
             .map_err(Error::Io)
             .and_then(|()| self.export_ascii_records(outf))
-            .and_then(|n_written| self.export_ascii_footer(outf, n_written).map_err(Error::Io))
+            .and_then(|n_written| Gdbm::export_ascii_footer(outf, n_written).map_err(Error::Io))
     }
 
-    fn export_bin_header(&self, outf: &mut impl Write) -> io::Result<()> {
+    fn export_bin_header(outf: &mut impl Write) -> io::Result<()> {
         write!(
             outf,
             "!\r\n! GDBM FLAT FILE DUMP -- THIS IS NOT A TEXT FILE\r\n"
@@ -369,7 +368,7 @@ where
             ExportBinMode::Exp64 => Alignment::Align64,
         };
 
-        self.export_bin_header(outf)
+        Gdbm::export_bin_header(outf)
             .map_err(Error::Io)
             .and_then(|()| self.export_bin_records(outf, alignment))
     }
