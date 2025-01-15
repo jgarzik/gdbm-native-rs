@@ -44,11 +44,7 @@ impl<'a> ASCIIImportIterator<'a> {
             .buf_reader
             .by_ref()
             .bytes()
-            .filter(|b| {
-                !b.as_ref()
-                    .map(|b| b.is_ascii_whitespace())
-                    .unwrap_or_default()
-            })
+            .filter(|b| !b.as_ref().map(u8::is_ascii_whitespace).unwrap_or_default())
             .take((4 * length / 3 + 3) & !3) // length of base64 representation
             .collect::<io::Result<Vec<_>>>()?;
 

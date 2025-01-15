@@ -294,7 +294,7 @@ where
         outf: &mut impl Write,
         pathname: Option<&P>,
     ) -> Result<()> {
-        Gdbm::export_ascii_header(outf, pathname.as_ref().map(|p| p.as_ref()))
+        Gdbm::export_ascii_header(outf, pathname.as_ref().map(std::convert::AsRef::as_ref))
             .map_err(Error::Io)
             .and_then(|()| self.export_ascii_records(outf))
             .and_then(|n_written| Gdbm::export_ascii_footer(outf, n_written).map_err(Error::Io))

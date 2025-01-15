@@ -58,7 +58,7 @@ impl ToBytesRef for String {
 impl FromBytes for String {
     fn from_bytes(bytes: &[u8]) -> Result<Self> {
         std::str::from_utf8(bytes)
-            .map(|s| s.to_string())
+            .map(String::from)
             .map_err(|e| Error::BadData(e.to_string()))
     }
 }
