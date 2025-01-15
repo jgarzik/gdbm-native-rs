@@ -61,6 +61,7 @@ pub struct Write<C> {
 /// GDBM database open builder, containing values to override defaults when opening a database.
 /// These values are not stored as part of the database; if the default is not applicable they must
 /// be set each time the database is openend.
+#[must_use]
 #[derive(Copy, Clone, Debug, Default)]
 pub struct OpenOptions<W> {
     /// Override default [Alignment](crate::Alignment) when opening a database. Default alignment
