@@ -99,84 +99,7 @@ impl Header {
 
         let avail = AvailBlock::from_reader(layout, reader)?;
 
-        // Block must be big enough for header and avail table with two elements.
-        if block_sz < Self::sizeof(layout, magic.is_numsync(), 2) {
-            return Err(Error::BadHeaderBlockSize {
-                size: block_sz,
-                minimum: Self::sizeof(layout, magic.is_numsync(), 2),
-            });
-        }
-
-        if next_block < file_size {
-            return Err(Error::BadHeaderNextBlock {
-                next_block,
-                file_size,
-            });
-        }
-
-        if dir_ofs + u64::from(dir_sz) > file_size {
-            return Err(Error::BadHeaderDirectoryOffset {
-                offset: dir_ofs,
-                size: dir_sz,
-                file_size,
-            });
-        }
-
-        let (minimum_size, _) = build_dir_size(layout.offset, block_sz);
-        let (_, expected_bits) = build_dir_size(layout.offset, dir_sz);
-        if dir_sz < minimum_size || dir_bits != expected_bits {
-            return Err(Error::BadHeaderDirectory {
-                size: dir_sz,
-                bits: dir_bits,
-                minimum_size,
-                expected_bits,
-            });
-        }
-
-        if bucket_sz < Bucket::sizeof(layout) + BucketElement::sizeof(layout) {
-            return Err(Error::BadHeaderBucketSize {
-                size: bucket_sz,
-                minimum: Bucket::sizeof(layout) + BucketElement::sizeof(layout),
-            });
-        }
-
-        if bucket_elems != (bucket_sz - Bucket::sizeof(layout)) / BucketElement::sizeof(layout) {
-            return Err(Error::BadHeaderBucketElems {
-                elems: bucket_elems,
-                expected: (bucket_sz - Bucket::sizeof(layout)) / BucketElement::sizeof(layout),
-            });
-        }
-
-        avail.elems.iter().enumerate().try_for_each(|(i, elem)| {
-            if elem.addr < u64::from(block_sz) || elem.addr + u64::from(elem.sz) > file_size {
-                Err(Error::BadAvailElem {
-                    block_offset: u64::from(Self::sizeof(layout, magic.is_numsync(), 0)),
-                    elem: i,
-                    offset: elem.addr,
-                    size: elem.sz,
-                    file_size,
-                })
-            } else {
-                Ok(())
-            }
-        })?;
-
-        if avail.sz == 0 || block_sz < Self::sizeof(layout, magic.is_numsync(), avail.sz) {
-            return Err(Error::BadHeaderAvail {
-                elems: avail.sz,
-                size: Self::sizeof(layout, magic.is_numsync(), avail.sz),
-                block_size: block_sz,
-            });
-        }
-
-        if avail.elems.len() as u32 > avail.sz {
-            return Err(Error::BadHeaderAvailCount {
-                elems: avail.elems.len() as u32,
-                maximum: avail.sz,
-            });
-        }
-
-        Ok(Header {
+        let header = Header {
             magic,
             block_sz,
             dir_ofs,
@@ -189,7 +112,104 @@ impl Header {
             dirty: false,
             layout,
             numsync,
-        })
+        };
+
+        header.verify(file_size)?;
+
+        Ok(header)
+    }
+
+    fn verify(&self, file_size: u64) -> Result<()> {
+        // Block must be big enough for header and avail table with two elements.
+        if self.block_sz < Self::sizeof(self.layout, self.magic.is_numsync(), 2) {
+            return Err(Error::BadHeaderBlockSize {
+                size: self.block_sz,
+                minimum: Self::sizeof(self.layout, self.magic.is_numsync(), 2),
+            });
+        }
+
+        if self.next_block < file_size {
+            return Err(Error::BadHeaderNextBlock {
+                next_block: self.next_block,
+                file_size,
+            });
+        }
+
+        if self.dir_ofs + u64::from(self.dir_sz) > file_size {
+            return Err(Error::BadHeaderDirectoryOffset {
+                offset: self.dir_ofs,
+                size: self.dir_sz,
+                file_size,
+            });
+        }
+
+        let (minimum_size, _) = build_dir_size(self.layout.offset, self.block_sz);
+        let (_, expected_bits) = build_dir_size(self.layout.offset, self.dir_sz);
+        if self.dir_sz < minimum_size || self.dir_bits != expected_bits {
+            return Err(Error::BadHeaderDirectory {
+                size: self.dir_sz,
+                bits: self.dir_bits,
+                minimum_size,
+                expected_bits,
+            });
+        }
+
+        if self.bucket_sz < Bucket::sizeof(self.layout) + BucketElement::sizeof(self.layout) {
+            return Err(Error::BadHeaderBucketSize {
+                size: self.bucket_sz,
+                minimum: Bucket::sizeof(self.layout) + BucketElement::sizeof(self.layout),
+            });
+        }
+
+        if self.bucket_elems
+            != (self.bucket_sz - Bucket::sizeof(self.layout)) / BucketElement::sizeof(self.layout)
+        {
+            return Err(Error::BadHeaderBucketElems {
+                elems: self.bucket_elems,
+                expected: (self.bucket_sz - Bucket::sizeof(self.layout))
+                    / BucketElement::sizeof(self.layout),
+            });
+        }
+
+        self.avail
+            .elems
+            .iter()
+            .enumerate()
+            .try_for_each(|(i, elem)| {
+                (elem.addr >= u64::from(self.block_sz)
+                    && elem.addr + u64::from(elem.sz) <= file_size)
+                    .then_some(())
+                    .ok_or_else(|| Error::BadAvailElem {
+                        block_offset: u64::from(Self::sizeof(
+                            self.layout,
+                            self.magic.is_numsync(),
+                            0,
+                        )),
+                        elem: i,
+                        offset: elem.addr,
+                        size: elem.sz,
+                        file_size,
+                    })
+            })?;
+
+        if self.avail.sz == 0
+            || self.block_sz < Self::sizeof(self.layout, self.magic.is_numsync(), self.avail.sz)
+        {
+            return Err(Error::BadHeaderAvail {
+                elems: self.avail.sz,
+                size: Self::sizeof(self.layout, self.magic.is_numsync(), self.avail.sz),
+                block_size: self.block_sz,
+            });
+        }
+
+        if self.avail.elems.len() as u32 > self.avail.sz {
+            return Err(Error::BadHeaderAvailCount {
+                elems: self.avail.elems.len() as u32,
+                maximum: self.avail.sz,
+            });
+        }
+
+        Ok(())
     }
 
     pub fn serialize(&self, writer: &mut impl Write) -> io::Result<()> {
