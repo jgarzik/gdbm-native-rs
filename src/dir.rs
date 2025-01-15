@@ -71,7 +71,7 @@ impl Directory {
             dir: self
                 .dir
                 .iter()
-                .cloned()
+                .copied()
                 .flat_map(|offset| std::iter::repeat(offset).take(2))
                 .collect(),
             dirty: true,

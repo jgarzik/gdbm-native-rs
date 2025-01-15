@@ -22,7 +22,7 @@ impl PartialKey {
     pub fn new(key: &[u8]) -> Self {
         Self(
             key.iter()
-                .cloned()
+                .copied()
                 .chain(repeat(0))
                 .take(Self::SIZEOF as usize)
                 .collect::<Vec<_>>()
