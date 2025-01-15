@@ -138,7 +138,7 @@ mod tests {
             T: PartialEq,
         {
             assert!(value == T::from_bytes((value).to_bytes_ref().as_ref()).unwrap());
-            assert!(T::from_bytes(&[]).is_err())
+            assert!(T::from_bytes(&[]).is_err());
         }
 
         test_conversion::<usize>(42);

@@ -121,7 +121,7 @@ impl AvailBlock {
     }
 
     pub fn insert_elem(&mut self, offset: u64, length: u32) {
-        insert_elem(&mut self.elems, offset, length)
+        insert_elem(&mut self.elems, offset, length);
     }
 
     pub fn serialize(&self, layout: &Layout, writer: &mut impl Write) -> io::Result<()> {

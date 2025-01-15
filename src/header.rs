@@ -215,7 +215,7 @@ impl Header {
         }
 
         if self.magic.is_numsync() {
-            write_numsync(layout.endian, writer, self.numsync.unwrap_or(0))?
+            write_numsync(layout.endian, writer, self.numsync.unwrap_or(0))?;
         }
 
         self.avail.serialize(layout, writer)?;

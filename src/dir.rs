@@ -175,6 +175,6 @@ mod test {
                     test.name, test.expected
                 );
             }
-        })
+        });
     }
 }

@@ -462,7 +462,7 @@ mod test {
             },
         )
         .map_err(|e| println!("{e}"))
-        .unwrap()
+        .unwrap();
     }
 
     #[test]
@@ -510,6 +510,6 @@ mod test {
                 .then_some(())
                 .ok_or_else(|| format!("{}: expected {}", test.name, test.expected))
         })
-        .unwrap()
+        .unwrap();
     }
 }

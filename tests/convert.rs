@@ -41,5 +41,5 @@ fn api_convert() {
 
             Ok(())
         })
-        .unwrap_or_else(|e| panic!("{e}"))
+        .unwrap_or_else(|e| panic!("{e}"));
 }

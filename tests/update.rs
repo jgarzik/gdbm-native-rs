@@ -126,5 +126,5 @@ fn api_insert() {
             Ok(())
         })
         .map_err(|e: String| println!("{e}"))
-        .unwrap()
+        .unwrap();
 }
