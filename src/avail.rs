@@ -19,7 +19,7 @@ pub struct AvailElem {
 }
 
 impl AvailElem {
-    pub fn sizeof(layout: &Layout) -> u32 {
+    pub fn sizeof(layout: Layout) -> u32 {
         match (layout.alignment, layout.offset) {
             (Alignment::Align32, Offset::LFS) => 12,
             (Alignment::Align64, Offset::LFS) => 16,
@@ -27,7 +27,7 @@ impl AvailElem {
         }
     }
 
-    pub fn from_reader(layout: &Layout, reader: &mut impl Read) -> io::Result<Self> {
+    pub fn from_reader(layout: Layout, reader: &mut impl Read) -> io::Result<Self> {
         let elem_sz = read32(layout.endian, reader)?;
 
         // skip padding
@@ -46,7 +46,7 @@ impl AvailElem {
         })
     }
 
-    pub fn serialize(&self, layout: &Layout, writer: &mut impl Write) -> io::Result<()> {
+    pub fn serialize(&self, layout: Layout, writer: &mut impl Write) -> io::Result<()> {
         write32(layout.endian, writer, self.sz)?;
 
         // insert padding
@@ -71,7 +71,7 @@ pub struct AvailBlock {
 }
 
 impl AvailBlock {
-    pub fn sizeof(layout: &Layout, elems: u32) -> u32 {
+    pub fn sizeof(layout: Layout, elems: u32) -> u32 {
         elems * AvailElem::sizeof(layout)
             + match (layout.alignment, layout.offset) {
                 (Alignment::Align32, Offset::Small) => 12,
@@ -87,7 +87,7 @@ impl AvailBlock {
         }
     }
 
-    pub fn from_reader(layout: &Layout, reader: &mut impl Read) -> io::Result<Self> {
+    pub fn from_reader(layout: Layout, reader: &mut impl Read) -> io::Result<Self> {
         let sz = read32(layout.endian, reader)?;
         let count = read32(layout.endian, reader)?;
 
@@ -124,7 +124,7 @@ impl AvailBlock {
         insert_elem(&mut self.elems, offset, length);
     }
 
-    pub fn serialize(&self, layout: &Layout, writer: &mut impl Write) -> io::Result<()> {
+    pub fn serialize(&self, layout: Layout, writer: &mut impl Write) -> io::Result<()> {
         write32(layout.endian, writer, self.sz)?;
         write32(layout.endian, writer, self.elems.len() as u32)?;
         match layout.offset {
@@ -197,7 +197,7 @@ impl AvailBlock {
     }
 
     // extent returns the size of this block when serialized
-    pub fn extent(&self, layout: &Layout) -> u32 {
+    pub fn extent(&self, layout: Layout) -> u32 {
         Self::sizeof(layout, self.elems.len() as u32)
     }
 }

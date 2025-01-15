@@ -44,14 +44,14 @@ impl Directory {
         }
     }
 
-    pub fn serialize(&self, layout: &Layout, writer: &mut impl Write) -> io::Result<()> {
+    pub fn serialize(&self, layout: Layout, writer: &mut impl Write) -> io::Result<()> {
         self.dir.iter().try_for_each(|ofs| match layout.offset {
             Offset::Small => write32(layout.endian, writer, *ofs as u32),
             Offset::LFS => write64(layout.endian, writer, *ofs),
         })
     }
 
-    pub fn from_reader(layout: &Layout, extent: u32, reader: &mut impl Read) -> io::Result<Self> {
+    pub fn from_reader(layout: Layout, extent: u32, reader: &mut impl Read) -> io::Result<Self> {
         Ok(Self {
             dirty: false,
             dir: match layout.offset {
@@ -79,7 +79,7 @@ impl Directory {
     }
 
     // serialized size of this instance
-    pub fn extent(&self, layout: &Layout) -> u32 {
+    pub fn extent(&self, layout: Layout) -> u32 {
         match layout.offset {
             Offset::Small => self.dir.len() as u32 * 4,
             Offset::LFS => self.dir.len() as u32 * 8,

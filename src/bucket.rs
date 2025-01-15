@@ -37,7 +37,7 @@ impl Default for BucketElement {
 }
 
 impl BucketElement {
-    pub fn sizeof(layout: &Layout) -> u32 {
+    pub fn sizeof(layout: Layout) -> u32 {
         match layout.offset {
             Offset::Small => 20,
             Offset::LFS => 24,
@@ -54,7 +54,7 @@ impl BucketElement {
         }
     }
 
-    pub fn from_reader(layout: &Layout, reader: &mut impl Read) -> io::Result<Self> {
+    pub fn from_reader(layout: Layout, reader: &mut impl Read) -> io::Result<Self> {
         let hash = read32(layout.endian, reader)?;
 
         let key_start = PartialKey::from_reader(reader)?;
@@ -76,7 +76,7 @@ impl BucketElement {
         })
     }
 
-    pub fn serialize(&self, layout: &Layout, writer: &mut impl Write) -> io::Result<()> {
+    pub fn serialize(&self, layout: Layout, writer: &mut impl Write) -> io::Result<()> {
         write32(layout.endian, writer, self.hash)?;
 
         self.key_start.serialize(writer)?;
@@ -126,7 +126,7 @@ impl Bucket {
         )
     }
 
-    pub fn from_reader(elems: u32, layout: &Layout, reader: &mut impl Read) -> io::Result<Self> {
+    pub fn from_reader(elems: u32, layout: Layout, reader: &mut impl Read) -> io::Result<Self> {
         // read avail section
         let av_count = read32(layout.endian, reader)?;
 
@@ -164,7 +164,7 @@ impl Bucket {
         })
     }
 
-    pub fn serialize(&self, layout: &Layout, writer: &mut impl Write) -> io::Result<()> {
+    pub fn serialize(&self, layout: Layout, writer: &mut impl Write) -> io::Result<()> {
         assert!(self.avail.len() as u32 <= Self::AVAIL);
 
         //
@@ -203,7 +203,7 @@ impl Bucket {
         Ok(())
     }
 
-    pub fn sizeof(layout: &Layout) -> u32 {
+    pub fn sizeof(layout: Layout) -> u32 {
         // 4 bytes each for bits, count and av_count + padding
         Self::AVAIL * AvailElem::sizeof(layout)
             + match layout.alignment {

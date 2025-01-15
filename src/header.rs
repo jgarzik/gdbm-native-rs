@@ -38,7 +38,7 @@ pub struct Header {
 }
 
 impl Header {
-    pub fn sizeof(layout: &Layout, is_numsync: bool, avail_elems: u32) -> u32 {
+    pub fn sizeof(layout: Layout, is_numsync: bool, avail_elems: u32) -> u32 {
         match (layout.offset, is_numsync) {
             (Offset::Small, true) => 32 + 32 + AvailBlock::sizeof(layout, avail_elems),
             (Offset::Small, false) => 32 + AvailBlock::sizeof(layout, avail_elems),
@@ -47,7 +47,7 @@ impl Header {
         }
     }
 
-    pub fn new(block_size: u32, layout: &Layout, dir_bits: u32, numsync: bool) -> Self {
+    pub fn new(block_size: u32, layout: Layout, dir_bits: u32, numsync: bool) -> Self {
         let bucket_elems = (block_size - Bucket::sizeof(layout)) / BucketElement::sizeof(layout);
         let avail_elems =
             (block_size - Self::sizeof(layout, numsync, 0)) / AvailElem::sizeof(layout);
@@ -62,7 +62,7 @@ impl Header {
             next_block: u64::from(block_size) * 3,
             avail: AvailBlock::new(avail_elems, 0, vec![]),
             dirty: true,
-            layout: *layout,
+            layout,
             numsync: None,
         }
     }
@@ -97,13 +97,13 @@ impl Header {
             alignment: alignment.unwrap_or(magic.default_alignment()),
         };
 
-        let avail = AvailBlock::from_reader(&layout, reader)?;
+        let avail = AvailBlock::from_reader(layout, reader)?;
 
         // Block must be big enough for header and avail table with two elements.
-        if block_sz < Self::sizeof(&layout, magic.is_numsync(), 2) {
+        if block_sz < Self::sizeof(layout, magic.is_numsync(), 2) {
             return Err(Error::BadHeaderBlockSize {
                 size: block_sz,
-                minimum: Self::sizeof(&layout, magic.is_numsync(), 2),
+                minimum: Self::sizeof(layout, magic.is_numsync(), 2),
             });
         }
 
@@ -133,24 +133,24 @@ impl Header {
             });
         }
 
-        if bucket_sz < Bucket::sizeof(&layout) + BucketElement::sizeof(&layout) {
+        if bucket_sz < Bucket::sizeof(layout) + BucketElement::sizeof(layout) {
             return Err(Error::BadHeaderBucketSize {
                 size: bucket_sz,
-                minimum: Bucket::sizeof(&layout) + BucketElement::sizeof(&layout),
+                minimum: Bucket::sizeof(layout) + BucketElement::sizeof(layout),
             });
         }
 
-        if bucket_elems != (bucket_sz - Bucket::sizeof(&layout)) / BucketElement::sizeof(&layout) {
+        if bucket_elems != (bucket_sz - Bucket::sizeof(layout)) / BucketElement::sizeof(layout) {
             return Err(Error::BadHeaderBucketElems {
                 elems: bucket_elems,
-                expected: (bucket_sz - Bucket::sizeof(&layout)) / BucketElement::sizeof(&layout),
+                expected: (bucket_sz - Bucket::sizeof(layout)) / BucketElement::sizeof(layout),
             });
         }
 
         avail.elems.iter().enumerate().try_for_each(|(i, elem)| {
             if elem.addr < u64::from(block_sz) || elem.addr + u64::from(elem.sz) > file_size {
                 Err(Error::BadAvailElem {
-                    block_offset: u64::from(Self::sizeof(&layout, magic.is_numsync(), 0)),
+                    block_offset: u64::from(Self::sizeof(layout, magic.is_numsync(), 0)),
                     elem: i,
                     offset: elem.addr,
                     size: elem.sz,
@@ -161,10 +161,10 @@ impl Header {
             }
         })?;
 
-        if avail.sz == 0 || block_sz < Self::sizeof(&layout, magic.is_numsync(), avail.sz) {
+        if avail.sz == 0 || block_sz < Self::sizeof(layout, magic.is_numsync(), avail.sz) {
             return Err(Error::BadHeaderAvail {
                 elems: avail.sz,
-                size: Self::sizeof(&layout, magic.is_numsync(), avail.sz),
+                size: Self::sizeof(layout, magic.is_numsync(), avail.sz),
                 block_size: block_sz,
             });
         }
@@ -193,7 +193,7 @@ impl Header {
     }
 
     pub fn serialize(&self, writer: &mut impl Write) -> io::Result<()> {
-        let layout = &self.layout;
+        let layout = self.layout;
 
         writer.write_all(self.magic.as_bytes())?;
 
@@ -237,8 +237,8 @@ impl Header {
     // convert_numsync converts the header to numsync and retuns a list of
     // offset/length pairs that need to be freed (because avail is shortened).
     pub fn convert_numsync(&mut self, use_numsync: bool) -> Vec<(u64, u32)> {
-        let new_avail_sz = (self.block_sz - Self::sizeof(&self.layout, use_numsync, 0))
-            / AvailElem::sizeof(&self.layout);
+        let new_avail_sz = (self.block_sz - Self::sizeof(self.layout, use_numsync, 0))
+            / AvailElem::sizeof(self.layout);
 
         self.magic = Magic::new(self.magic.endian(), self.magic.offset(), use_numsync);
         self.numsync = None;

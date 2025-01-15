@@ -37,7 +37,7 @@ impl PartialKey {
         Ok(Self(buf))
     }
 
-    pub fn serialize(&self, writer: &mut impl Write) -> io::Result<()> {
+    pub fn serialize(self, writer: &mut impl Write) -> io::Result<()> {
         writer.write_all(&self.0)
     }
 }

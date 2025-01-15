@@ -185,7 +185,7 @@ where
         let header = Header::from_reader(alignment, metadata.len(), &mut f)?;
 
         f.seek(SeekFrom::Start(header.dir_ofs))?;
-        let dir = Directory::from_reader(&header.layout, header.dir_sz, &mut f)?;
+        let dir = Directory::from_reader(header.layout, header.dir_sz, &mut f)?;
 
         // ensure all bucket offsets are reasonable
         if !dir.validate(
@@ -380,7 +380,7 @@ where
         if !self.bucket_cache.contains(offset) {
             self.f.seek(SeekFrom::Start(offset))?;
             let bucket =
-                Bucket::from_reader(self.header.bucket_elems, &self.header.layout, &mut self.f)?;
+                Bucket::from_reader(self.header.bucket_elems, self.header.layout, &mut self.f)?;
 
             if bucket.count > self.header.bucket_elems || bucket.bits > self.header.dir_bits {
                 return Err(Error::BadBucket {
@@ -717,7 +717,7 @@ impl Gdbm<ReadWrite> {
 
         let header = Header::new(
             block_size,
-            &layout,
+            layout,
             dir_bits,
             !open_options.write.create.no_numsync,
         );
@@ -881,9 +881,9 @@ impl Gdbm<ReadWrite> {
                 self.header.avail.next_block,
                 new_elems,
             );
-            let offset = self.allocate_record(block.extent(&self.header.layout))?;
+            let offset = self.allocate_record(block.extent(self.header.layout))?;
             let mut buffer = Vec::with_capacity(self.header.block_sz as usize);
-            block.serialize(&self.header.layout, &mut buffer)?;
+            block.serialize(self.header.layout, &mut buffer)?;
             self.f.seek(SeekFrom::Start(offset))?;
             self.f.write_all(&buffer)?;
 
@@ -902,7 +902,7 @@ impl Gdbm<ReadWrite> {
 
         let next = {
             self.f.seek(SeekFrom::Start(self.header.avail.next_block))?;
-            AvailBlock::from_reader(&self.header.layout, &mut self.f)?
+            AvailBlock::from_reader(self.header.layout, &mut self.f)?
         };
 
         if let Some(block) = self.header.avail.merge(&next) {
@@ -910,7 +910,7 @@ impl Gdbm<ReadWrite> {
             self.header.dirty = true;
 
             // free the block we just merged
-            self.free_record(next_addr, AvailBlock::sizeof(&self.header.layout, next.sz))?;
+            self.free_record(next_addr, AvailBlock::sizeof(self.header.layout, next.sz))?;
         }
 
         Ok(())
@@ -944,7 +944,7 @@ impl Gdbm<ReadWrite> {
 
     fn write_bucket(&mut self, bucket: &Bucket, offset: u64) -> io::Result<()> {
         let mut buffer = Vec::with_capacity(self.header.block_sz as usize);
-        bucket.serialize(&self.header.layout, &mut buffer)?;
+        bucket.serialize(self.header.layout, &mut buffer)?;
         self.f.seek(SeekFrom::Start(offset))?;
         self.f.write_all(&buffer)?;
 
@@ -960,7 +960,7 @@ impl Gdbm<ReadWrite> {
                 // Can't use self.write_bucket() here. We have a borrow in bucket list.
                 let mut buffer = Vec::with_capacity(self.header.block_sz as usize);
                 bucket
-                    .serialize(&self.header.layout, &mut buffer)
+                    .serialize(self.header.layout, &mut buffer)
                     .and_then(|()| self.f.seek(SeekFrom::Start(*offset)))
                     .and_then(|_| self.f.write_all(&buffer))
             })
@@ -973,8 +973,8 @@ impl Gdbm<ReadWrite> {
             return Ok(());
         }
 
-        let mut buffer = Vec::with_capacity(self.dir.extent(&self.header.layout) as usize);
-        self.dir.serialize(&self.header.layout, &mut buffer)?;
+        let mut buffer = Vec::with_capacity(self.dir.extent(self.header.layout) as usize);
+        self.dir.serialize(self.header.layout, &mut buffer)?;
         self.f.seek(SeekFrom::Start(self.header.dir_ofs))?;
         self.f.write_all(&buffer)?;
 
@@ -1284,7 +1284,7 @@ impl Gdbm<ReadWrite> {
     // Both the directory and header are marked dirty, but not written.
     fn extend_directory(&mut self) -> io::Result<()> {
         let directory = self.dir.extend();
-        let size = directory.extent(&self.header.layout);
+        let size = directory.extent(self.header.layout);
         let offset = self.allocate_record(size)?;
 
         self.free_record(self.header.dir_ofs, self.header.dir_sz)?;
@@ -1392,7 +1392,7 @@ impl Gdbm<ReadWrite> {
         )?;
 
         self.f.seek(SeekFrom::Start(self.header.dir_ofs))?;
-        self.dir = Directory::from_reader(&self.header.layout, self.header.dir_sz, &mut self.f)?;
+        self.dir = Directory::from_reader(self.header.layout, self.header.dir_sz, &mut self.f)?;
 
         self.bucket_cache = BucketCache::new(self.bucket_cache.cachesize, None);
 
