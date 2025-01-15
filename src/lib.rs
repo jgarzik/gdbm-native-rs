@@ -703,7 +703,9 @@ impl Gdbm<ReadWrite> {
         let (block_size, dir_bits) = match open_options.write.create.block_size {
             BlockSize::Roughly(size) => build_dir_size(layout.offset, size),
             BlockSize::Exactly(size) => build_dir_size(layout.offset, size),
-            _ => build_dir_size(layout.offset, f.metadata()?.st_blksize() as u32),
+            BlockSize::Filesystem => {
+                build_dir_size(layout.offset, f.metadata()?.st_blksize() as u32)
+            }
         };
 
         if let BlockSize::Exactly(size) = open_options.write.create.block_size {
