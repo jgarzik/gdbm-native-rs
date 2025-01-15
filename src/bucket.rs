@@ -216,8 +216,8 @@ impl Bucket {
     pub fn insert(&mut self, element: BucketElement) {
         self.count += 1;
 
-        let index = (element.hash..)
-            .map(|index| index as usize % self.tab.len())
+        let index = (0..self.tab.len())
+            .map(|index| (index + element.hash as usize) % self.tab.len())
             .find(|&index| !self.tab[index].is_occupied())
             .unwrap();
 
