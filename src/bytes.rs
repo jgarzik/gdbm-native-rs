@@ -75,14 +75,9 @@ impl ToBytesRef for bool {
 
 impl FromBytes for bool {
     fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() != 1 {
-            Err(Error::BadData(format!(
-                "can't convert {} bytes into bool",
-                bytes.len(),
-            )))
-        } else {
-            Ok(bytes[0] == 1)
-        }
+        (bytes.len() == 1).then_some(bytes[0] == 1).ok_or_else(|| {
+            Error::BadData(format!("can't convert {} bytes into bool", bytes.len(),))
+        })
     }
 }
 
