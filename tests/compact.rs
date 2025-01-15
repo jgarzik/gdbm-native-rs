@@ -37,7 +37,7 @@ fn api_compact() {
         (0usize..1000)
             .try_for_each(|n| {
                 let v = db
-                    .get::<&usize, Vec<u8>>(&n)
+                    .get::<usize, Vec<u8>>(&n)
                     .map_err(|e| format!("reading {n}: {e}"))?;
                 if n % 2 != 0 {
                     (v == Some(vec![1; n]))

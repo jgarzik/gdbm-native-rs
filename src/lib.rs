@@ -545,7 +545,7 @@ where
     /// }
     /// # }
     /// ```
-    pub fn contains_key<K: ToBytesRef>(&mut self, key: K) -> Result<bool> {
+    pub fn contains_key<K: ToBytesRef + ?Sized>(&mut self, key: &K) -> Result<bool> {
         self.int_get(key.to_bytes_ref().as_ref())
             .map(|result| result.is_some())
     }
@@ -609,7 +609,7 @@ where
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
-    pub fn get<K: ToBytesRef, V: FromBytes>(&mut self, key: K) -> Result<Option<V>> {
+    pub fn get<K: ToBytesRef + ?Sized, V: FromBytes>(&mut self, key: &K) -> Result<Option<V>> {
         match self.int_get(key.to_bytes_ref().as_ref())? {
             None => Ok(None),
             Some(data) => V::from_bytes(&data.1).map(|v| Some(v)),
@@ -1090,7 +1090,7 @@ impl Gdbm<ReadWrite> {
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
-    pub fn remove<K: ToBytesRef>(&mut self, key: K) -> Result<Option<Vec<u8>>> {
+    pub fn remove<K: ToBytesRef + ?Sized>(&mut self, key: &K) -> Result<Option<Vec<u8>>> {
         self.int_remove(key.to_bytes_ref().as_ref())
             .and_then(|old_value| {
                 if old_value.is_some() && self.read_write.sync {
@@ -1175,10 +1175,10 @@ impl Gdbm<ReadWrite> {
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
-    pub fn insert<V: ToBytesRef, K: ToBytesRef>(
+    pub fn insert<V: ToBytesRef + ?Sized, K: ToBytesRef + ?Sized>(
         &mut self,
-        key: K,
-        value: V,
+        key: &K,
+        value: &V,
     ) -> Result<Option<Vec<u8>>> {
         let key = key.to_bytes_ref();
         self.int_remove(key.as_ref())
@@ -1218,16 +1218,15 @@ impl Gdbm<ReadWrite> {
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
-    pub fn try_insert<K: ToBytesRef, V: ToBytesRef>(
+    pub fn try_insert<K: ToBytesRef + ?Sized, V: ToBytesRef + ?Sized>(
         &mut self,
-        key: K,
-        value: V,
+        key: &K,
+        value: &V,
     ) -> Result<Option<Vec<u8>>> {
-        let key = key.to_bytes_ref();
-        self.get(key.as_ref()).and_then(|olddata| match olddata {
+        self.get(key).and_then(|olddata| match olddata {
             Some(_) => Ok(olddata),
             _ => self
-                .int_insert(key.as_ref(), value.to_bytes_ref().as_ref())
+                .int_insert(key.to_bytes_ref().as_ref(), value.to_bytes_ref().as_ref())
                 .map(|_| None)
                 .and_then(|result| {
                     if self.read_write.sync {

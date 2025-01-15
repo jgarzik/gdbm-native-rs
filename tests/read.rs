@@ -45,7 +45,7 @@ fn api_exists() {
 
             for n in 0..10001 {
                 let keystr = format!("key {}", n);
-                assert!(db.contains_key(keystr.as_bytes()).unwrap());
+                assert!(db.contains_key(&keystr).unwrap());
             }
         }
     }
@@ -60,7 +60,7 @@ fn api_get_not() {
             .alignment(testdb.alignment)
             .open(&testdb.db_path)
             .unwrap();
-        let res = db.get::<&str, String>("This key does not exist").unwrap();
+        let res = db.get::<str, String>("This key does not exist").unwrap();
         assert_eq!(res, None);
     }
 }

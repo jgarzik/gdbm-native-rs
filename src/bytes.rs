@@ -25,13 +25,13 @@ where
     fn from_bytes(bytes: &[u8]) -> Result<Self>;
 }
 
-impl ToBytesRef for &[u8] {
+impl ToBytesRef for [u8] {
     fn to_bytes_ref(&self) -> BytesRef {
         BytesRef::Reference(self)
     }
 }
 
-impl ToBytesRef for &Vec<u8> {
+impl ToBytesRef for Vec<u8> {
     fn to_bytes_ref(&self) -> BytesRef {
         BytesRef::Reference(self.as_ref())
     }
@@ -43,13 +43,13 @@ impl FromBytes for Vec<u8> {
     }
 }
 
-impl ToBytesRef for &str {
+impl ToBytesRef for str {
     fn to_bytes_ref(&self) -> BytesRef {
         BytesRef::Reference(self.as_ref())
     }
 }
 
-impl ToBytesRef for &String {
+impl ToBytesRef for String {
     fn to_bytes_ref(&self) -> BytesRef {
         BytesRef::Reference(self.as_ref())
     }
@@ -63,9 +63,9 @@ impl FromBytes for String {
     }
 }
 
-impl ToBytesRef for &bool {
+impl ToBytesRef for bool {
     fn to_bytes_ref(&self) -> BytesRef {
-        if **self {
+        if *self {
             BytesRef::WithBuffer(vec![1])
         } else {
             BytesRef::WithBuffer(vec![0])
@@ -88,7 +88,7 @@ impl FromBytes for bool {
 
 macro_rules! numeric_to_from_bytes {
     ($t:ty) => {
-        impl ToBytesRef for &$t {
+        impl ToBytesRef for $t {
             fn to_bytes_ref(&self) -> BytesRef {
                 BytesRef::WithBuffer(self.to_le_bytes().to_vec())
             }
@@ -133,11 +133,11 @@ mod tests {
     fn test_numerics() {
         fn test_conversion<T>(value: T)
         where
-            for<'a> &'a T: ToBytesRef,
+            T: ToBytesRef,
             T: FromBytes,
             T: PartialEq,
         {
-            assert!(value == T::from_bytes((&value).to_bytes_ref().as_ref()).unwrap());
+            assert!(value == T::from_bytes((value).to_bytes_ref().as_ref()).unwrap());
             assert!(T::from_bytes(&[]).is_err())
         }
 
@@ -161,8 +161,8 @@ mod tests {
     fn test_non_numeric() {
         let marvin = String::from("Marvin");
         assert!(marvin == String::from_bytes(marvin.as_str().to_bytes_ref().as_ref()).unwrap());
-        assert!(marvin == String::from_bytes((&marvin).to_bytes_ref().as_ref()).unwrap());
-        assert!(!bool::from_bytes((&false).to_bytes_ref().as_ref()).unwrap());
-        assert!(bool::from_bytes((&true).to_bytes_ref().as_ref()).unwrap());
+        assert!(marvin == String::from_bytes((marvin).to_bytes_ref().as_ref()).unwrap());
+        assert!(!bool::from_bytes((false).to_bytes_ref().as_ref()).unwrap());
+        assert!(bool::from_bytes((true).to_bytes_ref().as_ref()).unwrap());
     }
 }
