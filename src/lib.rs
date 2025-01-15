@@ -1485,9 +1485,9 @@ where
             }
         };
         Self {
+            key_or_value,
             db,
             slot,
-            key_or_value,
         }
     }
 }
@@ -1518,11 +1518,11 @@ where
                     .and_then(
                         |(offset, key_length, data_length)| match self.key_or_value {
                             KeyOrValue::Key => read_ofs(&mut self.db.f, offset, key_length)
-                                .map(|data| (data.to_vec(), vec![]))
+                                .map(|data| (data.clone(), vec![]))
                                 .map_err(Error::Io),
                             KeyOrValue::Value => {
                                 read_ofs(&mut self.db.f, offset + key_length as u64, data_length)
-                                    .map(|data| (vec![], data.to_vec()))
+                                    .map(|data| (vec![], data.clone()))
                                     .map_err(Error::Io)
                             }
                             KeyOrValue::Both => {

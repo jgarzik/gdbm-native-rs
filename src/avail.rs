@@ -163,14 +163,14 @@ impl AvailBlock {
             |mut elems: Vec<AvailElem>, (addr, sz)| {
                 let last = elems.pop();
                 match last {
-                    None => vec![AvailElem { addr, sz }],
+                    None => vec![AvailElem { sz, addr }],
                     Some(last) if last.addr + last.sz as u64 == addr => {
                         vec![AvailElem {
                             addr: last.addr,
                             sz: last.sz + sz,
                         }]
                     }
-                    Some(last) => vec![last, AvailElem { addr, sz }],
+                    Some(last) => vec![last, AvailElem { sz, addr }],
                 }
                 .into_iter()
                 .for_each(|elem| elems.push(elem));
@@ -294,7 +294,7 @@ mod tests {
                 elems: elems
                     .iter()
                     .copied()
-                    .map(|(addr, sz)| super::AvailElem { addr, sz })
+                    .map(|(addr, sz)| super::AvailElem { sz, addr })
                     .collect(),
             }
         }
