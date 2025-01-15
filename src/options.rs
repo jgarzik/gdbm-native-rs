@@ -69,7 +69,7 @@ pub struct OpenOptions<W> {
     /// different architectures, as might be the case if the database is stored on a network
     /// filesystem.
     pub alignment: Option<Alignment>,
-    /// Bytesize of in-memory bucket cache (defaults to DEFAULT_CACHESIZE)
+    /// Bytesize of in-memory bucket cache (defaults to [`DEFAULT_CACHESIZE`])
     pub cachesize: Option<usize>,
 
     pub(crate) write: W,

@@ -11,7 +11,7 @@
 use std::io::{self, Read, Write};
 
 /// Struct field alignment of DB file. Unless specified when opening a database, alignment defaults
-/// to `Alignment::Align64` for databases created with [`Offset::LFS`](crate::Offset::LFS],
+/// to `Alignment::Align64` for databases created with [`Offset::LFS`](crate::Offset::LFS),
 /// otherwise `Alignemnt::Align32`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Alignment {

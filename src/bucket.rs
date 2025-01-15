@@ -324,7 +324,7 @@ impl BucketCache {
         self.buckets.contains_key(&bucket_ofs)
     }
 
-    /// set_current moves bucket_offset to the front of the MRU queue.
+    /// `set_current` moves `bucket_offset` to the front of the MRU queue.
     pub fn set_current(&mut self, bucket_offset: u64) {
         self.queue
             .iter()
@@ -336,8 +336,8 @@ impl BucketCache {
     }
 
     #[must_use]
-    /// insert inserts the bucket into the cache and returns the evicted bucket if any, and if it
-    /// is dirty (needs writing).
+    /// `insert` inserts the [`Bucket`] into the cache and returns the evicted [`Bucket`] if any, and
+    /// if it is dirty (needs writing).
     pub fn insert(&mut self, bucket_offset: u64, bucket: Bucket) -> Option<(u64, Bucket)> {
         if self.buckets.insert(bucket_offset, bucket).is_some() {
             None // bucket already in queue, nothing to evict
