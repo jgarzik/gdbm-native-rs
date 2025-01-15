@@ -1106,22 +1106,21 @@ impl Gdbm<ReadWrite> {
     }
 
     fn allocate_record(&mut self, size: u32) -> io::Result<u64> {
-        let (offset, length) = match self
+        let (offset, length) = if let Some(block) = self
             .bucket_cache
             .current_bucket_mut()
             .unwrap()
             .allocate(size)
         {
-            Some(block) => block,
-            None => {
-                if self.header.avail.elems.len() as u32 > self.header.avail.sz / 2 {
-                    self.pop_avail_block()?;
-                }
+            block
+        } else {
+            if self.header.avail.elems.len() as u32 > self.header.avail.sz / 2 {
+                self.pop_avail_block()?;
+            }
 
-                match self.header.allocate(size) {
-                    Some(block) => block,
-                    None => self.extend(size)?,
-                }
+            match self.header.allocate(size) {
+                Some(block) => block,
+                None => self.extend(size)?,
             }
         };
 

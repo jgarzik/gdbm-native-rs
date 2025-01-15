@@ -339,22 +339,21 @@ impl BucketCache {
     /// insert inserts the bucket into the cache and returns the evicted bucket if any, and if it
     /// is dirty (needs writing).
     pub fn insert(&mut self, bucket_offset: u64, bucket: Bucket) -> Option<(u64, Bucket)> {
-        match self.buckets.insert(bucket_offset, bucket) {
-            Some(_) => None, // bucket already in queue, nothing to evict
-            None => {
-                let evicted = (self.queue.len() >= self.cachesize)
-                    .then_some(())
-                    .and_then(|()| self.queue.pop())
-                    .and_then(|offset| {
-                        self.buckets
-                            .remove(&offset)
-                            .filter(|bucket| bucket.dirty)
-                            .map(|bucket| (offset, bucket))
-                    });
-                self.queue.push(bucket_offset);
+        if self.buckets.insert(bucket_offset, bucket).is_some() {
+            None // bucket already in queue, nothing to evict
+        } else {
+            let evicted = (self.queue.len() >= self.cachesize)
+                .then_some(())
+                .and_then(|()| self.queue.pop())
+                .and_then(|offset| {
+                    self.buckets
+                        .remove(&offset)
+                        .filter(|bucket| bucket.dirty)
+                        .map(|bucket| (offset, bucket))
+                });
+            self.queue.push(bucket_offset);
 
-                evicted
-            }
+            evicted
         }
     }
 
