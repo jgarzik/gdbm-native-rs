@@ -330,9 +330,7 @@ mod tests {
                 second: block(&[], 10, 42),
                 expected: Some(block(&[(20, 10)], 10, 42)),
             },
-        ]
-        .into_iter()
-        {
+        ] {
             let merged = test.first.merge(&test.second);
             if merged != test.expected {
                 panic!(
@@ -389,9 +387,7 @@ mod tests {
                     vec![AvailElem { addr: 1, sz: 1 }, AvailElem { addr: 3, sz: 3 }],
                 ),
             },
-        ]
-        .into_iter()
-        {
+        ] {
             let partitioned = super::partition_elems(&test.elements);
             if partitioned != test.expected {
                 panic!(

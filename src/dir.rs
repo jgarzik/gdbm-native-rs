@@ -165,9 +165,7 @@ mod test {
                     dirty: true,
                 },
             },
-        ]
-        .into_iter()
-        {
+        ] {
             let got = test.dir.extend();
             if got != test.expected {
                 panic!(
