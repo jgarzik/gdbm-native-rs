@@ -167,12 +167,12 @@ mod test {
             },
         ] {
             let got = test.dir.extend();
-            if got != test.expected {
-                panic!(
-                    "test: {}\nexpected: {:?}\ngot: {got:?}",
-                    test.name, test.expected
-                );
-            }
+            assert!(
+                got == test.expected,
+                "test: {}\nexpected: {:?}\ngot: {got:?}",
+                test.name,
+                test.expected
+            );
         }
     }
 }

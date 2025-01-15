@@ -332,12 +332,12 @@ mod tests {
             },
         ] {
             let merged = test.first.merge(&test.second);
-            if merged != test.expected {
-                panic!(
-                    "test \"{}\" failed: expected:\n{:?}\ngot:\n{merged:?}",
-                    test.name, test.expected
-                );
-            }
+            assert!(
+                merged == test.expected,
+                "test \"{}\" failed: expected:\n{:?}\ngot:\n{merged:?}",
+                test.name,
+                test.expected
+            );
         }
     }
 
@@ -389,12 +389,12 @@ mod tests {
             },
         ] {
             let partitioned = super::partition_elems(&test.elements);
-            if partitioned != test.expected {
-                panic!(
-                    "test \"{}\" failed: expected:\n{:?}\ngot:\n{partitioned:?}",
-                    test.name, test.expected
-                );
-            }
+            assert!(
+                partitioned == test.expected,
+                "test \"{}\" failed: expected:\n{:?}\ngot:\n{partitioned:?}",
+                test.name,
+                test.expected
+            );
         }
     }
 }
