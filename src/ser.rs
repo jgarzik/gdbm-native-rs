@@ -25,6 +25,7 @@ pub enum Alignment {
 
 impl Alignment {
     /// `true` if `self` is `Align64`, otherwise `false`.
+    #[must_use]
     pub fn is64(&self) -> bool {
         *self == Alignment::Align64
     }
