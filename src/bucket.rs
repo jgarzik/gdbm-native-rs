@@ -344,7 +344,7 @@ impl BucketCache {
             None => {
                 let evicted = (self.queue.len() >= self.cachesize)
                     .then_some(())
-                    .and_then(|_| self.queue.pop())
+                    .and_then(|()| self.queue.pop())
                     .and_then(|offset| {
                         self.buckets
                             .remove(&offset)

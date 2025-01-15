@@ -42,7 +42,7 @@ fn api_iter() {
                         })
                     })
                 })
-                .and_then(|_| {
+                .and_then(|()| {
                     keys_and_values
                         .is_empty()
                         .then_some(())
@@ -78,7 +78,7 @@ fn api_keys() {
                         })
                     })
                 })
-                .and_then(|_| {
+                .and_then(|()| {
                     keys.is_empty()
                         .then_some(())
                         .ok_or_else(|| "iteration missed some keys".to_string())
@@ -114,7 +114,7 @@ fn api_values() {
                         })
                     })
                 })
-                .and_then(|_| {
+                .and_then(|()| {
                     values
                         .is_empty()
                         .then_some(())

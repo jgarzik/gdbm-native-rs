@@ -253,8 +253,8 @@ where
         self.iter().try_fold(0, |count, kv| {
             kv.and_then(|(key, value)| {
                 Self::export_ascii_datum(outf, key)
-                    .and_then(|_| Self::export_ascii_datum(outf, value))
-                    .map(|_| count + 1)
+                    .and_then(|()| Self::export_ascii_datum(outf, value))
+                    .map(|()| count + 1)
                     .map_err(Error::Io)
             })
         })
@@ -293,7 +293,7 @@ where
     ) -> Result<()> {
         self.export_ascii_header(outf, pathname.as_ref().map(|p| p.as_ref()))
             .map_err(Error::Io)
-            .and_then(|_| self.export_ascii_records(outf))
+            .and_then(|()| self.export_ascii_records(outf))
             .and_then(|n_written| self.export_ascii_footer(outf, n_written).map_err(Error::Io))
     }
 
@@ -327,7 +327,7 @@ where
         self.iter().try_for_each(|kv| {
             kv.and_then(|(key, value)| {
                 Self::export_bin_datum(outf, alignment, key)
-                    .and_then(|_| Self::export_bin_datum(outf, alignment, value))
+                    .and_then(|()| Self::export_bin_datum(outf, alignment, value))
                     .map_err(Error::Io)
             })
         })
@@ -367,7 +367,7 @@ where
 
         self.export_bin_header(outf)
             .map_err(Error::Io)
-            .and_then(|_| self.export_bin_records(outf, alignment))
+            .and_then(|()| self.export_bin_records(outf, alignment))
     }
 
     // read bucket into bucket cache.
@@ -958,10 +958,10 @@ impl Gdbm<ReadWrite> {
                 let mut buffer = Vec::with_capacity(self.header.block_sz as usize);
                 bucket
                     .serialize(&self.header.layout, &mut buffer)
-                    .and_then(|_| self.f.seek(SeekFrom::Start(*offset)))
+                    .and_then(|()| self.f.seek(SeekFrom::Start(*offset)))
                     .and_then(|_| self.f.write_all(&buffer))
             })
-            .map(|_| self.bucket_cache.clear_dirty())
+            .map(|()| self.bucket_cache.clear_dirty())
     }
 
     // write out any cached, not-yet-written metadata and data to storage
@@ -1034,7 +1034,7 @@ impl Gdbm<ReadWrite> {
             WriteState::Dirty => {
                 self.header.increment_numsync();
                 self.write_dirty()
-                    .and_then(|_| self.f.sync_data())
+                    .and_then(|()| self.f.sync_data())
                     .map_err(Error::Io)
             }
         }
@@ -1138,7 +1138,7 @@ impl Gdbm<ReadWrite> {
         self.f
             .seek(SeekFrom::Start(offset))
             .and_then(|_| self.f.write_all(key))
-            .and_then(|_| self.f.write_all(data))?;
+            .and_then(|()| self.f.write_all(data))?;
 
         let bucket_elem = BucketElement::new(key, data, offset);
         self.cache_load_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash))?;
@@ -1184,7 +1184,7 @@ impl Gdbm<ReadWrite> {
         self.int_remove(key.as_ref())
             .and_then(|oldvalue| {
                 self.int_insert(key.as_ref(), value.to_bytes_ref().as_ref())
-                    .map(|_| oldvalue)
+                    .map(|()| oldvalue)
             })
             .and_then(|oldvalue| {
                 if self.read_write.sync {
@@ -1227,7 +1227,7 @@ impl Gdbm<ReadWrite> {
             Some(_) => Ok(olddata),
             _ => self
                 .int_insert(key.to_bytes_ref().as_ref(), value.to_bytes_ref().as_ref())
-                .map(|_| None)
+                .map(|()| None)
                 .and_then(|result| {
                     if self.read_write.sync {
                         self.sync()?;
@@ -1375,7 +1375,7 @@ impl Gdbm<ReadWrite> {
                 let (key, value) = entry?;
                 tmpdb.insert(&key, &value).map(|_| ())
             })
-            .and_then(|_| tmpdb.sync())?;
+            .and_then(|()| tmpdb.sync())?;
 
         tmpdb.f.seek(SeekFrom::Start(0))?;
         self.f.seek(SeekFrom::Start(0))?;

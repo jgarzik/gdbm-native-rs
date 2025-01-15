@@ -23,7 +23,7 @@ fn api_convert() {
                 .and_then(|mut db| {
                     db.set_numsync(numsync)
                         .map_err(|e| format!("converting: {e}"))
-                        .and_then(|_| db.sync().map_err(|e| format!("synching: {e}")))
+                        .and_then(|()| db.sync().map_err(|e| format!("synching: {e}")))
                 })
                 .map_err(|e| format!("converting {} to numsync: {e}", test.db_path))?;
 
