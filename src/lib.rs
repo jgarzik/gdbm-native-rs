@@ -858,7 +858,7 @@ impl Gdbm<ReadWrite> {
     }
 
     // virtually allocate N blocks of data, at end of db file (no I/O)
-    fn extend(&mut self, size: u32) -> io::Result<(u64, u32)> {
+    fn extend(&mut self, size: u32) -> (u64, u32) {
         let offset = self.header.next_block;
         let length = match size % self.header.block_sz {
             0 => size / self.header.block_sz,
@@ -868,7 +868,7 @@ impl Gdbm<ReadWrite> {
         self.header.next_block += u64::from(length);
         self.header.dirty = true;
 
-        Ok((offset, length))
+        (offset, length)
     }
 
     // Free list is full.  Split in half, and store 1/2 in new list block.
@@ -1120,7 +1120,7 @@ impl Gdbm<ReadWrite> {
 
             match self.header.allocate(size) {
                 Some(block) => block,
-                None => self.extend(size)?,
+                None => self.extend(size),
             }
         };
 
@@ -1248,7 +1248,7 @@ impl Gdbm<ReadWrite> {
 
         // allocate space for new bucket in an aligned block at the end of file
         let new_bucket_offset = {
-            let (offset, size) = self.extend(self.header.bucket_sz)?;
+            let (offset, size) = self.extend(self.header.bucket_sz);
             self.free_record(
                 offset + u64::from(self.header.bucket_sz),
                 size - self.header.bucket_sz,
