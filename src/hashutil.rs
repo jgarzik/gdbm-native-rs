@@ -48,7 +48,7 @@ pub fn hash_key(key: &[u8]) -> u32 {
     value = value.wrapping_mul(0x238F_13AF);
 
     for (index, ch) in key.iter().enumerate() {
-        value = (value + ((*ch as u32) << (index * 5 % 24))) & 0x7FFF_FFFF;
+        value = (value + (u32::from(*ch) << (index * 5 % 24))) & 0x7FFF_FFFF;
     }
     value = (value.wrapping_mul(1_103_515_243) + 12345) & 0x7FFF_FFFF;
 

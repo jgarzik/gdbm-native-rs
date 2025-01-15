@@ -56,7 +56,7 @@ impl Directory {
             dirty: false,
             dir: match layout.offset {
                 Offset::Small => (0..extent / 4)
-                    .map(|_| read32(layout.endian, reader).map(|v| v as u64))
+                    .map(|_| read32(layout.endian, reader).map(u64::from))
                     .collect::<io::Result<Vec<_>>>(),
                 Offset::LFS => (0..extent / 8)
                     .map(|_| read64(layout.endian, reader))
@@ -90,7 +90,7 @@ impl Directory {
     pub fn validate(&self, start: u64, end: u64, bucket_size: u32) -> bool {
         self.dir
             .iter()
-            .all(|&offset| offset >= start && offset + bucket_size as u64 <= end)
+            .all(|&offset| offset >= start && offset + u64::from(bucket_size) <= end)
     }
 
     // update_bucket_split is called after a bucket is split.

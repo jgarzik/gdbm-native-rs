@@ -60,7 +60,7 @@ impl BucketElement {
         let key_start = PartialKey::from_reader(reader)?;
 
         let data_ofs = match layout.offset {
-            Offset::Small => (read32(layout.endian, reader)?) as u64,
+            Offset::Small => u64::from(read32(layout.endian, reader)?),
             Offset::LFS => read64(layout.endian, reader)?,
         };
 

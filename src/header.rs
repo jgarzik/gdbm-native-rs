@@ -54,12 +54,12 @@ impl Header {
         Header {
             magic: Magic::new(layout.endian, layout.offset, numsync),
             block_sz: block_size,
-            dir_ofs: block_size as u64,
+            dir_ofs: u64::from(block_size),
             dir_sz: block_size,
             dir_bits,
             bucket_sz: Bucket::sizeof(layout) + bucket_elems * BucketElement::sizeof(layout),
             bucket_elems,
-            next_block: block_size as u64 * 3,
+            next_block: u64::from(block_size) * 3,
             avail: AvailBlock::new(avail_elems, 0, vec![]),
             dirty: true,
             layout: *layout,
@@ -75,7 +75,7 @@ impl Header {
         let magic = Magic::from_reader(reader)?;
         let block_sz = read32(magic.endian(), reader)?;
         let dir_ofs = match magic.offset() {
-            Offset::Small => read32(magic.endian(), reader)? as u64,
+            Offset::Small => u64::from(read32(magic.endian(), reader)?),
             Offset::LFS => read64(magic.endian(), reader)?,
         };
         let dir_sz = read32(magic.endian(), reader)?;
@@ -83,7 +83,7 @@ impl Header {
         let bucket_sz = read32(magic.endian(), reader)?;
         let bucket_elems = read32(magic.endian(), reader)?;
         let next_block = match magic.offset() {
-            Offset::Small => read32(magic.endian(), reader)? as u64,
+            Offset::Small => u64::from(read32(magic.endian(), reader)?),
             Offset::LFS => read64(magic.endian(), reader)?,
         };
         let numsync = magic
@@ -114,7 +114,7 @@ impl Header {
             });
         }
 
-        if dir_ofs + dir_sz as u64 > file_size {
+        if dir_ofs + u64::from(dir_sz) > file_size {
             return Err(Error::BadHeaderDirectoryOffset {
                 offset: dir_ofs,
                 size: dir_sz,
@@ -148,9 +148,9 @@ impl Header {
         }
 
         avail.elems.iter().enumerate().try_for_each(|(i, elem)| {
-            if elem.addr < block_sz as u64 || elem.addr + elem.sz as u64 > file_size {
+            if elem.addr < u64::from(block_sz) || elem.addr + u64::from(elem.sz) > file_size {
                 Err(Error::BadAvailElem {
-                    block_offset: Self::sizeof(&layout, magic.is_numsync(), 0) as u64,
+                    block_offset: u64::from(Self::sizeof(&layout, magic.is_numsync(), 0)),
                     elem: i,
                     offset: elem.addr,
                     size: elem.sz,

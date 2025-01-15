@@ -188,7 +188,11 @@ where
         let dir = Directory::from_reader(&header.layout, header.dir_sz, &mut f)?;
 
         // ensure all bucket offsets are reasonable
-        if !dir.validate(header.block_sz as u64, header.next_block, header.block_sz) {
+        if !dir.validate(
+            u64::from(header.block_sz),
+            header.next_block,
+            header.block_sz,
+        ) {
             return Err(Error::BadDirectory {
                 offset: header.dir_ofs,
                 length: header.dir_sz,
@@ -719,7 +723,7 @@ impl Gdbm<ReadWrite> {
             !open_options.write.create.no_numsync,
         );
         let bucket = Bucket::new(0, header.bucket_elems as usize, vec![], vec![]);
-        let bucket_offset = header.next_block - block_size as u64;
+        let bucket_offset = header.next_block - u64::from(block_size);
         let dir = Directory::new(vec![bucket_offset; 1 << header.dir_bits]);
 
         let bucket_cache = {
@@ -861,7 +865,7 @@ impl Gdbm<ReadWrite> {
             _ => size / self.header.block_sz + 1,
         } * self.header.block_sz;
 
-        self.header.next_block += length as u64;
+        self.header.next_block += u64::from(length);
         self.header.dirty = true;
 
         Ok((offset, length))
@@ -1121,7 +1125,7 @@ impl Gdbm<ReadWrite> {
             }
         };
 
-        self.free_record(offset + size as u64, length - size)?;
+        self.free_record(offset + u64::from(size), length - size)?;
 
         Ok(offset)
     }
@@ -1247,7 +1251,7 @@ impl Gdbm<ReadWrite> {
         let new_bucket_offset = {
             let (offset, size) = self.extend(self.header.bucket_sz)?;
             self.free_record(
-                offset + self.header.bucket_sz as u64,
+                offset + u64::from(self.header.bucket_sz),
                 size - self.header.bucket_sz,
             )?;
             offset

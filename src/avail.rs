@@ -36,7 +36,7 @@ impl AvailElem {
         }
 
         let elem_ofs = match layout.offset {
-            Offset::Small => (read32(layout.endian, reader)?) as u64,
+            Offset::Small => u64::from(read32(layout.endian, reader)?),
             Offset::LFS => read64(layout.endian, reader)?,
         };
 
@@ -92,7 +92,7 @@ impl AvailBlock {
         let count = read32(layout.endian, reader)?;
 
         let next_block = match layout.offset {
-            Offset::Small => (read32(layout.endian, reader)?) as u64,
+            Offset::Small => u64::from(read32(layout.endian, reader)?),
             Offset::LFS => read64(layout.endian, reader)?,
         };
 
@@ -164,7 +164,7 @@ impl AvailBlock {
                 let last = elems.pop();
                 match last {
                     None => vec![AvailElem { sz, addr }],
-                    Some(last) if last.addr + last.sz as u64 == addr => {
+                    Some(last) if last.addr + u64::from(last.sz) == addr => {
                         vec![AvailElem {
                             addr: last.addr,
                             sz: last.sz + sz,
