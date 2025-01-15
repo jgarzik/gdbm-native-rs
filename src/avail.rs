@@ -299,7 +299,7 @@ mod tests {
             }
         }
 
-        [
+        for test in [
             Test {
                 name: "sorts",
                 first: block(&[(40, 5), (0, 12)], 12, 0),
@@ -332,7 +332,7 @@ mod tests {
             },
         ]
         .into_iter()
-        .for_each(|test| {
+        {
             let merged = test.first.merge(&test.second);
             if merged != test.expected {
                 panic!(
@@ -340,7 +340,7 @@ mod tests {
                     test.name, test.expected
                 );
             }
-        });
+        }
     }
 
     #[test]
@@ -352,7 +352,7 @@ mod tests {
             expected: (Vec<AvailElem>, Vec<AvailElem>),
         }
 
-        [
+        for test in [
             Test {
                 name: "empty",
                 elements: vec![],
@@ -391,7 +391,7 @@ mod tests {
             },
         ]
         .into_iter()
-        .for_each(|test| {
+        {
             let partitioned = super::partition_elems(&test.elements);
             if partitioned != test.expected {
                 panic!(
@@ -399,6 +399,6 @@ mod tests {
                     test.name, test.expected
                 );
             }
-        });
+        }
     }
 }

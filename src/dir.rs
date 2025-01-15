@@ -131,7 +131,7 @@ mod test {
             expected: Directory,
         }
 
-        [
+        for test in [
             Test {
                 name: "empty",
                 dir: Directory {
@@ -167,7 +167,7 @@ mod test {
             },
         ]
         .into_iter()
-        .for_each(|test| {
+        {
             let got = test.dir.extend();
             if got != test.expected {
                 panic!(
@@ -175,6 +175,6 @@ mod test {
                     test.name, test.expected
                 );
             }
-        });
+        }
     }
 }
