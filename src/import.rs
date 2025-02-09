@@ -23,7 +23,7 @@ impl<'a> ASCIIImportIterator<'a> {
                 Ok(s) if s.as_str().starts_with('#') => Ok(s),
                 Ok(s) => Err(io::Error::new(
                     ErrorKind::Other,
-                    format!("bad header line: {}", s),
+                    format!("bad header line: {s}"),
                 )),
                 Err(e) => Err(e),
             })
@@ -44,11 +44,7 @@ impl<'a> ASCIIImportIterator<'a> {
             .buf_reader
             .by_ref()
             .bytes()
-            .filter(|b| {
-                !b.as_ref()
-                    .map(|b| b.is_ascii_whitespace())
-                    .unwrap_or_default()
-            })
+            .filter(|b| b.is_err() || !b.as_ref().unwrap().is_ascii_whitespace())
             .take((4 * length / 3 + 3) & !3) // length of base64 representation
             .collect::<io::Result<Vec<_>>>()?;
 
@@ -61,7 +57,7 @@ impl<'a> ASCIIImportIterator<'a> {
 
         base64::prelude::BASE64_STANDARD
             .decode(bytes)
-            .map_err(|e| io::Error::new(ErrorKind::Other, format!("bad base64: {}", e)))
+            .map_err(|e| io::Error::new(ErrorKind::Other, format!("bad base64: {e}")))
             .and_then(|decoded| {
                 (decoded.len() == length)
                     .then_some(decoded)
@@ -75,14 +71,12 @@ impl<'a> ASCIIImportIterator<'a> {
             Some(("#:count", _)) => Ok(None),
             Some(("#:len", length)) => length
                 .parse::<usize>()
-                .map_err(|e| {
-                    io::Error::new(ErrorKind::Other, format!("bad line ({}): {}", line, e))
-                })
+                .map_err(|e| io::Error::new(ErrorKind::Other, format!("bad line ({line}): {e}")))
                 .and_then(|length| self.read_base64(length))
                 .map(Some),
             _ => Err(io::Error::new(
                 ErrorKind::Other,
-                format!("bad data ({})", line),
+                format!("bad data ({line})"),
             )),
         }
     }

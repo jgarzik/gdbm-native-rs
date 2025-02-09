@@ -38,19 +38,19 @@ fn api_iter() {
                         kv.map_err(|e| e.to_string()).and_then(|(k, v)| {
                             (keys_and_values.remove(&k) == Some(v))
                                 .then_some(())
-                                .ok_or_else(|| format!("key {:?} not in metadata", k))
+                                .ok_or_else(|| format!("key {k:?} not in metadata"))
                         })
                     })
                 })
-                .and_then(|_| {
+                .and_then(|()| {
                     keys_and_values
                         .is_empty()
                         .then_some(())
                         .ok_or_else(|| "iteration missed some keys".to_string())
                 })
-                .map_err(|e| format!("[{}]: {}", test.db_path, e))
+                .map_err(|e| format!("[{}]: {e}", test.db_path))
         })
-        .unwrap_or_else(|e| panic!("{}", e));
+        .unwrap_or_else(|e| panic!("{e}"));
 }
 
 #[test]
@@ -74,18 +74,18 @@ fn api_keys() {
                         kv.map_err(|e| e.to_string()).and_then(|k| {
                             keys.remove(&k)
                                 .then_some(())
-                                .ok_or_else(|| format!("key {:?} not in metadata", k))
+                                .ok_or_else(|| format!("key {k:?} not in metadata"))
                         })
                     })
                 })
-                .and_then(|_| {
+                .and_then(|()| {
                     keys.is_empty()
                         .then_some(())
                         .ok_or_else(|| "iteration missed some keys".to_string())
                 })
-                .map_err(|e| format!("[{}]: {}", test.db_path, e))
+                .map_err(|e| format!("[{}]: {e}", test.db_path))
         })
-        .unwrap_or_else(|e| panic!("{}", e));
+        .unwrap_or_else(|e| panic!("{e}"));
 }
 
 #[test]
@@ -110,17 +110,17 @@ fn api_values() {
                             values
                                 .remove(&k)
                                 .then_some(())
-                                .ok_or_else(|| format!("value {:?} not in metadata", k))
+                                .ok_or_else(|| format!("value {k:?} not in metadata"))
                         })
                     })
                 })
-                .and_then(|_| {
+                .and_then(|()| {
                     values
                         .is_empty()
                         .then_some(())
                         .ok_or_else(|| "iteration missed some values".to_string())
                 })
-                .map_err(|e| format!("[{}]: {}", test.db_path, e))
+                .map_err(|e| format!("[{}]: {e}", test.db_path))
         })
-        .unwrap_or_else(|e| panic!("{}", e));
+        .unwrap_or_else(|e| panic!("{e}"));
 }

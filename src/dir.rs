@@ -44,19 +44,19 @@ impl Directory {
         }
     }
 
-    pub fn serialize(&self, layout: &Layout, writer: &mut impl Write) -> io::Result<()> {
+    pub fn serialize(&self, layout: Layout, writer: &mut impl Write) -> io::Result<()> {
         self.dir.iter().try_for_each(|ofs| match layout.offset {
             Offset::Small => write32(layout.endian, writer, *ofs as u32),
             Offset::LFS => write64(layout.endian, writer, *ofs),
         })
     }
 
-    pub fn from_reader(layout: &Layout, extent: u32, reader: &mut impl Read) -> io::Result<Self> {
+    pub fn from_reader(layout: Layout, extent: u32, reader: &mut impl Read) -> io::Result<Self> {
         Ok(Self {
             dirty: false,
             dir: match layout.offset {
                 Offset::Small => (0..extent / 4)
-                    .map(|_| read32(layout.endian, reader).map(|v| v as u64))
+                    .map(|_| read32(layout.endian, reader).map(u64::from))
                     .collect::<io::Result<Vec<_>>>(),
                 Offset::LFS => (0..extent / 8)
                     .map(|_| read64(layout.endian, reader))
@@ -71,7 +71,7 @@ impl Directory {
             dir: self
                 .dir
                 .iter()
-                .cloned()
+                .copied()
                 .flat_map(|offset| std::iter::repeat(offset).take(2))
                 .collect(),
             dirty: true,
@@ -79,7 +79,7 @@ impl Directory {
     }
 
     // serialized size of this instance
-    pub fn extent(&self, layout: &Layout) -> u32 {
+    pub fn extent(&self, layout: Layout) -> u32 {
         match layout.offset {
             Offset::Small => self.dir.len() as u32 * 4,
             Offset::LFS => self.dir.len() as u32 * 8,
@@ -90,7 +90,7 @@ impl Directory {
     pub fn validate(&self, start: u64, end: u64, bucket_size: u32) -> bool {
         self.dir
             .iter()
-            .all(|&offset| offset >= start && offset + bucket_size as u64 <= end)
+            .all(|&offset| offset >= start && offset + u64::from(bucket_size) <= end)
     }
 
     // update_bucket_split is called after a bucket is split.
@@ -131,7 +131,7 @@ mod test {
             expected: Directory,
         }
 
-        [
+        for test in [
             Test {
                 name: "empty",
                 dir: Directory {
@@ -165,16 +165,14 @@ mod test {
                     dirty: true,
                 },
             },
-        ]
-        .into_iter()
-        .for_each(|test| {
+        ] {
             let got = test.dir.extend();
-            if got != test.expected {
-                panic!(
-                    "test: {}\nexpected: {:?}\ngot: {:?}",
-                    test.name, test.expected, got
-                );
-            }
-        })
+            assert!(
+                got == test.expected,
+                "test: {}\nexpected: {:?}\ngot: {got:?}",
+                test.name,
+                test.expected
+            );
+        }
     }
 }

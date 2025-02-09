@@ -13,6 +13,7 @@ diagnostic = []
 
 [dependencies]
 base64 = "^0.22"
+tempfile = "3.13"
 
 [dev-dependencies]
 tempfile = "3.13"

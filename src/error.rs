@@ -2,6 +2,8 @@ use std::{fmt::Display, fmt::Formatter, io};
 
 #[derive(Debug)]
 pub enum Error {
+    /// Failed to convert a stored key or value into requested type.
+    BadData(String),
     /// IO error.
     Io(io::Error),
     /// Database may be inconsistent since an earlier error. Writes are disabled.
@@ -19,8 +21,6 @@ pub enum Error {
         /// Directory bits.
         dir_bits: u32,
     },
-    /// Tried to open with readonly and either creat or write.
-    EmptyFile(std::fs::File),
     /// Could not use supplied block size and bsexact was specified.
     BadBlockSize {
         /// Requested blocksize.
@@ -118,7 +118,7 @@ pub enum Error {
 
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter) -> Result<(), std::fmt::Error> {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 

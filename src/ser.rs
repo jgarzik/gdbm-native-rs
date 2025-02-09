@@ -10,7 +10,9 @@
 
 use std::io::{self, Read, Write};
 
-/// Struct field alignment of DB file
+/// Struct field alignment of DB file. Unless specified when opening a database, alignment defaults
+/// to `Alignment::Align64` for databases created with [`Offset::LFS`](crate::Offset::LFS),
+/// otherwise `Alignemnt::Align32`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Alignment {
     /// All fields aligned on 4byte boundaries.
@@ -22,30 +24,37 @@ pub enum Alignment {
 }
 
 impl Alignment {
+    /// `true` if `self` is `Align64`, otherwise `false`.
+    #[must_use]
     pub fn is64(&self) -> bool {
         *self == Alignment::Align64
     }
 }
 
-/// Endianness of DB file
+/// Endianness of database file. This defaults to `Little` for databases created on all systems.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Endian {
+    /// Little endian.
     Little,
+    /// Big endian.
     Big,
 }
 
-/// Offset types: LFS (64bit) or Small (32bit)
+/// Offset types: `LFS` (64bit) or `Small` (32bit). This relates to how many bytes are used
+/// internally to store file offsets. `LFS` (8 bytes) is the default for new databases, but if you
+/// need to save 4 bytes per entry (both in memory and in the database file) you can use `Small`,
+/// bearing in mind that 4 byte offsets limit the database to 2^32 bytes (4GIB).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Offset {
-    // Offset fields are 32bit.
+    /// Offset fields are 32bit.
     Small,
-    // Offset fields are 64bit.
+    /// Offset fields are 64bit.
     LFS,
 }
 
 /// Container for layout possibilities.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Layout {
+pub(super) struct Layout {
     pub alignment: Alignment,
     pub endian: Endian,
     pub offset: Offset,

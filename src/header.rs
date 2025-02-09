@@ -28,7 +28,7 @@ pub struct Header {
     pub bucket_sz: u32,
     pub bucket_elems: u32,
     pub next_block: u64,
-    numsync: Option<u32>,
+    pub numsync: Option<u32>,
 
     pub avail: AvailBlock,
 
@@ -38,7 +38,7 @@ pub struct Header {
 }
 
 impl Header {
-    pub fn sizeof(layout: &Layout, is_numsync: bool, avail_elems: u32) -> u32 {
+    pub fn sizeof(layout: Layout, is_numsync: bool, avail_elems: u32) -> u32 {
         match (layout.offset, is_numsync) {
             (Offset::Small, true) => 32 + 32 + AvailBlock::sizeof(layout, avail_elems),
             (Offset::Small, false) => 32 + AvailBlock::sizeof(layout, avail_elems),
@@ -47,22 +47,22 @@ impl Header {
         }
     }
 
-    pub fn new(block_size: u32, layout: &Layout, dir_bits: u32, numsync: bool) -> Self {
+    pub fn new(block_size: u32, layout: Layout, dir_bits: u32, numsync: bool) -> Self {
         let bucket_elems = (block_size - Bucket::sizeof(layout)) / BucketElement::sizeof(layout);
         let avail_elems =
             (block_size - Self::sizeof(layout, numsync, 0)) / AvailElem::sizeof(layout);
         Header {
             magic: Magic::new(layout.endian, layout.offset, numsync),
             block_sz: block_size,
-            dir_ofs: block_size as u64,
+            dir_ofs: u64::from(block_size),
             dir_sz: block_size,
             dir_bits,
             bucket_sz: Bucket::sizeof(layout) + bucket_elems * BucketElement::sizeof(layout),
             bucket_elems,
-            next_block: block_size as u64 * 3,
+            next_block: u64::from(block_size) * 3,
             avail: AvailBlock::new(avail_elems, 0, vec![]),
             dirty: true,
-            layout: *layout,
+            layout,
             numsync: None,
         }
     }
@@ -75,7 +75,7 @@ impl Header {
         let magic = Magic::from_reader(reader)?;
         let block_sz = read32(magic.endian(), reader)?;
         let dir_ofs = match magic.offset() {
-            Offset::Small => read32(magic.endian(), reader)? as u64,
+            Offset::Small => u64::from(read32(magic.endian(), reader)?),
             Offset::LFS => read64(magic.endian(), reader)?,
         };
         let dir_sz = read32(magic.endian(), reader)?;
@@ -83,7 +83,7 @@ impl Header {
         let bucket_sz = read32(magic.endian(), reader)?;
         let bucket_elems = read32(magic.endian(), reader)?;
         let next_block = match magic.offset() {
-            Offset::Small => read32(magic.endian(), reader)? as u64,
+            Offset::Small => u64::from(read32(magic.endian(), reader)?),
             Offset::LFS => read64(magic.endian(), reader)?,
         };
         let numsync = magic
@@ -97,86 +97,9 @@ impl Header {
             alignment: alignment.unwrap_or(magic.default_alignment()),
         };
 
-        let avail = AvailBlock::from_reader(&layout, reader)?;
+        let avail = AvailBlock::from_reader(layout, reader)?;
 
-        // Block must be big enough for header and avail table with two elements.
-        if block_sz < Self::sizeof(&layout, magic.is_numsync(), 2) {
-            return Err(Error::BadHeaderBlockSize {
-                size: block_sz,
-                minimum: Self::sizeof(&layout, magic.is_numsync(), 2),
-            });
-        }
-
-        if next_block < file_size {
-            return Err(Error::BadHeaderNextBlock {
-                next_block,
-                file_size,
-            });
-        }
-
-        if dir_ofs + dir_sz as u64 > file_size {
-            return Err(Error::BadHeaderDirectoryOffset {
-                offset: dir_ofs,
-                size: dir_sz,
-                file_size,
-            });
-        }
-
-        let (minimum_size, _) = build_dir_size(layout.offset, block_sz);
-        let (_, expected_bits) = build_dir_size(layout.offset, dir_sz);
-        if dir_sz < minimum_size || dir_bits != expected_bits {
-            return Err(Error::BadHeaderDirectory {
-                size: dir_sz,
-                bits: dir_bits,
-                minimum_size,
-                expected_bits,
-            });
-        }
-
-        if bucket_sz < Bucket::sizeof(&layout) + BucketElement::sizeof(&layout) {
-            return Err(Error::BadHeaderBucketSize {
-                size: bucket_sz,
-                minimum: Bucket::sizeof(&layout) + BucketElement::sizeof(&layout),
-            });
-        }
-
-        if bucket_elems != (bucket_sz - Bucket::sizeof(&layout)) / BucketElement::sizeof(&layout) {
-            return Err(Error::BadHeaderBucketElems {
-                elems: bucket_elems,
-                expected: (bucket_sz - Bucket::sizeof(&layout)) / BucketElement::sizeof(&layout),
-            });
-        }
-
-        avail.elems.iter().enumerate().try_for_each(|(i, elem)| {
-            if elem.addr < block_sz as u64 || elem.addr + elem.sz as u64 > file_size {
-                Err(Error::BadAvailElem {
-                    block_offset: Self::sizeof(&layout, magic.is_numsync(), 0) as u64,
-                    elem: i,
-                    offset: elem.addr,
-                    size: elem.sz,
-                    file_size,
-                })
-            } else {
-                Ok(())
-            }
-        })?;
-
-        if avail.sz == 0 || block_sz < Self::sizeof(&layout, magic.is_numsync(), avail.sz) {
-            return Err(Error::BadHeaderAvail {
-                elems: avail.sz,
-                size: Self::sizeof(&layout, magic.is_numsync(), avail.sz),
-                block_size: block_sz,
-            });
-        }
-
-        if avail.elems.len() as u32 > avail.sz {
-            return Err(Error::BadHeaderAvailCount {
-                elems: avail.elems.len() as u32,
-                maximum: avail.sz,
-            });
-        }
-
-        Ok(Header {
+        let header = Header {
             magic,
             block_sz,
             dir_ofs,
@@ -189,11 +112,108 @@ impl Header {
             dirty: false,
             layout,
             numsync,
-        })
+        };
+
+        header.verify(file_size)?;
+
+        Ok(header)
+    }
+
+    fn verify(&self, file_size: u64) -> Result<()> {
+        // Block must be big enough for header and avail table with two elements.
+        if self.block_sz < Self::sizeof(self.layout, self.magic.is_numsync(), 2) {
+            return Err(Error::BadHeaderBlockSize {
+                size: self.block_sz,
+                minimum: Self::sizeof(self.layout, self.magic.is_numsync(), 2),
+            });
+        }
+
+        if self.next_block < file_size {
+            return Err(Error::BadHeaderNextBlock {
+                next_block: self.next_block,
+                file_size,
+            });
+        }
+
+        if self.dir_ofs + u64::from(self.dir_sz) > file_size {
+            return Err(Error::BadHeaderDirectoryOffset {
+                offset: self.dir_ofs,
+                size: self.dir_sz,
+                file_size,
+            });
+        }
+
+        let (minimum_size, _) = build_dir_size(self.layout.offset, self.block_sz);
+        let (_, expected_bits) = build_dir_size(self.layout.offset, self.dir_sz);
+        if self.dir_sz < minimum_size || self.dir_bits != expected_bits {
+            return Err(Error::BadHeaderDirectory {
+                size: self.dir_sz,
+                bits: self.dir_bits,
+                minimum_size,
+                expected_bits,
+            });
+        }
+
+        if self.bucket_sz < Bucket::sizeof(self.layout) + BucketElement::sizeof(self.layout) {
+            return Err(Error::BadHeaderBucketSize {
+                size: self.bucket_sz,
+                minimum: Bucket::sizeof(self.layout) + BucketElement::sizeof(self.layout),
+            });
+        }
+
+        if self.bucket_elems
+            != (self.bucket_sz - Bucket::sizeof(self.layout)) / BucketElement::sizeof(self.layout)
+        {
+            return Err(Error::BadHeaderBucketElems {
+                elems: self.bucket_elems,
+                expected: (self.bucket_sz - Bucket::sizeof(self.layout))
+                    / BucketElement::sizeof(self.layout),
+            });
+        }
+
+        self.avail
+            .elems
+            .iter()
+            .enumerate()
+            .try_for_each(|(i, elem)| {
+                (elem.addr >= u64::from(self.block_sz)
+                    && elem.addr + u64::from(elem.sz) <= file_size)
+                    .then_some(())
+                    .ok_or_else(|| Error::BadAvailElem {
+                        block_offset: u64::from(Self::sizeof(
+                            self.layout,
+                            self.magic.is_numsync(),
+                            0,
+                        )),
+                        elem: i,
+                        offset: elem.addr,
+                        size: elem.sz,
+                        file_size,
+                    })
+            })?;
+
+        if self.avail.sz == 0
+            || self.block_sz < Self::sizeof(self.layout, self.magic.is_numsync(), self.avail.sz)
+        {
+            return Err(Error::BadHeaderAvail {
+                elems: self.avail.sz,
+                size: Self::sizeof(self.layout, self.magic.is_numsync(), self.avail.sz),
+                block_size: self.block_sz,
+            });
+        }
+
+        if self.avail.elems.len() as u32 > self.avail.sz {
+            return Err(Error::BadHeaderAvailCount {
+                elems: self.avail.elems.len() as u32,
+                maximum: self.avail.sz,
+            });
+        }
+
+        Ok(())
     }
 
     pub fn serialize(&self, writer: &mut impl Write) -> io::Result<()> {
-        let layout = &self.layout;
+        let layout = self.layout;
 
         writer.write_all(self.magic.as_bytes())?;
 
@@ -215,7 +235,7 @@ impl Header {
         }
 
         if self.magic.is_numsync() {
-            write_numsync(layout.endian, writer, self.numsync.unwrap_or(0))?
+            write_numsync(layout.endian, writer, self.numsync.unwrap_or(0))?;
         }
 
         self.avail.serialize(layout, writer)?;
@@ -237,8 +257,8 @@ impl Header {
     // convert_numsync converts the header to numsync and retuns a list of
     // offset/length pairs that need to be freed (because avail is shortened).
     pub fn convert_numsync(&mut self, use_numsync: bool) -> Vec<(u64, u32)> {
-        let new_avail_sz = (self.block_sz - Self::sizeof(&self.layout, use_numsync, 0))
-            / AvailElem::sizeof(&self.layout);
+        let new_avail_sz = (self.block_sz - Self::sizeof(self.layout, use_numsync, 0))
+            / AvailElem::sizeof(self.layout);
 
         self.magic = Magic::new(self.magic.endian(), self.magic.offset(), use_numsync);
         self.numsync = None;
@@ -260,8 +280,8 @@ fn read_numsync(endian: Endian, reader: &mut impl Read) -> Result<u32> {
     (0..8)
         .map(|_| read32(endian, reader).map_err(Error::Io))
         .collect::<Result<Vec<_>>>()
-        .and_then(|ext| match ext[0] {
-            0 => Ok(ext[1]),
+        .and_then(|ext| match ext.first().copied().unwrap() {
+            0 => Ok(ext.get(1).copied().unwrap()),
             v => Err(Error::BadNumsyncVersion { version: v }),
         })
 }

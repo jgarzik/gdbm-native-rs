@@ -19,7 +19,7 @@ pub struct AvailElem {
 }
 
 impl AvailElem {
-    pub fn sizeof(layout: &Layout) -> u32 {
+    pub fn sizeof(layout: Layout) -> u32 {
         match (layout.alignment, layout.offset) {
             (Alignment::Align32, Offset::LFS) => 12,
             (Alignment::Align64, Offset::LFS) => 16,
@@ -27,7 +27,7 @@ impl AvailElem {
         }
     }
 
-    pub fn from_reader(layout: &Layout, reader: &mut impl Read) -> io::Result<Self> {
+    pub fn from_reader(layout: Layout, reader: &mut impl Read) -> io::Result<Self> {
         let elem_sz = read32(layout.endian, reader)?;
 
         // skip padding
@@ -36,7 +36,7 @@ impl AvailElem {
         }
 
         let elem_ofs = match layout.offset {
-            Offset::Small => (read32(layout.endian, reader)?) as u64,
+            Offset::Small => u64::from(read32(layout.endian, reader)?),
             Offset::LFS => read64(layout.endian, reader)?,
         };
 
@@ -46,7 +46,7 @@ impl AvailElem {
         })
     }
 
-    pub fn serialize(&self, layout: &Layout, writer: &mut impl Write) -> io::Result<()> {
+    pub fn serialize(&self, layout: Layout, writer: &mut impl Write) -> io::Result<()> {
         write32(layout.endian, writer, self.sz)?;
 
         // insert padding
@@ -71,7 +71,7 @@ pub struct AvailBlock {
 }
 
 impl AvailBlock {
-    pub fn sizeof(layout: &Layout, elems: u32) -> u32 {
+    pub fn sizeof(layout: Layout, elems: u32) -> u32 {
         elems * AvailElem::sizeof(layout)
             + match (layout.alignment, layout.offset) {
                 (Alignment::Align32, Offset::Small) => 12,
@@ -87,12 +87,12 @@ impl AvailBlock {
         }
     }
 
-    pub fn from_reader(layout: &Layout, reader: &mut impl Read) -> io::Result<Self> {
+    pub fn from_reader(layout: Layout, reader: &mut impl Read) -> io::Result<Self> {
         let sz = read32(layout.endian, reader)?;
         let count = read32(layout.endian, reader)?;
 
         let next_block = match layout.offset {
-            Offset::Small => (read32(layout.endian, reader)?) as u64,
+            Offset::Small => u64::from(read32(layout.endian, reader)?),
             Offset::LFS => read64(layout.endian, reader)?,
         };
 
@@ -121,10 +121,10 @@ impl AvailBlock {
     }
 
     pub fn insert_elem(&mut self, offset: u64, length: u32) {
-        insert_elem(&mut self.elems, offset, length)
+        insert_elem(&mut self.elems, offset, length);
     }
 
-    pub fn serialize(&self, layout: &Layout, writer: &mut impl Write) -> io::Result<()> {
+    pub fn serialize(&self, layout: Layout, writer: &mut impl Write) -> io::Result<()> {
         write32(layout.endian, writer, self.sz)?;
         write32(layout.endian, writer, self.elems.len() as u32)?;
         match layout.offset {
@@ -155,7 +155,7 @@ impl AvailBlock {
             .collect::<Vec<_>>();
 
         // sort by offsets
-        offsets_and_lengths.sort();
+        offsets_and_lengths.sort_unstable();
 
         // fold resulting regions whilst joining adjacent regions
         let mut elems = offsets_and_lengths.into_iter().fold(
@@ -163,14 +163,14 @@ impl AvailBlock {
             |mut elems: Vec<AvailElem>, (addr, sz)| {
                 let last = elems.pop();
                 match last {
-                    None => vec![AvailElem { addr, sz }],
-                    Some(last) if last.addr + last.sz as u64 == addr => {
+                    None => vec![AvailElem { sz, addr }],
+                    Some(last) if last.addr + u64::from(last.sz) == addr => {
                         vec![AvailElem {
                             addr: last.addr,
                             sz: last.sz + sz,
                         }]
                     }
-                    Some(last) => vec![last, AvailElem { addr, sz }],
+                    Some(last) => vec![last, AvailElem { sz, addr }],
                 }
                 .into_iter()
                 .for_each(|elem| elems.push(elem));
@@ -197,7 +197,7 @@ impl AvailBlock {
     }
 
     // extent returns the size of this block when serialized
-    pub fn extent(&self, layout: &Layout) -> u32 {
+    pub fn extent(&self, layout: Layout) -> u32 {
         Self::sizeof(layout, self.elems.len() as u32)
     }
 }
@@ -294,12 +294,12 @@ mod tests {
                 elems: elems
                     .iter()
                     .copied()
-                    .map(|(addr, sz)| super::AvailElem { addr, sz })
+                    .map(|(addr, sz)| super::AvailElem { sz, addr })
                     .collect(),
             }
         }
 
-        [
+        for test in [
             Test {
                 name: "sorts",
                 first: block(&[(40, 5), (0, 12)], 12, 0),
@@ -330,17 +330,15 @@ mod tests {
                 second: block(&[], 10, 42),
                 expected: Some(block(&[(20, 10)], 10, 42)),
             },
-        ]
-        .into_iter()
-        .for_each(|test| {
+        ] {
             let merged = test.first.merge(&test.second);
-            if merged != test.expected {
-                panic!(
-                    "test \"{}\" failed: expected:\n{:?}\ngot:\n{:?}",
-                    test.name, test.expected, merged
-                );
-            }
-        });
+            assert!(
+                merged == test.expected,
+                "test \"{}\" failed: expected:\n{:?}\ngot:\n{merged:?}",
+                test.name,
+                test.expected
+            );
+        }
     }
 
     #[test]
@@ -352,7 +350,7 @@ mod tests {
             expected: (Vec<AvailElem>, Vec<AvailElem>),
         }
 
-        [
+        for test in [
             Test {
                 name: "empty",
                 elements: vec![],
@@ -389,16 +387,14 @@ mod tests {
                     vec![AvailElem { addr: 1, sz: 1 }, AvailElem { addr: 3, sz: 3 }],
                 ),
             },
-        ]
-        .into_iter()
-        .for_each(|test| {
+        ] {
             let partitioned = super::partition_elems(&test.elements);
-            if partitioned != test.expected {
-                panic!(
-                    "test \"{}\" failed: expected:\n{:?}\ngot:\n{:?}",
-                    test.name, test.expected, partitioned
-                );
-            }
-        });
+            assert!(
+                partitioned == test.expected,
+                "test \"{}\" failed: expected:\n{:?}\ngot:\n{partitioned:?}",
+                test.name,
+                test.expected
+            );
+        }
     }
 }

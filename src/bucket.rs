@@ -27,7 +27,7 @@ pub struct BucketElement {
 impl Default for BucketElement {
     fn default() -> Self {
         Self {
-            hash: 0xffffffff,
+            hash: 0xffff_ffff,
             key_start: PartialKey::default(),
             data_ofs: 0,
             key_size: 0,
@@ -37,7 +37,7 @@ impl Default for BucketElement {
 }
 
 impl BucketElement {
-    pub fn sizeof(layout: &Layout) -> u32 {
+    pub fn sizeof(layout: Layout) -> u32 {
         match layout.offset {
             Offset::Small => 20,
             Offset::LFS => 24,
@@ -54,13 +54,13 @@ impl BucketElement {
         }
     }
 
-    pub fn from_reader(layout: &Layout, reader: &mut impl Read) -> io::Result<Self> {
+    pub fn from_reader(layout: Layout, reader: &mut impl Read) -> io::Result<Self> {
         let hash = read32(layout.endian, reader)?;
 
         let key_start = PartialKey::from_reader(reader)?;
 
         let data_ofs = match layout.offset {
-            Offset::Small => (read32(layout.endian, reader)?) as u64,
+            Offset::Small => u64::from(read32(layout.endian, reader)?),
             Offset::LFS => read64(layout.endian, reader)?,
         };
 
@@ -76,7 +76,7 @@ impl BucketElement {
         })
     }
 
-    pub fn serialize(&self, layout: &Layout, writer: &mut impl Write) -> io::Result<()> {
+    pub fn serialize(&self, layout: Layout, writer: &mut impl Write) -> io::Result<()> {
         write32(layout.endian, writer, self.hash)?;
 
         self.key_start.serialize(writer)?;
@@ -93,7 +93,7 @@ impl BucketElement {
     }
 
     pub fn is_occupied(&self) -> bool {
-        self.hash != 0xffffffff
+        self.hash != 0xffff_ffff
     }
 }
 
@@ -126,7 +126,7 @@ impl Bucket {
         )
     }
 
-    pub fn from_reader(elems: u32, layout: &Layout, reader: &mut impl Read) -> io::Result<Self> {
+    pub fn from_reader(elems: u32, layout: Layout, reader: &mut impl Read) -> io::Result<Self> {
         // read avail section
         let av_count = read32(layout.endian, reader)?;
 
@@ -164,7 +164,7 @@ impl Bucket {
         })
     }
 
-    pub fn serialize(&self, layout: &Layout, writer: &mut impl Write) -> io::Result<()> {
+    pub fn serialize(&self, layout: Layout, writer: &mut impl Write) -> io::Result<()> {
         assert!(self.avail.len() as u32 <= Self::AVAIL);
 
         //
@@ -203,7 +203,7 @@ impl Bucket {
         Ok(())
     }
 
-    pub fn sizeof(layout: &Layout) -> u32 {
+    pub fn sizeof(layout: Layout) -> u32 {
         // 4 bytes each for bits, count and av_count + padding
         Self::AVAIL * AvailElem::sizeof(layout)
             + match layout.alignment {
@@ -216,8 +216,8 @@ impl Bucket {
     pub fn insert(&mut self, element: BucketElement) {
         self.count += 1;
 
-        let index = (element.hash..)
-            .map(|index| index as usize % self.tab.len())
+        let index = (0..self.tab.len())
+            .map(|index| (index + element.hash as usize) % self.tab.len())
             .find(|&index| !self.tab[index].is_occupied())
             .unwrap();
 
@@ -283,7 +283,7 @@ impl Bucket {
 
 #[derive(Debug)]
 pub struct BucketCache {
-    cachesize: usize,
+    pub cachesize: usize,
     buckets: HashMap<u64, Bucket>,
     // 1st element is MRU
     queue: Vec<u64>,
@@ -308,7 +308,7 @@ impl BucketCache {
             .filter_map(|(offset, bucket)| bucket.dirty.then_some(offset))
             .copied()
             .collect::<Vec<_>>();
-        dl.sort();
+        dl.sort_unstable();
         dl.iter()
             .map(|offset| (*offset, self.buckets.get(offset).unwrap()))
             .collect()
@@ -324,7 +324,7 @@ impl BucketCache {
         self.buckets.contains_key(&bucket_ofs)
     }
 
-    /// set_current moves bucket_offset to the front of the MRU queue.
+    /// `set_current` moves `bucket_offset` to the front of the MRU queue.
     pub fn set_current(&mut self, bucket_offset: u64) {
         self.queue
             .iter()
@@ -336,25 +336,24 @@ impl BucketCache {
     }
 
     #[must_use]
-    /// insert inserts the bucket into the cache and returns the evicted bucket if any, and if it
-    /// is dirty (needs writing).
+    /// `insert` inserts the [`Bucket`] into the cache and returns the evicted [`Bucket`] if any, and
+    /// if it is dirty (needs writing).
     pub fn insert(&mut self, bucket_offset: u64, bucket: Bucket) -> Option<(u64, Bucket)> {
-        match self.buckets.insert(bucket_offset, bucket) {
-            Some(_) => None, // bucket already in queue, nothing to evict
-            None => {
-                let evicted = (self.queue.len() >= self.cachesize)
-                    .then_some(())
-                    .and_then(|_| self.queue.pop())
-                    .and_then(|offset| {
-                        self.buckets
-                            .remove(&offset)
-                            .filter(|bucket| bucket.dirty)
-                            .map(|bucket| (offset, bucket))
-                    });
-                self.queue.push(bucket_offset);
+        if self.buckets.insert(bucket_offset, bucket).is_some() {
+            None // bucket already in queue, nothing to evict
+        } else {
+            let evicted = (self.queue.len() >= self.cachesize)
+                .then_some(())
+                .and_then(|()| self.queue.pop())
+                .and_then(|offset| {
+                    self.buckets
+                        .remove(&offset)
+                        .filter(|bucket| bucket.dirty)
+                        .map(|bucket| (offset, bucket))
+                });
+            self.queue.push(bucket_offset);
 
-                evicted
-            }
+            evicted
         }
     }
 
@@ -391,39 +390,39 @@ mod test {
         [
             Test {
                 name: "first and only",
-                hashes: [0, 0xffffffff, 0xffffffff, 0xffffffff],
+                hashes: [0, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff],
                 offset: 0,
-                expected: [0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff],
+                expected: [0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff],
             },
             Test {
                 name: "last and only",
-                hashes: [0xffffffff, 0xffffffff, 0xffffffff, 1],
+                hashes: [0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 1],
                 offset: 3,
-                expected: [0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff],
+                expected: [0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff],
             },
             Test {
                 name: "dup hash",
-                hashes: [0, 0, 0xffffffff, 0xffffffff],
+                hashes: [0, 0, 0xffff_ffff, 0xffff_ffff],
                 offset: 0,
-                expected: [0, 0xffffffff, 0xffffffff, 0xffffffff],
+                expected: [0, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff],
             },
             Test {
                 name: "dup hash, non-sequential",
-                hashes: [0, 1, 0, 0xffffffff],
+                hashes: [0, 1, 0, 0xffff_ffff],
                 offset: 0,
-                expected: [0, 1, 0xffffffff, 0xffffffff],
+                expected: [0, 1, 0xffff_ffff, 0xffff_ffff],
             },
             Test {
                 name: "dup hash, wrapped",
                 hashes: [3, 1, 2, 3],
                 offset: 3,
-                expected: [0xffffffff, 1, 2, 3],
+                expected: [0xffff_ffff, 1, 2, 3],
             },
             Test {
                 name: "dup hash, wrapped, non-sequential",
                 hashes: [2, 2, 2, 3],
                 offset: 2,
-                expected: [2, 0xffffffff, 2, 3],
+                expected: [2, 0xffff_ffff, 2, 3],
             },
         ]
         .into_iter()
@@ -437,7 +436,7 @@ mod test {
                 let tab = hashes
                     .iter()
                     .map(|&hash| match hash {
-                        0xffffffff => BucketElement::default(),
+                        0xffff_ffff => BucketElement::default(),
                         hash => BucketElement {
                             hash,
                             ..Default::default()
@@ -457,15 +456,12 @@ mod test {
 
                 let got = bucket.tab.iter().map(|elem| elem.hash).collect::<Vec<_>>();
                 (got == expected).then_some(()).ok_or_else(|| {
-                    format!(
-                        "  failed: {}\nexpected: {:?}\n     got: {:?}",
-                        name, expected, got
-                    )
+                    format!("  failed: {name}\nexpected: {expected:?}\n     got: {got:?}",)
                 })
             },
         )
-        .map_err(|e| println!("{}", e))
-        .unwrap()
+        .map_err(|e| println!("{e}"))
+        .unwrap();
     }
 
     #[test]
@@ -506,13 +502,13 @@ mod test {
                 }),
             );
 
-            println!("{:?}", cache);
+            println!("{cache:?}");
             let evicted = cache.insert(200, Bucket::new(0, 0, vec![], vec![]));
 
             (evicted.is_some() == test.expected)
                 .then_some(())
                 .ok_or_else(|| format!("{}: expected {}", test.name, test.expected))
         })
-        .unwrap()
+        .unwrap();
     }
 }

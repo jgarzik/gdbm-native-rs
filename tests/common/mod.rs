@@ -75,16 +75,16 @@ pub fn init_tests() -> Vec<TestInfo> {
             .into_iter()
             .map(move |empty_or_basic| {
                 TestInfo::new(
-                    &format!("{}.db.{}", empty_or_basic, flavor),
-                    &format!("{}.json.{}", empty_or_basic, flavor),
+                    &format!("{empty_or_basic}.db.{flavor}"),
+                    &format!("{empty_or_basic}.json.{flavor}"),
                     empty_or_basic == "basic",
                     alignment,
                 )
             })
             .chain(["empty", "basic"].into_iter().map(move |empty_or_basic| {
                 TestInfo::new(
-                    &format!("{}.db.{}.numsync", empty_or_basic, flavor),
-                    &format!("{}.json.{}", empty_or_basic, flavor),
+                    &format!("{empty_or_basic}.db.{flavor}.numsync"),
+                    &format!("{empty_or_basic}.json.{flavor}"),
                     empty_or_basic == "basic",
                     alignment,
                 )
