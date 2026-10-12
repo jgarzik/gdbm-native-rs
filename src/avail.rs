@@ -90,19 +90,41 @@ impl AvailBlock {
         }
     }
 
-    pub fn from_reader(layout: Format, reader: &mut impl Read) -> io::Result<Self> {
+    // Read the block at `block_offset`, which can hold at most `capacity` elements.
+    pub fn from_reader(
+        layout: Format,
+        block_offset: u64,
+        capacity: u32,
+        reader: &mut impl Read,
+    ) -> Result<Self> {
         let sz = read32(layout.endian, reader)?;
-        Self::from_reader_sized(layout, sz, reader)
+        Self::from_reader_sized(layout, sz, block_offset, capacity, reader)
     }
 
-    // from_reader() for a block whose size field has already been read
-    pub fn from_reader_sized(layout: Format, sz: u32, reader: &mut impl Read) -> io::Result<Self> {
+    // from_reader() for a block whose size field has already been read. The element count is
+    // checked against the block's capacity before reading any elements (BadAvailCount), so a
+    // corrupt count cannot drive reading far beyond the block.
+    pub fn from_reader_sized(
+        layout: Format,
+        sz: u32,
+        block_offset: u64,
+        capacity: u32,
+        reader: &mut impl Read,
+    ) -> Result<Self> {
         let count = read32(layout.endian, reader)?;
 
         let next_block = match layout.offset {
             Offset::Small => u64::from(read32(layout.endian, reader)?),
             Offset::Lfs => read64(layout.endian, reader)?,
         };
+
+        if count > capacity.min(sz) {
+            return Err(Error::BadAvailCount {
+                block_offset,
+                elems: count,
+                maximum: capacity.min(sz),
+            });
+        }
 
         let mut elems = (0..count)
             .map(|_| AvailElem::from_reader(layout, reader))

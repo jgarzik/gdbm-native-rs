@@ -199,12 +199,24 @@ fn fs_block_size(f: &File) -> io::Result<u32> {
     }
 }
 
-// read and return file data stored at (ofs,total_size)
-fn read_ofs(mut f: &File, ofs: u64, total_size: usize) -> io::Result<Vec<u8>> {
-    let mut data: Vec<u8> = vec![0; total_size];
+// Read and return the len bytes of file data at ofs. Lengths come from the file, which may
+// claim far more than it holds, so read incrementally rather than allocating len up front: a
+// short read fails with UnexpectedEof having allocated no more than the data actually present.
+fn read_ofs(f: &File, ofs: u64, len: u64) -> io::Result<Vec<u8>> {
+    // initial allocation; larger records grow the buffer as their data arrives
+    const INITIAL_CAPACITY: u64 = 64 * 1024;
 
+    let mut f = f;
     f.seek(SeekFrom::Start(ofs))?;
-    f.read_exact(&mut data)?;
+    let mut data = Vec::with_capacity(len.min(INITIAL_CAPACITY) as usize);
+    f.take(len).read_to_end(&mut data)?;
+
+    if (data.len() as u64) < len {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!("record of {len} bytes at offset {ofs} extends past end of file"),
+        ));
+    }
 
     Ok(data)
 }
@@ -511,9 +523,13 @@ impl Gdbm {
         let offset = self.dir.dir[bucket_dir];
 
         if !self.bucket_cache.borrow().contains(offset) {
-            let mut f = &self.f;
-            f.seek(SeekFrom::Start(offset))?;
-            let bucket = Bucket::from_reader(self.header.bucket_elems, self.header.layout, &mut f)?;
+            // Read the bucket's bytes in one go: bucket_elems derives from the header's
+            // unbounded bucket size, and read_ofs() allocates only what the file holds.
+            let layout = self.header.layout;
+            let size = u64::from(Bucket::sizeof(layout))
+                + u64::from(self.header.bucket_elems) * u64::from(BucketElement::sizeof(layout));
+            let data = read_ofs(&self.f, offset, size)?;
+            let bucket = Bucket::from_reader(self.header.bucket_elems, layout, &mut &data[..])?;
 
             if bucket.count > self.header.bucket_elems || bucket.bits > self.header.dir_bits {
                 return Err(Error::BadBucket {
@@ -682,10 +698,11 @@ impl Gdbm {
             }
             let mut f = &self.f;
             f.seek(SeekFrom::Start(next))?;
-            let block = AvailBlock::from_reader(header.layout, &mut f)?;
+            let capacity = AvailBlock::stack_block_capacity(header.layout, header.avail.sz);
+            let block = AvailBlock::from_reader(header.layout, next, capacity, &mut f)?;
             block.validate(
                 next,
-                AvailBlock::stack_block_capacity(header.layout, header.avail.sz),
+                capacity,
                 u64::from(header.block_sz),
                 header.next_block,
             )?;
@@ -951,7 +968,7 @@ impl Gdbm {
                 return None;
             }
             let key = valid_element(elem, self.header.next_block)
-                .and_then(|elem| Ok(read_ofs(&self.f, elem.data_ofs, elem.key_size as usize)?))
+                .and_then(|elem| Ok(read_ofs(&self.f, elem.data_ofs, u64::from(elem.key_size))?))
                 .ok()?;
             if key.is_ascii() {
                 return None;
@@ -1000,7 +1017,7 @@ impl Gdbm {
                 read_ofs(
                     &self.f,
                     elem.data_ofs,
-                    elem.key_size as usize + elem.data_size as usize,
+                    u64::from(elem.key_size) + u64::from(elem.data_size),
                 )
                 .map(|data| (offset, data))
                 .map_err(Error::Io)
@@ -1372,10 +1389,11 @@ impl Gdbm {
         let size = AvailBlock::stack_block_size(layout, self.header.avail.sz);
 
         self.f.seek(SeekFrom::Start(offset))?;
-        let block = AvailBlock::from_reader(layout, &mut self.f)?;
+        let capacity = AvailBlock::stack_block_capacity(layout, self.header.avail.sz);
+        let block = AvailBlock::from_reader(layout, offset, capacity, &mut self.f)?;
         block.validate(
             offset,
-            AvailBlock::stack_block_capacity(layout, self.header.avail.sz),
+            capacity,
             u64::from(self.header.block_sz),
             self.header.next_block,
         )?;
@@ -1991,7 +2009,7 @@ impl Gdbm {
                     Ok(read_ofs(
                         &self.f,
                         elem.data_ofs,
-                        elem.key_size as usize + elem.data_size as usize,
+                        u64::from(elem.key_size) + u64::from(elem.data_size),
                     )?)
                 });
                 let Ok(record) = record else {
@@ -2159,21 +2177,21 @@ impl Iterator for GDBMIterator<'_> {
                     .db
                     .with_bucket(slot.bucket, |bucket| bucket.tab[slot.element])
                     .and_then(|elem| valid_element(elem, next_block))
-                    .map(|e| (e.data_ofs, e.key_size as usize, e.data_size as usize))
+                    .map(|e| (e.data_ofs, u64::from(e.key_size), u64::from(e.data_size)))
                     .and_then(
                         |(offset, key_length, data_length)| match self.key_or_value {
                             KeyOrValue::Key => read_ofs(&self.db.f, offset, key_length)
                                 .map(|data| (data, vec![]))
                                 .map_err(Error::Io),
                             KeyOrValue::Value => {
-                                read_ofs(&self.db.f, offset + key_length as u64, data_length)
+                                read_ofs(&self.db.f, offset + key_length, data_length)
                                     .map(|data| (vec![], data))
                                     .map_err(Error::Io)
                             }
                             KeyOrValue::Both => {
                                 read_ofs(&self.db.f, offset, key_length + data_length)
                                     .map(|data| {
-                                        let (key, value) = data.split_at(key_length);
+                                        let (key, value) = data.split_at(key_length as usize);
                                         (key.to_vec(), value.to_vec())
                                     })
                                     .map_err(Error::Io)

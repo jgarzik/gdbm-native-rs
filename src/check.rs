@@ -477,3 +477,14 @@ fn failed_replace_leaves_database_inconsistent() {
     ));
     assert!(matches!(db.sync(), Err(crate::Error::Inconsistent)));
 }
+
+// Bug (found by fuzzing): read_ofs() allocated the claimed record length up front, so a corrupt
+// key or data size (bounded only by the header's claimed next_block) made it allocate gigabytes.
+// It must read incrementally and fail on a short read.
+#[test]
+fn read_ofs_does_not_trust_length() {
+    let mut f = tempfile::tempfile().unwrap();
+    std::io::Write::write_all(&mut f, b"short file").unwrap();
+    assert!(crate::read_ofs(&f, 0, 1 << 40).is_err());
+    assert_eq!(crate::read_ofs(&f, 6, 4).unwrap(), b"file");
+}

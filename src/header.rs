@@ -92,9 +92,8 @@ impl Header {
         // be read before the alignment is known.
         let avail_sz = read32(magic.endian(), reader)?;
         let layout = detect_format(magic, block_sz, bucket_sz, bucket_elems, avail_sz);
-        let avail = AvailBlock::from_reader_sized(layout, avail_sz, reader)?;
 
-        let header = Header {
+        let mut header = Header {
             magic,
             block_sz,
             dir_ofs,
@@ -103,17 +102,32 @@ impl Header {
             bucket_sz,
             bucket_elems,
             next_block,
-            avail,
+            avail: AvailBlock::new(avail_sz, 0, vec![]),
             dirty: false,
             layout,
             numsync,
         };
 
+        // Verify the fixed fields first: the avail table capacity then fits the header block,
+        // which bounds the element count accepted below.
         header.verify(file_size)?;
+
+        let avail_offset = header.avail_offset();
+        header.avail =
+            AvailBlock::from_reader_sized(layout, avail_sz, avail_offset, avail_sz, reader)?;
+
+        // Free space may lie beyond the physical end of file, up to next_block.
+        header.avail.validate(
+            avail_offset,
+            avail_sz,
+            u64::from(header.block_sz),
+            header.next_block,
+        )?;
 
         Ok(header)
     }
 
+    // Verify the fixed fields; from_reader() reads and validates the avail table afterwards.
     fn verify(&self, file_size: u64) -> Result<()> {
         // Block must be big enough for header and avail table with two elements.
         if self.block_sz < Self::sizeof(self.layout, self.magic.is_numsync(), 2) {
@@ -180,18 +194,15 @@ impl Header {
             });
         }
 
-        // Free space may lie beyond the physical end of file, up to next_block.
-        self.avail.validate(
-            u64::from(
-                Self::sizeof(self.layout, self.magic.is_numsync(), 0)
-                    - AvailBlock::sizeof(self.layout, 0),
-            ),
-            self.avail.sz,
-            u64::from(self.block_sz),
-            self.next_block,
-        )?;
-
         Ok(())
+    }
+
+    // file offset of the avail table within the header
+    fn avail_offset(&self) -> u64 {
+        u64::from(
+            Self::sizeof(self.layout, self.magic.is_numsync(), 0)
+                - AvailBlock::sizeof(self.layout, 0),
+        )
     }
 
     pub fn serialize(&self, writer: &mut impl Write) -> io::Result<()> {
