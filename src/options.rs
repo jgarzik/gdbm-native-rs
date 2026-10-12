@@ -61,6 +61,7 @@ pub struct OpenOptions {
     pub(crate) sync: bool,
     pub(crate) lock: bool,
     pub(crate) lock_wait: Option<std::time::Duration>,
+    pub(crate) mode: Option<u32>,
     pub(crate) cachesize: Option<usize>,
     pub(crate) char_sign: Option<CharSign>,
     pub(crate) numsync: bool,
@@ -77,6 +78,7 @@ impl Default for OpenOptions {
             sync: false,
             lock: true,
             lock_wait: None,
+            mode: None,
             cachesize: None,
             char_sign: None,
             numsync: true,
@@ -129,6 +131,13 @@ impl OpenOptions {
     /// [`Error::Locked`], like C GDBM's `GDBM_LOCKWAIT_RETRY`. By default opening fails at once.
     pub fn lock_wait(&mut self, timeout: std::time::Duration) -> &mut Self {
         self.lock_wait = Some(timeout);
+        self
+    }
+
+    /// New database files: their Unix permission bits (default `0o666`, less the umask), like
+    /// the mode argument of C GDBM's `gdbm_open`. Ignored on other platforms.
+    pub fn mode(&mut self, mode: u32) -> &mut Self {
+        self.mode = Some(mode);
         self
     }
 
@@ -206,12 +215,18 @@ impl OpenOptions {
     /// Fails if the file cannot be opened, locked or created, or is not a valid GDBM database.
     pub fn open<P: AsRef<std::path::Path>>(&self, path: P) -> Result<Gdbm> {
         let writable = self.write || self.create;
-        let f = std::fs::OpenOptions::new()
+        let mut options = std::fs::OpenOptions::new();
+        options
             .read(true)
             .write(writable)
             .create(self.create)
-            .truncate(false)
-            .open(&path)?;
+            .truncate(false);
+        #[cfg(unix)]
+        if let Some(mode) = self.mode {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(mode);
+        }
+        let f = options.open(&path)?;
         self.lock_file(&f, writable)?;
 
         let mut db = if self.create && f.metadata()?.len() == 0 {

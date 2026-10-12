@@ -243,3 +243,22 @@ fn read_only_mode() {
         Some("value")
     );
 }
+
+#[cfg(unix)]
+#[test]
+// Like C gdbm_open's mode argument, mode() sets the permissions of a new database file.
+fn create_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("db");
+    OpenOptions::new()
+        .create(true)
+        .mode(0o600)
+        .open(&path)
+        .unwrap()
+        .close()
+        .unwrap();
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+}
