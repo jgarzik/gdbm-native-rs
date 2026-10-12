@@ -107,11 +107,7 @@ jobs:
         with:
           tool: cargo-fuzz
       - name: Seed corpora with C GDBM fixtures
-        run: |
-          mkdir -p fuzz/corpus/{open,import_ascii,import_bin}
-          cp tests/data/*.db.* tests/data/*/mixed.db* fuzz/corpus/open/
-          cp tests/data/*/mixed.txt fuzz/corpus/import_ascii/
-          cp tests/data/*/mixed.bin fuzz/corpus/import_bin/
+        run: fuzz/seed-corpus.sh
       - name: Fuzz
         run: |
           for target in open import_ascii import_bin; do
