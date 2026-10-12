@@ -8,3 +8,6 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # refs are toolchain names (stable, nightly, master), not versions
+      - dependency-name: dtolnay/rust-toolchain
