@@ -218,3 +218,34 @@ fn import_modes() {
         .unwrap();
     assert_eq!(db.get::<_, String>("key").unwrap().as_deref(), Some("new"));
 }
+
+#[test]
+// Bug: binary dump format detection looked only at the first 8 bytes after the header, so a
+// Long32 dump whose first key begins with 4 zero bytes was taken for Long64Le, and one whose
+// first key is empty for Long64Be.
+fn detect_bin_format_zero_prefixed_or_empty_first_key() {
+    for key in [&[0u8, 0, 0, 0, 1, 2, 3, 4][..], &[0, 0, 0, 0], &[]] {
+        for format in [
+            BinDumpFormat::Long32,
+            BinDumpFormat::Long64Le,
+            BinDumpFormat::Long64Be,
+        ] {
+            let mut src = OpenOptions::new().tempfile().unwrap();
+            src.insert(key, "value").unwrap();
+            src.insert("second", "x").unwrap();
+            let mut dump = Vec::new();
+            src.export_bin(&mut dump, format).unwrap();
+
+            let mut dst = OpenOptions::new().tempfile().unwrap();
+            let count = dst
+                .import_bin(&mut dump.as_slice(), None, ImportMode::Replace)
+                .unwrap_or_else(|e| panic!("{format:?} key {key:?}: {e}"));
+            assert_eq!(count, 2, "{format:?} key {key:?}");
+            assert_eq!(
+                dst.get::<_, String>(key).unwrap().as_deref(),
+                Some("value"),
+                "{format:?} key {key:?}"
+            );
+        }
+    }
+}

@@ -15,8 +15,16 @@ use std::io::{self, Write};
 ///
 /// C GDBM writes each length as a C `long` holding the length as a big-endian 32-bit value,
 /// in the byte order of the machine, so the layout depends on the platform that wrote the
-/// dump. The dump does not record which was used. [`Gdbm::import_bin`](crate::Gdbm::import_bin)
-/// can detect it.
+/// dump. The dump does not record which was used.
+///
+/// [`Gdbm::import_bin`](crate::Gdbm::import_bin) can detect it from the first 64 KiB of
+/// records. A format is consistent with them if they parse under it as length fields, each
+/// below 2<sup>31</sup> (with a zero padding half for the 8-byte formats) and followed by that
+/// many bytes, with at most one empty key; if the dump ends within those 64 KiB, it must end
+/// after a whole key/value pair. Of the consistent formats, the one under which whole non-empty
+/// data extend furthest into the 64 KiB is chosen, and of those `Long64Le`, then `Long64Be`,
+/// then `Long32`. Detection fails if no format is consistent. A dump whose first records are
+/// large may be ambiguous; specify the format when it is known.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum BinDumpFormat {
     /// 4-byte lengths: C GDBM on 32-bit platforms, and on Windows.
@@ -69,19 +77,53 @@ impl BinDumpFormat {
         }
     }
 
-    // Guess the format from the first 8 bytes after the header, which hold the first key's
-    // length field. A key length is non-zero and below 2^31, so an 8-byte field has exactly one
-    // zero half. None if undecidable (an all-zero prefix).
-    pub(crate) fn detect(prefix: &[u8]) -> Option<Self> {
-        if prefix.len() < 8 {
-            return Some(Self::Long32);
+    // Parse `records`, the start of a dump's records, under this format: a sequence of length
+    // fields, each below 2^31 (C GDBM writes an int) and followed by that many bytes, at most one
+    // of the keys (even-numbered data) empty, as keys are unique. If `complete`, `records` is the
+    // rest of the dump and must end after a whole number of key/value pairs; otherwise it may
+    // end anywhere. Returns where the last whole non-empty datum ends (an empty one may be the
+    // zero half of a 64-bit length field), or None if `records` does not parse.
+    fn parse_extent(self, records: &[u8], complete: bool) -> Option<usize> {
+        let mut pos = 0;
+        let mut extent = 0;
+        let mut empty_key = false;
+        let mut index = 0usize;
+        loop {
+            let rest = &records[pos..];
+            if rest.is_empty() {
+                return (!complete || index.is_multiple_of(2)).then_some(extent);
+            }
+            let Some((field, data)) = rest.split_at_checked(self.field_size()) else {
+                return (!complete).then_some(extent);
+            };
+            let len = self
+                .decode_len(field)
+                .filter(|&len| len <= i32::MAX as u32)? as usize;
+            if data.len() < len {
+                return (!complete).then_some(extent);
+            }
+            pos += field.len() + len;
+            if len > 0 {
+                extent = pos;
+            } else if index.is_multiple_of(2) {
+                if empty_key {
+                    return None;
+                }
+                empty_key = true;
+            }
+            index += 1;
         }
-        match (prefix[..4] == [0; 4], prefix[4..8] == [0; 4]) {
-            (false, false) => Some(Self::Long32),
-            (false, true) => Some(Self::Long64Le),
-            (true, false) => Some(Self::Long64Be),
-            (true, true) => None,
-        }
+    }
+
+    // Detect the format from `records`, the start of a dump's records (all of them if
+    // `complete`), as the type's documentation describes. None if no format is consistent.
+    pub(crate) fn detect(records: &[u8], complete: bool) -> Option<Self> {
+        [Self::Long64Le, Self::Long64Be, Self::Long32]
+            .into_iter()
+            .filter_map(|format| Some((format, format.parse_extent(records, complete)?)))
+            // min_by_key keeps the first, most preferred, of equal extents
+            .min_by_key(|&(_, extent)| std::cmp::Reverse(extent))
+            .map(|(format, _)| format)
     }
 }
 
@@ -176,22 +218,101 @@ mod tests {
         );
     }
 
+    // Records (key, value) dumped in `format`.
+    fn dump(format: BinDumpFormat, records: &[(&[u8], &[u8])]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        for datum in records.iter().flat_map(|&(k, v)| [k, v]) {
+            format.write_len(&mut buf, datum.len() as u32).unwrap();
+            buf.extend_from_slice(datum);
+        }
+        buf
+    }
+
+    const FORMATS: [BinDumpFormat; 3] = [
+        BinDumpFormat::Long32,
+        BinDumpFormat::Long64Le,
+        BinDumpFormat::Long64Be,
+    ];
+
     #[test]
     fn detect() {
+        let zero_key = [0, 0, 0, 0, 1, 2, 3, 4];
+        for records in [
+            &[(&b"key"[..], &b"value"[..]), (b"second", b"x")][..],
+            &[(&zero_key[..4], b"value"), (b"second", b"x")],
+            &[(&zero_key, b"value"), (b"second", b"x")],
+            &[(b"", b"value"), (b"second", b"x")],
+            &[(b"key", b"")],
+        ] {
+            for format in FORMATS {
+                let buf = dump(format, records);
+                assert_eq!(
+                    BinDumpFormat::detect(&buf, true),
+                    Some(format),
+                    "{format:?} {records:?}"
+                );
+            }
+        }
+
+        // nothing to tell the formats apart
         assert_eq!(
-            BinDumpFormat::detect(&[0, 0, 0, 3, b'k', b'e', b'y', 0]),
+            BinDumpFormat::detect(&[], true),
+            Some(BinDumpFormat::Long64Le)
+        );
+        // an empty key and value; its 64-bit forms are the same 16 zero bytes
+        assert_eq!(
+            BinDumpFormat::detect(&[0; 8], true),
             Some(BinDumpFormat::Long32)
         );
         assert_eq!(
-            BinDumpFormat::detect(&[0, 0, 0, 3, 0, 0, 0, 0]),
+            BinDumpFormat::detect(&[0; 16], true),
             Some(BinDumpFormat::Long64Le)
         );
+        // not a dump in any format: a truncated length field or data, an odd number of fields
+        assert_eq!(BinDumpFormat::detect(&[0, 0, 0, 1], true), None);
+        assert_eq!(BinDumpFormat::detect(&[0, 0, 0, 1, 0, 0, 0, 0], true), None);
+        assert_eq!(BinDumpFormat::detect(&[0, 0, 0, 1, b'k'], true), None);
         assert_eq!(
-            BinDumpFormat::detect(&[0, 0, 0, 0, 0, 0, 0, 3]),
-            Some(BinDumpFormat::Long64Be)
+            BinDumpFormat::detect(&[0x80, 0, 0, 0, 0x80, 0, 0, 0], false),
+            None
         );
-        assert_eq!(BinDumpFormat::detect(&[0; 8]), None);
-        assert_eq!(BinDumpFormat::detect(&[]), Some(BinDumpFormat::Long32));
+        // two empty keys
+        assert_eq!(BinDumpFormat::detect(&[0; 24], false), None);
+    }
+
+    // The read-ahead may end anywhere after the first record; the format under which most of
+    // it parses wins.
+    #[test]
+    fn detect_partial() {
+        let records: Vec<(&[u8], &[u8])> = vec![(b"keyAkeyB", b"some value"); 20];
+        for format in FORMATS {
+            let buf = dump(format, &records);
+            let record = 2 * format.field_size() + 18;
+            for end in record..buf.len() {
+                assert_eq!(
+                    BinDumpFormat::detect(&buf[..end], false),
+                    Some(format),
+                    "{format:?} {end}"
+                );
+                // a complete dump must end after a whole record
+                let complete = (end % record == 0).then_some(format);
+                assert_eq!(
+                    BinDumpFormat::detect(&buf[..end], true),
+                    complete,
+                    "{format:?} {end}"
+                );
+            }
+        }
+
+        // Long64Le parses this Long32 dump until the second length, which is past the end
+        let mut records: Vec<(&[u8], &[u8])> =
+            vec![(&[0, 0, 0, 0, 1, 2, 3, 4], &[1, 0, 0, 0, 0, 0, 0, 0])];
+        records.extend(vec![(&b"key"[..], &b"value"[..]); 20]);
+        let buf = dump(BinDumpFormat::Long32, &records);
+        assert_eq!(
+            BinDumpFormat::detect(&buf[..buf.len() - 1], false),
+            Some(BinDumpFormat::Long32)
+        );
     }
 
     #[test]

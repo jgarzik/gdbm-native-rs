@@ -1261,8 +1261,9 @@ impl Gdbm {
     ///
     /// Adds all entries from a dump created with [`export_bin`](Gdbm::export_bin) or C GDBM's
     /// `gdbm_export` to the database, storing them as `mode` says when their key already exists.
-    /// `format` gives the layout of the dump's length fields; `None` detects it. Returns the
-    /// number of records imported.
+    /// `format` gives the layout of the dump's length fields; `None` detects it from the first
+    /// 64 KiB of records, as described for [`BinDumpFormat`]. Returns the number of records
+    /// imported.
     ///
     /// # Examples
     /// ```
@@ -1286,8 +1287,9 @@ impl Gdbm {
     /// ```
     ///
     /// # Errors
-    /// Fails if the database is read-only, the dump is malformed, a key already exists with
-    /// [`ImportMode::Insert`], or a record cannot be stored.
+    /// Fails if the database is read-only, the dump is malformed, `format` is `None` and no
+    /// format is consistent with the dump, a key already exists with [`ImportMode::Insert`], or a
+    /// record cannot be stored.
     pub fn import_bin(
         &mut self,
         reader: &mut impl Read,

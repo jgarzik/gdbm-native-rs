@@ -102,6 +102,9 @@ impl Iterator for ASCIIImportIterator<'_> {
     }
 }
 
+// How much of a binary dump's records is read ahead to detect its format.
+const DETECT_LIMIT: u64 = 64 * 1024;
+
 pub struct BinaryImportIterator<'a> {
     format: BinDumpFormat,
     // bytes read ahead to detect the format, then the rest of the dump
@@ -109,7 +112,7 @@ pub struct BinaryImportIterator<'a> {
 }
 
 impl<'a> BinaryImportIterator<'a> {
-    // Skip the header, then use format or detect it from the first length field.
+    // Skip the header, then use format or detect it from the first DETECT_LIMIT bytes of records.
     pub fn new(format: Option<BinDumpFormat>, reader: &'a mut dyn Read) -> io::Result<Self> {
         let mut buf_reader = BufReader::new(reader);
 
@@ -125,16 +128,24 @@ impl<'a> BinaryImportIterator<'a> {
             }
         }
 
-        let mut prefix = Vec::with_capacity(8);
-        buf_reader.by_ref().take(8).read_to_end(&mut prefix)?;
-        let format = format
-            .or_else(|| BinDumpFormat::detect(&prefix))
-            .ok_or_else(|| {
-                io::Error::new(
-                    ErrorKind::InvalidData,
-                    "cannot detect the binary dump format; specify it",
-                )
-            })?;
+        let mut prefix = Vec::new();
+        let format = match format {
+            Some(format) => format,
+            None => {
+                buf_reader
+                    .by_ref()
+                    .take(DETECT_LIMIT)
+                    .read_to_end(&mut prefix)?;
+                let complete =
+                    prefix.len() < DETECT_LIMIT as usize || buf_reader.fill_buf()?.is_empty();
+                BinDumpFormat::detect(&prefix, complete).ok_or_else(|| {
+                    io::Error::new(
+                        ErrorKind::InvalidData,
+                        "cannot detect the binary dump format; specify it",
+                    )
+                })?
+            }
+        };
 
         Ok(Self {
             format,
