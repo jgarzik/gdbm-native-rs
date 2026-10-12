@@ -29,11 +29,11 @@ pub struct TestInfo {
 impl TestInfo {
     fn new(db_fn: &str, json_fn: &str, is_basic: bool, alignment: Option<Alignment>) -> Self {
         let mut dbp = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        dbp.push("src/data");
+        dbp.push("tests/data");
         dbp.push(db_fn);
 
         let mut jsp = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        jsp.push("src/data");
+        jsp.push("tests/data");
         jsp.push(json_fn);
 
         let json_path = jsp.to_str().unwrap().to_string();

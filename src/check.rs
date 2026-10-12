@@ -244,7 +244,7 @@ fn set_numsync_on_fresh_open() {
 #[test]
 fn pop_c_avail_stack() {
     let data = |name: &str| -> std::path::PathBuf {
-        [env!("CARGO_MANIFEST_DIR"), "src/data", name]
+        [env!("CARGO_MANIFEST_DIR"), "tests/data", name]
             .iter()
             .collect()
     };

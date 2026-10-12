@@ -17,7 +17,7 @@ use gdbm_native::{CharSign, OpenOptions};
 use std::path::PathBuf;
 
 fn data_path(name: &str) -> PathBuf {
-    [env!("CARGO_MANIFEST_DIR"), "src/data", name]
+    [env!("CARGO_MANIFEST_DIR"), "tests/data", name]
         .iter()
         .collect()
 }

@@ -17,7 +17,9 @@ Pure-Rust GDBM; on-disk compatible with GNU GDBM 1.23 (C).
 - `lib.rs`: `Gdbm<ReadOnly|ReadWrite>`, alloc/free (port of `falloc.c`), iteration, import/export.
 - `options.rs`: type-state `OpenOptions`. `header/dir/bucket/avail.rs`: on-disk structs.
 - `check.rs` (test only): `check_space()` asserts no overlapping extents and file size == `next_block`; churn and corruption tests.
-- `src/data`: fixtures written by C via `src/testgen.cc` (`Dockerfile`, `./testgen`); plans basic/empty/hash/avail. hash/avail exist only as le64 (x86-64).
+- `tests/data/<platform>/`: C GDBM-written `mixed` db (+numsync), C binary/ASCII dumps, `manifest.json` (char sign, sizeof long, off_t, align, endian) per platform; expected records `tests/data/mixed.json` (hex). Regenerate: `tests/testgen/gen-platforms.sh [PLATFORM...]` (Docker+QEMU, Debian 13; `*-off32` build GDBM 1.26 with 32-bit off_t). Tested by `tests/platforms.rs`.
+- `tests/data/{basic,empty,hash,avail}.*`: legacy fixtures (`tests/testgen/gen-legacy.sh`, `Dockerfile.legacy`). Generator: `tests/testgen/testgen.cc`.
+- Work from repo root; scripts take paths, never `cd` first.
 
 ## Gotchas
 - Key hash depends on C `char` signedness: `CharSign` (default Signed = x86/x86-64/macOS; Unsigned = Linux ARM/PPC/RISC-V).
