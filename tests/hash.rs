@@ -61,8 +61,8 @@ fn insert_nonascii_keys() {
     assert_eq!(db.len().unwrap(), metadata.data_records);
 }
 
-// Databases written with CharSign::Unsigned must be opened with the same setting, including
-// across compact() which rebuilds the database.
+// Databases written with CharSign::Unsigned keep it across compact(), which rebuilds the
+// database; later opens detect it, unless told otherwise.
 #[test]
 fn unsigned_char_sign_roundtrip() {
     let metadata = metadata();
@@ -93,14 +93,29 @@ fn unsigned_char_sign_roundtrip() {
         );
     }
 
-    let mut db = OpenOptions::new().open(tmp.path()).unwrap();
-    let found = metadata
-        .data
-        .iter()
-        .filter(|kv| db.contains_key(kv[0].as_str()).unwrap())
-        .count();
+    let found = |mut db: gdbm_native::Gdbm<gdbm_native::ReadOnly>| {
+        metadata
+            .data
+            .iter()
+            .filter(|kv| db.contains_key(kv[0].as_str()).unwrap())
+            .count()
+    };
+
+    // detected
+    assert_eq!(
+        found(OpenOptions::new().open(tmp.path()).unwrap()),
+        metadata.data_records
+    );
+
+    // overridden with the wrong one
+    let n = found(
+        OpenOptions::new()
+            .char_sign(CharSign::Signed)
+            .open(tmp.path())
+            .unwrap(),
+    );
     assert!(
-        found < metadata.data_records / 2,
-        "found {found} keys with wrong CharSign"
+        n < metadata.data_records / 2,
+        "found {n} keys with wrong CharSign"
     );
 }

@@ -202,7 +202,8 @@ pub struct Gdbm<R: 'static> {
     header: Header,
     dir: Directory,
     bucket_cache: BucketCache,
-    char_sign: CharSign,
+    // None until known: see CharSign
+    char_sign: Option<CharSign>,
 
     read_write: R,
 }
@@ -608,13 +609,75 @@ where
     }
 
     // retrieve record data, and element offset in bucket, for given key
+    // Hash key as the C GDBM that wrote this database would. Keys of bytes < 0x80 hash the same
+    // whatever the signedness of C's char; other keys need it, so it is determined on first use.
+    fn hash(&mut self, key: &[u8]) -> Result<u32> {
+        let char_sign = if key.is_ascii() {
+            CharSign::Signed
+        } else {
+            self.resolve_char_sign()?
+        };
+        Ok(hash_key(char_sign, key))
+    }
+
+    fn resolve_char_sign(&mut self) -> Result<CharSign> {
+        if let Some(char_sign) = self.char_sign {
+            return Ok(char_sign);
+        }
+        let char_sign = self.detect_char_sign()?.unwrap_or_default();
+        self.char_sign = Some(char_sign);
+        Ok(char_sign)
+    }
+
+    // Find a stored key with a byte >= 0x80, and see which char signedness reproduces its stored
+    // hash. None if the database has no such key.
+    fn detect_char_sign(&mut self) -> Result<Option<CharSign>> {
+        let mut seen = std::collections::HashSet::new();
+        for index in 0..self.dir.dir.len() {
+            if !seen.insert(self.dir.dir[index]) {
+                continue;
+            }
+            let elems = self
+                .cache_load_bucket(index)?
+                .tab
+                .iter()
+                .filter(|elem| elem.is_occupied())
+                .copied()
+                .collect::<Vec<_>>();
+            for elem in elems {
+                // keys of up to 4 bytes are entirely in the bucket
+                if elem.key_size <= PartialKey::SIZEOF && elem.key_start.is_ascii() {
+                    continue;
+                }
+                let elem = valid_element(elem, self.header.next_block)?;
+                let key = read_ofs(&mut self.f, elem.data_ofs, elem.key_size as usize)?;
+                if key.is_ascii() {
+                    continue;
+                }
+                match (
+                    hash_key(CharSign::Signed, &key) == elem.hash,
+                    hash_key(CharSign::Unsigned, &key) == elem.hash,
+                ) {
+                    (true, false) => return Ok(Some(CharSign::Signed)),
+                    (false, true) => return Ok(Some(CharSign::Unsigned)),
+                    _ => (),
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// The signedness of `char` this database's keys are hashed with, if known yet: set by
+    /// [`OpenOptions::char_sign`], or detected the first time a key with a byte >= 0x80 is used.
+    /// See [`CharSign`].
+    pub fn char_sign(&self) -> Option<CharSign> {
+        self.char_sign
+    }
+
     fn int_get(&mut self, key: &[u8]) -> Result<Option<(usize, Vec<u8>)>> {
-        let (key_hash, bucket_dir, elem_ofs) = key_loc(
-            self.char_sign,
-            self.header.dir_bits,
-            self.header.bucket_elems,
-            key,
-        );
+        let key_hash = self.hash(key)?;
+        let (bucket_dir, elem_ofs) =
+            key_loc(self.header.dir_bits, self.header.bucket_elems, key_hash);
         let key_start = PartialKey::new(key);
 
         let bucket = self.cache_load_bucket(bucket_dir)?;
@@ -1225,6 +1288,7 @@ impl Gdbm<ReadWrite> {
         }
 
         let size = record_size(key.len(), data.len())?;
+        let hash = self.hash(key)?;
 
         self.read_write.state = WriteState::Inconsistent;
 
@@ -1235,7 +1299,7 @@ impl Gdbm<ReadWrite> {
             .and_then(|_| self.f.write_all(key))
             .and_then(|()| self.f.write_all(data))?;
 
-        let bucket_elem = BucketElement::new(hash_key(self.char_sign, key), key, data, offset);
+        let bucket_elem = BucketElement::new(hash, key, data, offset);
         self.cache_load_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash))?;
 
         while self.bucket_cache.current_bucket().unwrap().count == self.header.bucket_elems {
@@ -1454,10 +1518,11 @@ impl Gdbm<ReadWrite> {
     /// # }
     /// ```
     pub fn compact(&mut self) -> Result<()> {
+        let char_sign = self.resolve_char_sign()?;
         let mut tmpdb = {
             let magic = self.magic();
             OpenOptions::new()
-                .char_sign(self.char_sign)
+                .char_sign(char_sign)
                 .write()
                 .create()
                 .layout(self.layout())

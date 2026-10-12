@@ -13,7 +13,7 @@
 // formats differ between platforms in ways the files do not record (struct alignment, char
 // signedness, sizeof(long)), so every fixture must be usable without hints.
 
-use gdbm_native::OpenOptions;
+use gdbm_native::{CharSign, OpenOptions};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -162,7 +162,6 @@ fn open_without_hints() {
 }
 
 #[test]
-#[ignore = "needs layout and CharSign auto-detection"]
 fn read_all_records() {
     let expected = records();
     for_each_db(|_, db| {
@@ -178,7 +177,6 @@ fn read_all_records() {
 // Replace, remove and add records (including non-ASCII keys) in each C database, then
 // reopen and check everything, so writes use the platform's layout and hashing.
 #[test]
-#[ignore = "needs layout and CharSign auto-detection"]
 fn modify_and_reopen() {
     for_each_db(|_, db| {
         let mut expected = records();
@@ -262,5 +260,62 @@ fn import_c_binary_dumps() {
             _ => gdbm_native::ExportBinMode::Exp64,
         };
         import_dump(p, |db, f| db.import_bin(f, mode), "mixed.bin")
+    });
+}
+
+// CharSign is detected from the database on first use of a key with a byte >= 0x80, and matches
+// the char signedness of the C build that wrote it. ASCII-only use leaves it undetermined.
+#[test]
+fn char_sign_detected() {
+    let records = records();
+    let ascii = records.iter().find(|(k, _)| k.is_ascii()).unwrap();
+    let non_ascii = records.iter().find(|(k, _)| !k.is_ascii()).unwrap();
+    for_each_db(|p, db| {
+        let mut db = OpenOptions::new().open(db).map_err(|e| e.to_string())?;
+        db.get::<_, Vec<u8>>(ascii.0.as_slice())
+            .map_err(|e| e.to_string())?;
+        if let Some(sign) = db.char_sign() {
+            return Err(format!("decided {sign:?} from an ASCII key"));
+        }
+        db.get::<_, Vec<u8>>(non_ascii.0.as_slice())
+            .map_err(|e| e.to_string())?;
+        let expected = if p.manifest.char_signed {
+            CharSign::Signed
+        } else {
+            CharSign::Unsigned
+        };
+        (db.char_sign() == Some(expected))
+            .then_some(())
+            .ok_or(format!(
+                "detected {:?}, expected {expected:?}",
+                db.char_sign()
+            ))
+    });
+}
+
+// An explicit CharSign is used as given, so the wrong one finds no non-ASCII keys.
+#[test]
+fn char_sign_override() {
+    let records = records();
+    for_each_db(|p, db| {
+        let wrong = if p.manifest.char_signed {
+            CharSign::Unsigned
+        } else {
+            CharSign::Signed
+        };
+        let mut db = OpenOptions::new()
+            .char_sign(wrong)
+            .open(db)
+            .map_err(|e| e.to_string())?;
+        let found = records
+            .iter()
+            .filter(|(k, _)| !k.is_ascii())
+            .filter(|(k, _)| db.contains_key(k.as_slice()).unwrap())
+            .count();
+        (db.char_sign() == Some(wrong) && found == 0)
+            .then_some(())
+            .ok_or(format!(
+                "{found} non-ASCII keys found with the wrong CharSign"
+            ))
     });
 }

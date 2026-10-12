@@ -22,7 +22,7 @@ Pure-Rust GDBM; on-disk compatible with GNU GDBM 1.23 (C).
 - Work from repo root; scripts take paths, never `cd` first.
 
 ## Gotchas
-- Key hash depends on C `char` signedness: `CharSign` (default Signed = x86/x86-64/macOS; Unsigned = Linux ARM/PPC/RISC-V).
+- Key hash depends on C `char` signedness (`CharSign`: Signed = x86/MIPS/macOS, Unsigned = Linux ARM/PPC/RISC-V/s390x). Auto-detected lazily (`Gdbm::hash` → `detect_char_sign`) on first key with a byte >= 0x80; ASCII keys hash identically; fallback Signed.
 - Avail stack block size is C's `(sz*elem)/2 + sizeof(avail_block)`, which includes one elem: `AvailBlock::stack_block_size`.
 - Free space may lie past EOF up to `next_block`; validate against `next_block`. `sync` extends the file to `next_block`; buckets are padded to `bucket_sz` (C sets it to `block_size`).
 - Layout (struct alignment) and byte order are detected on open (`Header::from_reader` → `detect_format`): magic gives endian + offset size; alignment from avail capacity + bucket_elems. Public `Layout {Off32, Off64Align4, Off64Align8}`; internal `ser::Format` (offset, alignment, endian).

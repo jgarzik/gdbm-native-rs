@@ -31,6 +31,11 @@ impl PartialKey {
         )
     }
 
+    // whether the stored key prefix has only bytes < 0x80
+    pub fn is_ascii(&self) -> bool {
+        self.0.is_ascii()
+    }
+
     pub fn from_reader(reader: &mut impl Read) -> io::Result<Self> {
         let mut buf = [0; Self::SIZEOF as usize];
         reader.read_exact(&mut buf)?;
@@ -45,9 +50,12 @@ impl PartialKey {
 /// Signedness of the C `char` type on the platform whose GDBM library wrote a database.
 ///
 /// C GDBM hashes keys one `char` at a time, so key bytes >= 0x80 hash differently depending on
-/// whether `char` is signed (x86, x86-64, MIPS) or unsigned (ARM, PowerPC, RISC-V, s390x). The
-/// database file does not record which was used, so databases containing such keys must be
-/// opened with the matching `CharSign`. Databases whose keys are all ASCII are unaffected.
+/// whether `char` is signed (x86, x86-64, MIPS, macOS on ARM) or unsigned (Linux on ARM,
+/// PowerPC, RISC-V and s390x). Database files do not record which was used, so gdbm-native
+/// detects it from the stored hashes of existing keys the first time a key with a byte >= 0x80
+/// is used, falling back to `Signed` if the database has no such keys. Keys of bytes < 0x80
+/// hash the same either way. Use [`OpenOptions::char_sign`](crate::OpenOptions::char_sign) to
+/// override detection, e.g. to create a database for C GDBM on an unsigned-`char` platform.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum CharSign {
     /// Signed `char`, as on x86 and x86-64. This is the default.
@@ -78,17 +86,9 @@ pub fn bucket_dir(dir_bits: u32, hash: u32) -> usize {
 }
 
 // derives hash and bucket metadata from key
-pub fn key_loc(
-    char_sign: CharSign,
-    dir_bits: u32,
-    bucket_elems: u32,
-    key: &[u8],
-) -> (u32, usize, u32) {
-    let hash = hash_key(char_sign, key);
-    let bucket = bucket_dir(dir_bits, hash);
-    let ofs = hash % bucket_elems;
-
-    (hash, bucket, ofs)
+// bucket directory index and starting element offset for a key hash
+pub fn key_loc(dir_bits: u32, bucket_elems: u32, hash: u32) -> (usize, u32) {
+    (bucket_dir(dir_bits, hash), hash % bucket_elems)
 }
 
 #[cfg(test)]

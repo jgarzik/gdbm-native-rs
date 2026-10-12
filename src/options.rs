@@ -66,8 +66,9 @@ pub struct Write<C> {
 pub struct OpenOptions<W> {
     /// Bytesize of in-memory bucket cache (defaults to [`DEFAULT_CACHESIZE`](crate::DEFAULT_CACHESIZE))
     pub cachesize: Option<usize>,
-    /// Key hashing compatibility; see [`CharSign`](crate::CharSign).
-    pub char_sign: CharSign,
+    /// Key hashing compatibility; see [`CharSign`](crate::CharSign). `None` (the default)
+    /// detects it.
+    pub char_sign: Option<CharSign>,
     /// Don't lock the database file. Set via [`OpenOptions::lock()`].
     pub no_lock: bool,
 
@@ -112,10 +113,12 @@ impl<W> OpenOptions<W> {
         OpenOptions { cachesize, ..self }
     }
 
-    /// Override default [`CharSign`](crate::CharSign) used when hashing keys. Only needed for
-    /// databases with non-ASCII keys written by C GDBM on a platform with unsigned `char`.
+    /// Use `char_sign` to hash keys instead of detecting it; see [`CharSign`](crate::CharSign).
     pub fn char_sign(self, char_sign: CharSign) -> OpenOptions<W> {
-        OpenOptions { char_sign, ..self }
+        OpenOptions {
+            char_sign: Some(char_sign),
+            ..self
+        }
     }
 
     /// Whether to lock the database file (default `true`). Like C GDBM, a database opened for
