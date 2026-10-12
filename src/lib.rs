@@ -558,25 +558,6 @@ impl Gdbm {
         bucket_dir
     }
 
-    /// Gets the number of key-value pairs in the database.
-    ///
-    /// Note: This is an expensive operation as it involves loading all the database metadata in
-    /// order to calculate the number of entries.
-    ///
-    /// # Examples
-    /// ```
-    /// # use tempfile::tempdir;
-    /// # fn main() -> Result<(), String> {
-    /// #     let tmp_dir = tempdir().unwrap();
-    /// #     let path = tmp_dir.path().join("test");
-    /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path).unwrap();
-    /// let count = db.len()?;
-    /// #         Ok(())
-    /// #     }().map_err(|e| e.to_string())
-    /// # }
-    /// ```
-    #[allow(clippy::len_without_is_empty)]
     /// Block size of the database file.
     pub fn block_size(&self) -> u32 {
         self.header.block_sz
@@ -648,7 +629,7 @@ impl Gdbm {
             if !seen.insert(offset) {
                 continue;
             }
-            let (elems, avail) = self.with_bucket(index, |bucket| {
+            let (elems, avail, count) = self.with_bucket(index, |bucket| {
                 (
                     bucket
                         .tab
@@ -657,6 +638,7 @@ impl Gdbm {
                         .copied()
                         .collect::<Vec<_>>(),
                     bucket.avail.clone(),
+                    bucket.count as usize,
                 )
             })?;
             extents.push((
@@ -671,7 +653,7 @@ impl Gdbm {
                     format!("record in bucket at {offset}"),
                 ));
             }
-            report.records += self.with_bucket(index, |bucket| bucket.count as usize)?;
+            report.records += count;
             for elem in &avail {
                 free(
                     &mut extents,
@@ -762,6 +744,20 @@ impl Gdbm {
 
     /// Number of entries in the database. This reads every bucket; use
     /// [`is_empty`](Gdbm::is_empty) to test for an empty database.
+    ///
+    /// # Examples
+    /// ```
+    /// # use tempfile::tempdir;
+    /// # fn main() -> Result<(), String> {
+    /// #     let tmp_dir = tempdir().unwrap();
+    /// #     let path = tmp_dir.path().join("test");
+    /// #     || -> gdbm_native::Result<()> {
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path).unwrap();
+    /// let count = db.len()?;
+    /// #         Ok(())
+    /// #     }().map_err(|e| e.to_string())
+    /// # }
+    /// ```
     ///
     /// # Errors
     /// Fails if a bucket cannot be read.
