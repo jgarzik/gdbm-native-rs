@@ -8,6 +8,8 @@ pub enum Error {
     Io(io::Error),
     /// Database may be inconsistent since an earlier error. Writes are disabled.
     Inconsistent,
+    /// The database file is locked by another user.
+    Locked,
     /// Bucket element describes a record outside the allocated area of the file.
     BadBucketElement {
         /// Record file offset.
