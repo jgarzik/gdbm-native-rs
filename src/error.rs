@@ -89,14 +89,41 @@ pub enum Error {
         /// Directory length in bytes.
         length: u32,
     },
+    /// A key hashes to a directory entry beyond the end of the directory (like C GDBM's
+    /// `GDBM_BAD_DIR_ENTRY`).
+    BadDirectoryEntry {
+        /// Directory entry index.
+        index: usize,
+        /// Number of directory entries.
+        entries: usize,
+    },
+    /// The directory entries for a bucket being split are not the aligned range of
+    /// `2^(dir_bits - bits)` entries that its bit count implies.
+    BadDirectoryRange {
+        /// Bucket file offset.
+        offset: u64,
+        /// Bucket bits.
+        bits: u32,
+        /// Index of a directory entry referring to the bucket.
+        index: usize,
+        /// Directory bits.
+        dir_bits: u32,
+    },
+    /// The directory cannot grow any further (like C GDBM's `GDBM_DIR_OVERFLOW`).
+    DirectoryOverflow {
+        /// Directory size in bytes.
+        size: u32,
+    },
     /// Write operation on a database opened read-only.
     ReadOnly,
-    /// Block size found in header is impossibly small.
+    /// Block size found in header is impossibly small, or too large for C GDBM's `int`.
     BadHeaderBlockSize {
         /// Block size from header.
         size: u32,
         /// Minimum is sizeof header.
         minimum: u32,
+        /// Maximum is `i32::MAX`.
+        maximum: u32,
     },
     /// Next block offset in header is less than file size.
     BadHeaderNextBlock {
@@ -125,12 +152,14 @@ pub enum Error {
         /// Expected bits calculated from header directory size.
         expected_bits: u32,
     },
-    /// Bucket size in header is impossibly small.
+    /// Bucket size in header is impossibly small, or too large for C GDBM's `int`.
     BadHeaderBucketSize {
         /// Size found in header.
         size: u32,
         /// Minimum is sizeof bucket header and one bucket element.
         minimum: u32,
+        /// Maximum is `i32::MAX`.
+        maximum: u32,
     },
     /// Bucket elements in header inconsistent with bucket size.
     BadHeaderBucketElems {
@@ -239,10 +268,32 @@ impl Display for Error {
                 "corrupt database: directory at {offset} ({length} bytes) refers to a \
                  bucket outside the database"
             ),
-            Error::ReadOnly => write!(f, "database is open read-only"),
-            Error::BadHeaderBlockSize { size, minimum } => write!(
+            Error::BadDirectoryEntry { index, entries } => write!(
                 f,
-                "corrupt database header: block size {size} is less than the minimum {minimum}"
+                "corrupt database: directory entry {index} is beyond the {entries}-entry \
+                 directory"
+            ),
+            Error::BadDirectoryRange {
+                offset,
+                bits,
+                index,
+                dir_bits,
+            } => write!(
+                f,
+                "corrupt database: the directory entries ({dir_bits} bits) around entry {index} \
+                 do not all refer to its bucket at {offset} ({bits} bits)"
+            ),
+            Error::DirectoryOverflow { size } => {
+                write!(f, "directory of {size} bytes cannot grow any further")
+            }
+            Error::ReadOnly => write!(f, "database is open read-only"),
+            Error::BadHeaderBlockSize {
+                size,
+                minimum,
+                maximum,
+            } => write!(
+                f,
+                "corrupt database header: block size {size} is outside {minimum}..={maximum}"
             ),
             Error::BadHeaderNextBlock {
                 next_block,
@@ -271,9 +322,13 @@ impl Display for Error {
                 "corrupt database header: directory of {size} bytes and {bits} bits (expected \
                  at least {minimum_size} bytes and {expected_bits} bits)"
             ),
-            Error::BadHeaderBucketSize { size, minimum } => write!(
+            Error::BadHeaderBucketSize {
+                size,
+                minimum,
+                maximum,
+            } => write!(
                 f,
-                "corrupt database header: bucket size {size} is less than the minimum {minimum}"
+                "corrupt database header: bucket size {size} is outside {minimum}..={maximum}"
             ),
             Error::BadHeaderBucketElems { elems, expected } => write!(
                 f,

@@ -96,12 +96,17 @@ impl BucketElement {
         self.hash != 0xffff_ffff
     }
 
-    // Whether the record lies within allocated file space. Like C GDBM's
-    // gdbm_bucket_element_valid_p(), check before trusting an element read from disk.
+    // Whether the record has a size C GDBM can hold and lies within allocated file space. Like C
+    // GDBM's gdbm_bucket_element_valid_p(), check before trusting an element read from disk.
+    // C's sizes are ints, so negative (above i32::MAX here) sizes are invalid, and it reads
+    // key and data into one buffer whose int size must not overflow.
     pub fn is_valid(&self, next_block: u64) -> bool {
-        self.data_ofs
-            .checked_add(u64::from(self.key_size) + u64::from(self.data_size))
-            .is_some_and(|end| end <= next_block)
+        let size = u64::from(self.key_size) + u64::from(self.data_size);
+        size <= i32::MAX as u64
+            && self
+                .data_ofs
+                .checked_add(size)
+                .is_some_and(|end| end <= next_block)
     }
 }
 
@@ -276,7 +281,7 @@ impl Bucket {
     // Split into two buckets by the next hash bit. None only if an element does not fit, which
     // cannot happen: each new bucket has as many slots as this one.
     pub fn split(&self) -> Option<(Bucket, Bucket)> {
-        let mask = 0x80_00_00_00 >> (self.bits + 1);
+        let mask = 0x80_00_00_00_u32.checked_shr(self.bits.checked_add(1)?)?;
         let (avail0, avail1) = avail::partition_elems(&self.avail);
         let mut bucket0 = Bucket::new(self.bits + 1, self.tab.len(), avail0);
         let mut bucket1 = Bucket::new(self.bits + 1, self.tab.len(), avail1);

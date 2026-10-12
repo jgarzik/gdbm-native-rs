@@ -129,11 +129,16 @@ impl Header {
 
     // Verify the fixed fields; from_reader() reads and validates the avail table afterwards.
     fn verify(&self, file_size: u64) -> Result<()> {
+        // C GDBM's sizes are ints: like its validate_header(), reject negative ones.
+        const MAXIMUM: u32 = i32::MAX as u32;
+
         // Block must be big enough for header and avail table with two elements.
-        if self.block_sz < Self::sizeof(self.layout, self.magic.is_numsync(), 2) {
+        let minimum = Self::sizeof(self.layout, self.magic.is_numsync(), 2);
+        if !(minimum..=MAXIMUM).contains(&self.block_sz) {
             return Err(Error::BadHeaderBlockSize {
                 size: self.block_sz,
-                minimum: Self::sizeof(self.layout, self.magic.is_numsync(), 2),
+                minimum,
+                maximum: MAXIMUM,
             });
         }
 
@@ -167,10 +172,12 @@ impl Header {
             });
         }
 
-        if self.bucket_sz < Bucket::sizeof(self.layout) + BucketElement::sizeof(self.layout) {
+        let minimum = Bucket::sizeof(self.layout) + BucketElement::sizeof(self.layout);
+        if !(minimum..=MAXIMUM).contains(&self.bucket_sz) {
             return Err(Error::BadHeaderBucketSize {
                 size: self.bucket_sz,
-                minimum: Bucket::sizeof(self.layout) + BucketElement::sizeof(self.layout),
+                minimum,
+                maximum: MAXIMUM,
             });
         }
 

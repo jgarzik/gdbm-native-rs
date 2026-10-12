@@ -94,9 +94,10 @@ pub fn hash_key(char_sign: CharSign, key: &[u8]) -> u32 {
     value.wrapping_mul(1_103_515_243).wrapping_add(12345) & 0x7FFF_FFFF
 }
 
-// hash-to-bucket lookup
+// hash-to-bucket lookup. Callers bounds-check the result against the directory, as dir_bits
+// beyond HASH_BITS (never valid) leaves the hash unshifted.
 pub fn bucket_dir(dir_bits: u32, hash: u32) -> usize {
-    (hash as usize) >> (HASH_BITS - dir_bits)
+    (hash as usize) >> HASH_BITS.saturating_sub(dir_bits)
 }
 
 // derives hash and bucket metadata from key
