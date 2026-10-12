@@ -145,7 +145,7 @@ fn main() {
             db.sync().unwrap_or_else(|e| fail("sync", e));
         }
         ["fetch", path, key] => {
-            let mut db = OpenOptions::new()
+            let db = OpenOptions::new()
                 .char_sign(char_sign())
                 .open(path)
                 .unwrap_or_else(|e| fail("open", e));
@@ -186,7 +186,7 @@ fn main() {
             db.sync().unwrap_or_else(|e| fail("sync", e));
         }
         ["export" | "dump", path, out] => {
-            let mut db = OpenOptions::new()
+            let db = OpenOptions::new()
                 .char_sign(char_sign())
                 .open(path)
                 .unwrap_or_else(|e| fail("open", e));

@@ -355,7 +355,7 @@ fn corrupt(
 // huge allocation.
 fn corrupt_and_get(offset: impl Fn(&mut Gdbm) -> u64, bytes: &[u8]) -> Result<()> {
     let (_dir, path) = corrupt(offset, bytes);
-    let mut db = OpenOptions::new().open(&path)?;
+    let db = OpenOptions::new().open(&path)?;
     db.get::<_, Vec<u8>>("key")?;
 
     db.iter::<Vec<u8>, Vec<u8>>()

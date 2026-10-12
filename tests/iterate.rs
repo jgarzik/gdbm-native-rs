@@ -32,7 +32,7 @@ fn api_iter() {
             OpenOptions::new()
                 .open(&test.db_path)
                 .map_err(|e| e.to_string())
-                .and_then(|mut db| {
+                .and_then(|db| {
                     db.iter::<String, String>().try_for_each(|kv| {
                         kv.map_err(|e| e.to_string()).and_then(|(k, v)| {
                             (keys_and_values.remove(&k) == Some(v))
@@ -67,7 +67,7 @@ fn api_keys() {
             OpenOptions::new()
                 .open(&test.db_path)
                 .map_err(|e| e.to_string())
-                .and_then(|mut db| {
+                .and_then(|db| {
                     db.keys::<String>().try_for_each(|kv| {
                         kv.map_err(|e| e.to_string()).and_then(|k| {
                             keys.remove(&k)
@@ -101,7 +101,7 @@ fn api_values() {
             OpenOptions::new()
                 .open(&test.db_path)
                 .map_err(|e| e.to_string())
-                .and_then(|mut db| {
+                .and_then(|db| {
                     db.values::<String>().try_for_each(|kv| {
                         kv.map_err(|e| e.to_string()).and_then(|k| {
                             values
@@ -120,4 +120,20 @@ fn api_values() {
                 .map_err(|e| format!("[{}]: {e}", test.db_path))
         })
         .unwrap_or_else(|e| panic!("{e}"));
+}
+
+#[test]
+// Reads take &self, so lookups work while iterating, and a read-only handle needs no `mut`.
+fn get_while_iterating() {
+    for test in init_tests().iter().filter(|test| test.is_basic) {
+        let db = OpenOptions::new().open(&test.db_path).unwrap();
+        let mut n = 0;
+        for kv in db.iter::<String, String>() {
+            let (key, value) = kv.unwrap();
+            assert_eq!(db.get::<_, String>(key.as_str()).unwrap(), Some(value));
+            assert!(db.contains_key(key.as_str()).unwrap());
+            n += 1;
+        }
+        assert_eq!(n, db.len().unwrap());
+    }
 }

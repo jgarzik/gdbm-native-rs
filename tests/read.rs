@@ -20,7 +20,7 @@ fn api_exists_not() {
     let tests = init_tests();
 
     for testdb in tests {
-        let mut db = OpenOptions::new().open(&testdb.db_path).unwrap();
+        let db = OpenOptions::new().open(&testdb.db_path).unwrap();
         assert!(!db.contains_key("dummy").unwrap());
 
         if testdb.is_basic {
@@ -35,7 +35,7 @@ fn api_exists() {
 
     for testdb in tests {
         if testdb.is_basic {
-            let mut db = OpenOptions::new().open(&testdb.db_path).unwrap();
+            let db = OpenOptions::new().open(&testdb.db_path).unwrap();
 
             for n in 0..10001 {
                 let keystr = format!("key {n}");
@@ -50,7 +50,7 @@ fn api_get_not() {
     let tests = init_tests();
 
     for testdb in tests {
-        let mut db = OpenOptions::new().open(&testdb.db_path).unwrap();
+        let db = OpenOptions::new().open(&testdb.db_path).unwrap();
         let res = db.get::<str, String>("This key does not exist").unwrap();
         assert_eq!(res, None);
     }
@@ -62,7 +62,7 @@ fn api_get() {
 
     for testdb in tests {
         if testdb.is_basic {
-            let mut db = OpenOptions::new().open(&testdb.db_path).unwrap();
+            let db = OpenOptions::new().open(&testdb.db_path).unwrap();
 
             for n in 0..10001 {
                 let keystr = format!("key {n}");
@@ -88,7 +88,7 @@ fn api_len() {
     let tests = init_tests();
 
     for testdb in tests {
-        let mut db = OpenOptions::new().open(&testdb.db_path).unwrap();
+        let db = OpenOptions::new().open(&testdb.db_path).unwrap();
         let res = db.len().unwrap();
         assert_eq!(res, testdb.n_records);
     }

@@ -47,7 +47,7 @@ fn api_open_create_empty_file() {
     db.insert("key", "value").unwrap();
     drop(db);
 
-    let mut db = OpenOptions::new().open(&path).unwrap();
+    let db = OpenOptions::new().open(&path).unwrap();
     assert_eq!(
         db.get::<_, String>("key").unwrap().as_deref(),
         Some("value")
@@ -184,7 +184,7 @@ fn api_open_cachesize() {
         options
             .open(&db)
             .map_err(|e| format!("read open failed: {e}"))
-            .and_then(|mut db| {
+            .and_then(|db| {
                 (0..RECORD_COUNT).try_for_each(|n| {
                     db.get(&n)
                         .map_err(|e| e.to_string())

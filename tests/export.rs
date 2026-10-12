@@ -42,7 +42,7 @@ fn api_export_bin() {
                     .and_then(|mut f| {
                         OpenOptions::new()
                             .open(&test.db_path)
-                            .and_then(|mut db| db.export_bin(&mut f, mode))
+                            .and_then(|db| db.export_bin(&mut f, mode))
                             .map_err(|e| e.to_string())
                     })
                     .unwrap();
@@ -69,7 +69,7 @@ fn api_export_bin() {
                 OpenOptions::new()
                     .open(&importdb)
                     .map_err(|e| e.to_string())
-                    .and_then(|mut db| {
+                    .and_then(|db| {
                         test.metadata.data.iter().try_for_each(|kv| {
                             db.get(&kv[0]).map_err(|e| e.to_string()).and_then(|v| {
                                 (v == Some(kv[1].clone()))
@@ -101,7 +101,7 @@ fn api_export_ascii() {
             .and_then(|mut f| {
                 OpenOptions::new()
                     .open(&testdb.db_path)
-                    .and_then(|mut db| db.export_ascii(&mut f, None::<&str>))
+                    .and_then(|db| db.export_ascii(&mut f, None::<&str>))
                     .map_err(|e| e.to_string())
             })
             .unwrap();
@@ -127,7 +127,7 @@ fn api_export_ascii() {
         OpenOptions::new()
             .open(importdb)
             .map_err(|e| e.to_string())
-            .and_then(|mut db| {
+            .and_then(|db| {
                 testdb.metadata.data.iter().try_for_each(|kv| {
                     db.get(&kv[0]).map_err(|e| e.to_string()).and_then(|got| {
                         (got == Some(kv[1].clone()))

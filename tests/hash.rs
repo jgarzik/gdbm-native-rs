@@ -32,7 +32,7 @@ fn read_c_nonascii_keys() {
     let metadata = metadata();
 
     for db_name in ["hash.db.le64", "hash.db.le64.numsync"] {
-        let mut db = OpenOptions::new().open(data_path(db_name)).unwrap();
+        let db = OpenOptions::new().open(data_path(db_name)).unwrap();
 
         assert_eq!(db.len().unwrap(), metadata.data_records);
         for kv in &metadata.data {
@@ -82,7 +82,7 @@ fn unsigned_char_sign_roundtrip() {
         db.compact().unwrap();
     }
 
-    let mut db = OpenOptions::new()
+    let db = OpenOptions::new()
         .char_sign(CharSign::Unsigned)
         .open(tmp.path())
         .unwrap();
@@ -93,7 +93,7 @@ fn unsigned_char_sign_roundtrip() {
         );
     }
 
-    let found = |mut db: gdbm_native::Gdbm| {
+    let found = |db: gdbm_native::Gdbm| {
         metadata
             .data
             .iter()

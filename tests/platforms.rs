@@ -153,7 +153,7 @@ fn fixtures_match_manifests() {
 fn open_without_hints() {
     let n = records().len();
     for_each_db(|_, db| {
-        let mut db = OpenOptions::new().open(db).map_err(|e| e.to_string())?;
+        let db = OpenOptions::new().open(db).map_err(|e| e.to_string())?;
         match db.len().map_err(|e| e.to_string())? {
             len if len == n => Ok(()),
             len => Err(format!("len {len}, expected {n}")),
@@ -291,7 +291,7 @@ fn export_matches_c_binary_dumps() {
     }
 
     for_each_platform(|p| {
-        let mut db = OpenOptions::new()
+        let db = OpenOptions::new()
             .open(p.dir.join("mixed.db"))
             .map_err(|e| e.to_string())?;
         let mut ours = Vec::new();
@@ -311,7 +311,7 @@ fn export_matches_c_ascii_dumps() {
     }
 
     for_each_platform(|p| {
-        let mut db = OpenOptions::new()
+        let db = OpenOptions::new()
             .open(p.dir.join("mixed.db"))
             .map_err(|e| e.to_string())?;
         let mut ours = Vec::new();
@@ -336,7 +336,7 @@ fn char_sign_detected() {
     let ascii = records.iter().find(|(k, _)| k.is_ascii()).unwrap();
     let non_ascii = records.iter().find(|(k, _)| !k.is_ascii()).unwrap();
     for_each_db(|p, db| {
-        let mut db = OpenOptions::new().open(db).map_err(|e| e.to_string())?;
+        let db = OpenOptions::new().open(db).map_err(|e| e.to_string())?;
         db.get::<_, Vec<u8>>(ascii.0.as_slice())
             .map_err(|e| e.to_string())?;
         if let Some(sign) = db.char_sign() {
@@ -368,7 +368,7 @@ fn char_sign_override() {
         } else {
             CharSign::Signed
         };
-        let mut db = OpenOptions::new()
+        let db = OpenOptions::new()
             .char_sign(wrong)
             .open(db)
             .map_err(|e| e.to_string())?;

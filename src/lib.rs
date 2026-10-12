@@ -44,6 +44,7 @@
 extern crate base64;
 
 use base64::Engine;
+use std::cell::{Cell, RefCell};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
 mod avail;
@@ -106,7 +107,7 @@ struct WriteMode {
 
 // Write a bucket padded to the header's bucket size, which may exceed the serialized size of a
 // bucket (C GDBM sets bucket size to the block size).
-fn write_bucket(f: &mut File, header: &Header, bucket: &Bucket, offset: u64) -> io::Result<()> {
+fn write_bucket(mut f: &File, header: &Header, bucket: &Bucket, offset: u64) -> io::Result<()> {
     let mut buffer = Vec::with_capacity(header.bucket_sz as usize);
     bucket.serialize(header.layout, &mut buffer)?;
     buffer.resize(buffer.len().max(header.bucket_sz as usize), 0);
@@ -154,8 +155,7 @@ fn fs_block_size(f: &File) -> io::Result<u32> {
 }
 
 // read and return file data stored at (ofs,total_size)
-// todo:  use Read+Seek traits rather than File
-fn read_ofs(f: &mut std::fs::File, ofs: u64, total_size: usize) -> io::Result<Vec<u8>> {
+fn read_ofs(mut f: &File, ofs: u64, total_size: usize) -> io::Result<Vec<u8>> {
     let mut data: Vec<u8> = vec![0; total_size];
 
     f.seek(SeekFrom::Start(ofs))?;
@@ -169,9 +169,10 @@ pub struct Gdbm {
     f: std::fs::File,
     header: Header,
     dir: Directory,
-    bucket_cache: BucketCache,
+    // RefCell so that reads can take &self
+    bucket_cache: RefCell<BucketCache>,
     // None until known: see CharSign
-    char_sign: Option<CharSign>,
+    char_sign: Cell<Option<CharSign>>,
 
     // None if opened read-only
     read_write: Option<WriteMode>,
@@ -179,9 +180,10 @@ pub struct Gdbm {
 
 impl Gdbm {
     // Cache a bucket, writing any dirty bucket it displaces (only possible when writable).
-    fn cache_bucket(&mut self, offset: u64, bucket: Bucket) -> Result<()> {
-        if let Some((evicted_offset, evicted_bucket)) = self.bucket_cache.insert(offset, bucket) {
-            self.write_bucket(&evicted_bucket, evicted_offset)?;
+    fn cache_bucket(&self, offset: u64, bucket: Bucket) -> Result<()> {
+        let evicted = self.bucket_cache.borrow_mut().insert(offset, bucket);
+        if let Some((evicted_offset, evicted_bucket)) = evicted {
+            write_bucket(&self.f, &self.header, &evicted_bucket, evicted_offset)?;
         }
 
         Ok(())
@@ -240,8 +242,8 @@ impl Gdbm {
             f,
             header,
             dir,
-            bucket_cache,
-            char_sign: open_options.char_sign,
+            bucket_cache: RefCell::new(bucket_cache),
+            char_sign: Cell::new(open_options.char_sign),
             read_write: writable.then_some(WriteMode {
                 sync: open_options.sync,
                 state: WriteState::Clean,
@@ -303,7 +305,7 @@ impl Gdbm {
             .try_for_each(|line| outf.write_all(line).and_then(|()| writeln!(outf)))
     }
 
-    fn export_ascii_records(&mut self, outf: &mut impl Write) -> Result<usize> {
+    fn export_ascii_records(&self, outf: &mut impl Write) -> Result<usize> {
         self.iter().try_fold(0, |count, kv| {
             kv.and_then(|(key, value)| {
                 Self::export_ascii_datum(outf, key)
@@ -343,7 +345,7 @@ impl Gdbm {
     /// # }
     /// ```
     pub fn export_ascii<P: AsRef<std::path::Path> + ?Sized>(
-        &mut self,
+        &self,
         outf: &mut impl Write,
         pathname: Option<&P>,
     ) -> Result<()> {
@@ -376,7 +378,7 @@ impl Gdbm {
         outf.write_all(bindata)
     }
 
-    fn export_bin_records(&mut self, outf: &mut impl Write, format: BinDumpFormat) -> Result<()> {
+    fn export_bin_records(&self, outf: &mut impl Write, format: BinDumpFormat) -> Result<()> {
         self.iter::<Vec<_>, Vec<_>>().try_for_each(|kv| {
             kv.and_then(|(key, value)| {
                 Self::export_bin_datum(outf, format, &key)
@@ -412,20 +414,22 @@ impl Gdbm {
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
-    pub fn export_bin(&mut self, outf: &mut impl Write, format: BinDumpFormat) -> Result<()> {
+    pub fn export_bin(&self, outf: &mut impl Write, format: BinDumpFormat) -> Result<()> {
         Gdbm::export_bin_header(outf)
             .map_err(Error::Io)
             .and_then(|()| self.export_bin_records(outf, format))
     }
 
     // read bucket into bucket cache.
-    fn cache_load_bucket(&mut self, bucket_dir: usize) -> Result<&Bucket> {
+    // Load the bucket for directory entry bucket_dir into the cache, make it current, and apply f
+    // to it. The bucket is only borrowed for the duration of f, so the cache stays usable.
+    fn with_bucket<T>(&self, bucket_dir: usize, f: impl FnOnce(&Bucket) -> T) -> Result<T> {
         let offset = self.dir.dir[bucket_dir];
 
-        if !self.bucket_cache.contains(offset) {
-            self.f.seek(SeekFrom::Start(offset))?;
-            let bucket =
-                Bucket::from_reader(self.header.bucket_elems, self.header.layout, &mut self.f)?;
+        if !self.bucket_cache.borrow().contains(offset) {
+            let mut f = &self.f;
+            f.seek(SeekFrom::Start(offset))?;
+            let bucket = Bucket::from_reader(self.header.bucket_elems, self.header.layout, &mut f)?;
 
             if bucket.count > self.header.bucket_elems || bucket.bits > self.header.dir_bits {
                 return Err(Error::BadBucket {
@@ -447,9 +451,9 @@ impl Gdbm {
             self.cache_bucket(offset, bucket)?;
         }
 
-        self.bucket_cache.set_current(offset);
+        self.bucket_cache.borrow_mut().set_current(offset);
 
-        Ok(self.bucket_cache.current_bucket().unwrap())
+        Ok(f(self.bucket_cache.borrow().current_bucket().unwrap()))
     }
 
     // since one bucket dir entry may duplicate another,
@@ -489,12 +493,12 @@ impl Gdbm {
     /// # }
     /// ```
     #[allow(clippy::len_without_is_empty)]
-    pub fn len(&mut self) -> Result<usize> {
+    pub fn len(&self) -> Result<usize> {
         let mut len: usize = 0;
         let mut cur_dir: usize = 0;
         let dir_max_elem = self.dir.dir.len();
         while cur_dir < dir_max_elem {
-            len += self.cache_load_bucket(cur_dir)?.count as usize;
+            len += self.with_bucket(cur_dir, |bucket| bucket.count as usize)?;
             cur_dir = self.next_bucket_dir(cur_dir);
         }
 
@@ -520,7 +524,7 @@ impl Gdbm {
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
-    pub fn values<V: FromBytes>(&mut self) -> impl std::iter::Iterator<Item = Result<V>> + '_ {
+    pub fn values<V: FromBytes>(&self) -> impl std::iter::Iterator<Item = Result<V>> + '_ {
         GDBMIterator::new(self, KeyOrValue::Value)
             .map(|data| data.and_then(|(_, value)| V::from_bytes(&value)))
     }
@@ -550,7 +554,7 @@ impl Gdbm {
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
-    pub fn keys<K: FromBytes>(&mut self) -> impl std::iter::Iterator<Item = Result<K>> + '_ {
+    pub fn keys<K: FromBytes>(&self) -> impl std::iter::Iterator<Item = Result<K>> + '_ {
         GDBMIterator::new(self, KeyOrValue::Key)
             .map(|data| data.and_then(|(key, _)| K::from_bytes(&key)))
     }
@@ -573,7 +577,7 @@ impl Gdbm {
     /// # }
     /// ```
     pub fn iter<K: FromBytes, V: FromBytes>(
-        &mut self,
+        &self,
     ) -> impl std::iter::Iterator<Item = Result<(K, V)>> + '_ {
         GDBMIterator::new(self, KeyOrValue::Both).map(|data| {
             data.and_then(|(key, value)| {
@@ -600,7 +604,7 @@ impl Gdbm {
     /// }
     /// # }
     /// ```
-    pub fn contains_key<K: ToBytesRef + ?Sized>(&mut self, key: &K) -> Result<bool> {
+    pub fn contains_key<K: ToBytesRef + ?Sized>(&self, key: &K) -> Result<bool> {
         self.int_get(key.to_bytes_ref().as_ref())
             .map(|result| result.is_some())
     }
@@ -608,7 +612,7 @@ impl Gdbm {
     // retrieve record data, and element offset in bucket, for given key
     // Hash key as the C GDBM that wrote this database would. Keys of bytes < 0x80 hash the same
     // whatever the signedness of C's char; other keys need it, so it is determined on first use.
-    fn hash(&mut self, key: &[u8]) -> Result<u32> {
+    fn hash(&self, key: &[u8]) -> Result<u32> {
         let char_sign = if key.is_ascii() {
             CharSign::Signed
         } else {
@@ -617,37 +621,38 @@ impl Gdbm {
         Ok(hash_key(char_sign, key))
     }
 
-    fn resolve_char_sign(&mut self) -> Result<CharSign> {
-        if let Some(char_sign) = self.char_sign {
+    fn resolve_char_sign(&self) -> Result<CharSign> {
+        if let Some(char_sign) = self.char_sign.get() {
             return Ok(char_sign);
         }
         let char_sign = self.detect_char_sign()?.unwrap_or_default();
-        self.char_sign = Some(char_sign);
+        self.char_sign.set(Some(char_sign));
         Ok(char_sign)
     }
 
     // Find a stored key with a byte >= 0x80, and see which char signedness reproduces its stored
     // hash. None if the database has no such key.
-    fn detect_char_sign(&mut self) -> Result<Option<CharSign>> {
+    fn detect_char_sign(&self) -> Result<Option<CharSign>> {
         let mut seen = std::collections::HashSet::new();
         for index in 0..self.dir.dir.len() {
             if !seen.insert(self.dir.dir[index]) {
                 continue;
             }
-            let elems = self
-                .cache_load_bucket(index)?
-                .tab
-                .iter()
-                .filter(|elem| elem.is_occupied())
-                .copied()
-                .collect::<Vec<_>>();
+            let elems = self.with_bucket(index, |bucket| {
+                bucket
+                    .tab
+                    .iter()
+                    .filter(|elem| elem.is_occupied())
+                    .copied()
+                    .collect::<Vec<_>>()
+            })?;
             for elem in elems {
                 // keys of up to 4 bytes are entirely in the bucket
                 if elem.key_size <= PartialKey::SIZEOF && elem.key_start.is_ascii() {
                     continue;
                 }
                 let elem = valid_element(elem, self.header.next_block)?;
-                let key = read_ofs(&mut self.f, elem.data_ofs, elem.key_size as usize)?;
+                let key = read_ofs(&self.f, elem.data_ofs, elem.key_size as usize)?;
                 if key.is_ascii() {
                     continue;
                 }
@@ -668,27 +673,27 @@ impl Gdbm {
     /// [`OpenOptions::char_sign`], or detected the first time a key with a byte >= 0x80 is used.
     /// See [`CharSign`].
     pub fn char_sign(&self) -> Option<CharSign> {
-        self.char_sign
+        self.char_sign.get()
     }
 
-    fn int_get(&mut self, key: &[u8]) -> Result<Option<(usize, Vec<u8>)>> {
+    fn int_get(&self, key: &[u8]) -> Result<Option<(usize, Vec<u8>)>> {
         let key_hash = self.hash(key)?;
         let (bucket_dir, elem_ofs) =
             key_loc(self.header.dir_bits, self.header.bucket_elems, key_hash);
         let key_start = PartialKey::new(key);
 
-        let bucket = self.cache_load_bucket(bucket_dir)?;
-
-        let bucket_entries = (0..bucket.tab.len())
-            .map(|index| (index + elem_ofs as usize) % bucket.tab.len())
-            .map(|offset| (offset, bucket.tab[offset]))
-            .take_while(|(_, elem)| elem.is_occupied())
-            .filter(|(_, elem)| {
-                elem.hash == key_hash
-                    && elem.key_size == key.len() as u32
-                    && elem.key_start == key_start
-            })
-            .collect::<Vec<_>>();
+        let bucket_entries = self.with_bucket(bucket_dir, |bucket| {
+            (0..bucket.tab.len())
+                .map(|index| (index + elem_ofs as usize) % bucket.tab.len())
+                .map(|offset| (offset, bucket.tab[offset]))
+                .take_while(|(_, elem)| elem.is_occupied())
+                .filter(|(_, elem)| {
+                    elem.hash == key_hash
+                        && elem.key_size == key.len() as u32
+                        && elem.key_start == key_start
+                })
+                .collect::<Vec<_>>()
+        })?;
 
         let next_block = self.header.next_block;
         let data_entries = bucket_entries
@@ -696,7 +701,7 @@ impl Gdbm {
             .map(|(offset, elem)| {
                 let elem = valid_element(elem, next_block)?;
                 read_ofs(
-                    &mut self.f,
+                    &self.f,
                     elem.data_ofs,
                     elem.key_size as usize + elem.data_size as usize,
                 )
@@ -733,7 +738,7 @@ impl Gdbm {
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
-    pub fn get<K: ToBytesRef + ?Sized, V: FromBytes>(&mut self, key: &K) -> Result<Option<V>> {
+    pub fn get<K: ToBytesRef + ?Sized, V: FromBytes>(&self, key: &K) -> Result<Option<V>> {
         match self.int_get(key.to_bytes_ref().as_ref())? {
             None => Ok(None),
             Some(data) => V::from_bytes(&data.1).map(|v| Some(v)),
@@ -853,8 +858,8 @@ impl Gdbm {
             f,
             header,
             dir,
-            bucket_cache,
-            char_sign: open_options.char_sign,
+            bucket_cache: RefCell::new(bucket_cache),
+            char_sign: Cell::new(open_options.char_sign),
             read_write: Some(WriteMode {
                 sync: open_options.sync,
                 state: WriteState::Dirty,
@@ -1086,6 +1091,7 @@ impl Gdbm {
         if sz < self.header.block_sz
             && let Some(bucket) = self
                 .bucket_cache
+                .get_mut()
                 .current_bucket_mut()
                 .filter(|bucket| (bucket.avail.len() as u32) < Bucket::AVAIL)
         {
@@ -1103,18 +1109,17 @@ impl Gdbm {
     }
 
     fn write_bucket(&mut self, bucket: &Bucket, offset: u64) -> io::Result<()> {
-        write_bucket(&mut self.f, &self.header, bucket, offset)
+        write_bucket(&self.f, &self.header, bucket, offset)
     }
 
     // write out any cached, not-yet-written metadata and data to storage
     fn write_buckets(&mut self) -> io::Result<()> {
         self.bucket_cache
+            .get_mut()
             .dirty_list()
             .iter()
-            .try_for_each(|(offset, bucket)| {
-                write_bucket(&mut self.f, &self.header, bucket, *offset)
-            })
-            .map(|()| self.bucket_cache.clear_dirty())
+            .try_for_each(|(offset, bucket)| write_bucket(&self.f, &self.header, bucket, *offset))
+            .map(|()| self.bucket_cache.get_mut().clear_dirty())
     }
 
     // write out any cached, not-yet-written metadata and data to storage
@@ -1220,6 +1225,7 @@ impl Gdbm {
 
         let elem = self
             .bucket_cache
+            .get_mut()
             .current_bucket_mut()
             .unwrap()
             .remove(elem_ofs);
@@ -1269,6 +1275,7 @@ impl Gdbm {
     fn allocate_record(&mut self, size: u32) -> Result<u64> {
         let (offset, length) = if let Some(block) = self
             .bucket_cache
+            .get_mut()
             .current_bucket_mut()
             .and_then(|bucket| bucket.allocate(size))
         {
@@ -1310,14 +1317,17 @@ impl Gdbm {
             .and_then(|()| self.f.write_all(data))?;
 
         let bucket_elem = BucketElement::new(hash, key, data, offset);
-        self.cache_load_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash))?;
+        self.with_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash), |_| ())?;
 
-        while self.bucket_cache.current_bucket().unwrap().count == self.header.bucket_elems {
+        while self.bucket_cache.get_mut().current_bucket().unwrap().count
+            == self.header.bucket_elems
+        {
             self.split_bucket()?;
-            self.cache_load_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash))?;
+            self.with_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash), |_| ())?;
         }
 
         self.bucket_cache
+            .get_mut()
             .current_bucket_mut()
             .unwrap()
             .insert(bucket_elem);
@@ -1410,7 +1420,7 @@ impl Gdbm {
     }
 
     fn split_bucket(&mut self) -> Result<()> {
-        if self.bucket_cache.current_bucket().unwrap().bits == self.header.dir_bits {
+        if self.bucket_cache.get_mut().current_bucket().unwrap().bits == self.header.dir_bits {
             self.extend_directory()?;
         }
 
@@ -1424,14 +1434,19 @@ impl Gdbm {
             offset
         };
 
-        let bucket = self.bucket_cache.current_bucket().unwrap();
-        let cur_bucket_offset = self.bucket_cache.current_bucket_offset().unwrap();
-        let (bucket0, bucket1) = bucket.split();
+        let cache = self.bucket_cache.get_mut();
+        let cur_bucket_offset = cache.current_bucket_offset().unwrap();
+        let (bucket0, bucket1) = cache.current_bucket().unwrap().split();
         let bits = bucket0.bits;
 
-        let _ = self.bucket_cache.insert(cur_bucket_offset, bucket0);
-        if let Some((evicted_offset, evicted_bucket)) =
-            self.bucket_cache.insert(new_bucket_offset, bucket1)
+        let _ = self
+            .bucket_cache
+            .get_mut()
+            .insert(cur_bucket_offset, bucket0);
+        if let Some((evicted_offset, evicted_bucket)) = self
+            .bucket_cache
+            .get_mut()
+            .insert(new_bucket_offset, bucket1)
         {
             self.write_bucket(&evicted_bucket, evicted_offset)?;
         }
@@ -1564,7 +1579,10 @@ impl Gdbm {
         self.f.seek(SeekFrom::Start(self.header.dir_ofs))?;
         self.dir = Directory::from_reader(self.header.layout, self.header.dir_sz, &mut self.f)?;
 
-        self.bucket_cache = BucketCache::new(self.bucket_cache.cachesize, None);
+        self.bucket_cache = RefCell::new(BucketCache::new(
+            self.bucket_cache.get_mut().cachesize,
+            None,
+        ));
 
         Ok(())
     }
@@ -1578,7 +1596,7 @@ impl Drop for Gdbm {
 
 struct GDBMIterator<'a> {
     key_or_value: KeyOrValue,
-    db: &'a mut Gdbm,
+    db: &'a Gdbm,
     slot: Option<Result<Slot>>,
 }
 
@@ -1615,12 +1633,12 @@ impl<'a> GDBMIterator<'a> {
         }
     }
 
-    fn next_occupied_slot(db: &mut Gdbm, slot: &Slot) -> Option<Result<Slot>> {
+    fn next_occupied_slot(db: &Gdbm, slot: &Slot) -> Option<Result<Slot>> {
         let mut next_slot = Self::next_slot(db, slot);
         while let Some(slot) = next_slot {
-            let is_occupied = db
-                .cache_load_bucket(slot.bucket)
-                .map(|bucket| bucket.tab.get(slot.element).unwrap().is_occupied());
+            let is_occupied = db.with_bucket(slot.bucket, |bucket| {
+                bucket.tab.get(slot.element).unwrap().is_occupied()
+            });
             match is_occupied {
                 Ok(false) => (),
                 Ok(true) => return Some(Ok(slot)),
@@ -1632,20 +1650,15 @@ impl<'a> GDBMIterator<'a> {
         None
     }
 
-    fn new(db: &'a mut Gdbm, key_or_value: KeyOrValue) -> GDBMIterator<'a> {
+    fn new(db: &'a Gdbm, key_or_value: KeyOrValue) -> GDBMIterator<'a> {
         let slot = {
             let slot = Slot {
                 bucket: 0,
                 element: 0,
             };
-            match db.cache_load_bucket(0) {
-                Ok(bucket) => {
-                    if bucket.tab.first().unwrap().is_occupied() {
-                        Some(Ok(slot))
-                    } else {
-                        Self::next_occupied_slot(db, &slot)
-                    }
-                }
+            match db.with_bucket(0, |bucket| bucket.tab.first().unwrap().is_occupied()) {
+                Ok(true) => Some(Ok(slot)),
+                Ok(false) => Self::next_occupied_slot(db, &slot),
                 Err(e) => Some(Err(e)),
             }
         };
@@ -1669,21 +1682,21 @@ impl Iterator for GDBMIterator<'_> {
                 let next_block = self.db.header.next_block;
                 let data = self
                     .db
-                    .cache_load_bucket(slot.bucket)
-                    .and_then(|bucket| valid_element(bucket.tab[slot.element], next_block))
+                    .with_bucket(slot.bucket, |bucket| bucket.tab[slot.element])
+                    .and_then(|elem| valid_element(elem, next_block))
                     .map(|e| (e.data_ofs, e.key_size as usize, e.data_size as usize))
                     .and_then(
                         |(offset, key_length, data_length)| match self.key_or_value {
-                            KeyOrValue::Key => read_ofs(&mut self.db.f, offset, key_length)
+                            KeyOrValue::Key => read_ofs(&self.db.f, offset, key_length)
                                 .map(|data| (data, vec![]))
                                 .map_err(Error::Io),
                             KeyOrValue::Value => {
-                                read_ofs(&mut self.db.f, offset + key_length as u64, data_length)
+                                read_ofs(&self.db.f, offset + key_length as u64, data_length)
                                     .map(|data| (vec![], data))
                                     .map_err(Error::Io)
                             }
                             KeyOrValue::Both => {
-                                read_ofs(&mut self.db.f, offset, key_length + data_length)
+                                read_ofs(&self.db.f, offset, key_length + data_length)
                                     .map(|data| {
                                         let (key, value) = data.split_at(key_length);
                                         (key.to_vec(), value.to_vec())
