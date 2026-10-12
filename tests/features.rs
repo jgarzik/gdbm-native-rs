@@ -134,3 +134,20 @@ fn recover() {
     assert_eq!(db.len().unwrap(), 1000);
     db.verify().unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+// A backup must not be more accessible than the database it copies.
+fn recover_backup_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("db");
+    fill(&path, 10).close().unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let mut db = OpenOptions::new().write(true).open(&path).unwrap();
+    let backup = db.recover(true).unwrap().backup.unwrap();
+    let mode = std::fs::metadata(&backup).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+}

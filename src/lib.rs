@@ -1891,11 +1891,15 @@ impl Gdbm {
                 format!(".bak.{n}")
             });
             let backup = std::path::PathBuf::from(name);
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&backup)
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            // no more accessible than the database itself
+            #[cfg(unix)]
             {
+                use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+                options.mode(self.f.metadata()?.permissions().mode() & 0o777);
+            }
+            match options.open(&backup) {
                 Ok(mut out) => {
                     self.f.seek(SeekFrom::Start(0))?;
                     std::io::copy(&mut self.f, &mut out)?;
