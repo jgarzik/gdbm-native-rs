@@ -884,70 +884,82 @@ impl Gdbm {
             .map(|result| result.is_some())
     }
 
-    // retrieve record data, and element offset in bucket, for given key
     // Hash key as the C GDBM that wrote this database would. Keys of bytes < 0x80 hash the same
     // whatever the signedness of C's char; other keys need it, so it is determined on first use.
-    fn hash(&self, key: &[u8]) -> Result<u32> {
+    fn hash(&self, key: &[u8]) -> u32 {
         let char_sign = if key.is_ascii() {
             CharSign::Signed
         } else {
-            self.resolve_char_sign()?
+            self.resolve_char_sign(Some(key))
         };
-        Ok(hash_key(char_sign, key))
+        hash_key(char_sign, key)
     }
 
-    fn resolve_char_sign(&self) -> Result<CharSign> {
+    // The char signedness of this database: as set or detected earlier, else detected now
+    // (looking first where key would be stored, if given), falling back to Signed.
+    fn resolve_char_sign(&self, key: Option<&[u8]>) -> CharSign {
         if let Some(char_sign) = self.char_sign.get() {
-            return Ok(char_sign);
+            return char_sign;
         }
-        let char_sign = self.detect_char_sign()?.unwrap_or_default();
+        let char_sign = self.detect_char_sign(key).unwrap_or_default();
         self.char_sign.set(Some(char_sign));
-        Ok(char_sign)
+        char_sign
     }
 
     // Find a stored key with a byte >= 0x80, and see which char signedness reproduces its stored
-    // hash. None if the database has no such key.
-    fn detect_char_sign(&self) -> Result<Option<CharSign>> {
+    // hash. None if the database has no such key. Unreadable buckets and records are skipped, so
+    // that corruption elsewhere does not stop lookups or recover().
+    //
+    // Scanning every bucket can be slow, so when resolving for a key, first look in the bucket(s)
+    // that key maps to under each signedness (at most two): a key being looked up is likely to
+    // share its bucket with similar keys. Only if neither decides are all other buckets scanned.
+    fn detect_char_sign(&self, key: Option<&[u8]>) -> Option<CharSign> {
         let mut seen = std::collections::HashSet::new();
-        for index in 0..self.dir.dir.len() {
-            if !seen.insert(self.dir.dir[index]) {
-                continue;
-            }
-            let elems = self.with_bucket(index, |bucket| {
+        let likely = key.into_iter().flat_map(|key| {
+            [CharSign::Signed, CharSign::Unsigned]
+                .map(|char_sign| bucket_dir(self.header.dir_bits, hash_key(char_sign, key)))
+        });
+        likely
+            .chain(0..self.dir.dir.len())
+            .filter(|&index| seen.insert(self.dir.dir[index]))
+            .find_map(|index| self.bucket_char_sign(index))
+    }
+
+    // The char signedness that the stored hash of a key with a byte >= 0x80 in the bucket for
+    // directory entry index shows, if any. None if the bucket cannot be read.
+    fn bucket_char_sign(&self, index: usize) -> Option<CharSign> {
+        let elems = self
+            .with_bucket(index, |bucket| {
                 bucket
                     .tab
                     .iter()
                     .filter(|elem| elem.is_occupied())
                     .copied()
                     .collect::<Vec<_>>()
-            })?;
-            for elem in elems {
-                // keys of up to 4 bytes are entirely in the bucket
-                if elem.key_size <= PartialKey::SIZEOF
-                    && elem.key_start.is_ascii(elem.key_size as usize)
-                {
-                    continue;
-                }
-                // skip unreadable records, so that recover() can use detection
-                let Ok(key) = valid_element(elem, self.header.next_block)
-                    .and_then(|elem| Ok(read_ofs(&self.f, elem.data_ofs, elem.key_size as usize)?))
-                else {
-                    continue;
-                };
-                if key.is_ascii() {
-                    continue;
-                }
-                match (
-                    hash_key(CharSign::Signed, &key) == elem.hash,
-                    hash_key(CharSign::Unsigned, &key) == elem.hash,
-                ) {
-                    (true, false) => return Ok(Some(CharSign::Signed)),
-                    (false, true) => return Ok(Some(CharSign::Unsigned)),
-                    _ => (),
-                }
+            })
+            .ok()?;
+        elems.into_iter().find_map(|elem| {
+            // keys of up to 4 bytes are entirely in the bucket
+            if elem.key_size <= PartialKey::SIZEOF
+                && elem.key_start.is_ascii(elem.key_size as usize)
+            {
+                return None;
             }
-        }
-        Ok(None)
+            let key = valid_element(elem, self.header.next_block)
+                .and_then(|elem| Ok(read_ofs(&self.f, elem.data_ofs, elem.key_size as usize)?))
+                .ok()?;
+            if key.is_ascii() {
+                return None;
+            }
+            match (
+                hash_key(CharSign::Signed, &key) == elem.hash,
+                hash_key(CharSign::Unsigned, &key) == elem.hash,
+            ) {
+                (true, false) => Some(CharSign::Signed),
+                (false, true) => Some(CharSign::Unsigned),
+                _ => None,
+            }
+        })
     }
 
     /// The signedness of `char` this database's keys are hashed with, if known yet: set by
@@ -957,8 +969,9 @@ impl Gdbm {
         self.char_sign.get()
     }
 
+    // retrieve record data, and element offset in bucket, for given key
     fn int_get(&self, key: &[u8]) -> Result<Option<(usize, Vec<u8>)>> {
-        let key_hash = self.hash(key)?;
+        let key_hash = self.hash(key);
         let (bucket_dir, elem_ofs) =
             key_loc(self.header.dir_bits, self.header.bucket_elems, key_hash);
         let bucket_entries = self.with_bucket(bucket_dir, |bucket| {
@@ -1612,7 +1625,7 @@ impl Gdbm {
         }
 
         let size = record_size(key.len(), data.len())?;
-        let hash = self.hash(key)?;
+        let hash = self.hash(key);
 
         self.rw().state = WriteState::Inconsistent;
 
@@ -1880,7 +1893,7 @@ impl Gdbm {
 
     // An empty temporary database with the same format as self.
     fn new_like(&self) -> Result<Gdbm> {
-        let char_sign = self.resolve_char_sign()?;
+        let char_sign = self.resolve_char_sign(None);
         let magic = self.magic();
         let mut tmpdb = OpenOptions::new()
             .char_sign(char_sign)
