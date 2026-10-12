@@ -17,10 +17,13 @@ use tempfile::tempdir;
 // header fields at fixed offsets, buckets of a 112-byte header and 24-byte elements.
 const DIR_OFS: usize = 8;
 const DIR_SZ: usize = 16;
+const NEXT_BLOCK: usize = 32;
 const BUCKET_COUNT: usize = 108;
 const BUCKET_ELEMS: usize = 112;
 const ELEM_SIZE: usize = 24;
 const ELEM_KEY_START: usize = 4;
+const ELEM_DATA_OFS: usize = 8;
+const ELEM_DATA_SIZE: usize = 20;
 
 fn u64_at(file: &[u8], at: usize) -> usize {
     u64::from_le_bytes(file[at..at + 8].try_into().unwrap()) as usize
@@ -146,6 +149,43 @@ fn short_directory_lookup_does_not_panic() {
     for i in 0..n {
         let _ = db.insert(format!("key {i}").as_str(), "new");
     }
+}
+
+#[test]
+// Bug (found by fuzzing): a bucket element claiming a data size above i32::MAX (negative in C
+// GDBM's int, so invalid there) was read in full when the file was large enough to hold it, as a
+// corrupt next_block lets a sparse file be, allocating gigabytes.
+fn oversized_record_size_is_rejected() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut db = create(&path, false);
+    db.insert("k", "v").unwrap();
+    db.close().unwrap();
+
+    let file = std::fs::read(&path).unwrap();
+    let bucket0 = u64_at(&file, u64_at(&file, DIR_OFS));
+    let elem = (0..16)
+        .map(|i| bucket0 + BUCKET_ELEMS + i * ELEM_SIZE)
+        .find(|&e| file[e..e + 4] != [0xff; 4])
+        .unwrap();
+    let data_size = 0x8000_0000u32;
+    patch(&path, elem + ELEM_DATA_SIZE, &data_size.to_le_bytes());
+    // make the file (sparsely) large enough to hold the claimed record
+    let end = u64_at(&file, elem + ELEM_DATA_OFS) as u64 + 1 + u64::from(data_size);
+    let next_block = end.next_multiple_of(512);
+    patch(&path, NEXT_BLOCK, &next_block.to_le_bytes());
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(next_block)
+        .unwrap();
+
+    let db = OpenOptions::new().open(&path).unwrap();
+    assert!(matches!(
+        db.get::<_, Vec<u8>>("k"),
+        Err(Error::BadBucketElement { .. })
+    ));
 }
 
 // Insert into a possibly corrupt database: errors are fine, panics are not.
