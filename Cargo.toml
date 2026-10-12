@@ -8,6 +8,8 @@ license = "MIT"
 readme = "README.md"
 description = "Rust-native implementation of GDBM key/value database"
 repository = "https://github.com/jgarzik/gdbm-native-rs.git"
+# ship only the library; tests, fixtures, examples and tooling stay in the repository
+include = ["/src/**/*.rs", "/README.md", "/LICENSE"]
 
 [features]
 diagnostic = []
