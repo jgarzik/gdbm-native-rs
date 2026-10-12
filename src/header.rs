@@ -171,26 +171,16 @@ impl Header {
             });
         }
 
-        self.avail
-            .elems
-            .iter()
-            .enumerate()
-            .try_for_each(|(i, elem)| {
-                (elem.addr >= u64::from(self.block_sz)
-                    && elem.addr + u64::from(elem.sz) <= file_size)
-                    .then_some(())
-                    .ok_or_else(|| Error::BadAvailElem {
-                        block_offset: u64::from(Self::sizeof(
-                            self.layout,
-                            self.magic.is_numsync(),
-                            0,
-                        )),
-                        elem: i,
-                        offset: elem.addr,
-                        size: elem.sz,
-                        file_size,
-                    })
-            })?;
+        // Free space may lie beyond the physical end of file, up to next_block.
+        self.avail.validate(
+            u64::from(
+                Self::sizeof(self.layout, self.magic.is_numsync(), 0)
+                    - AvailBlock::sizeof(self.layout, 0),
+            ),
+            self.avail.sz,
+            u64::from(self.block_sz),
+            self.next_block,
+        )?;
 
         if self.avail.sz == 0
             || self.block_sz < Self::sizeof(self.layout, self.magic.is_numsync(), self.avail.sz)
@@ -199,13 +189,6 @@ impl Header {
                 elems: self.avail.sz,
                 size: Self::sizeof(self.layout, self.magic.is_numsync(), self.avail.sz),
                 block_size: self.block_sz,
-            });
-        }
-
-        if self.avail.elems.len() as u32 > self.avail.sz {
-            return Err(Error::BadHeaderAvailCount {
-                elems: self.avail.elems.len() as u32,
-                maximum: self.avail.sz,
             });
         }
 

@@ -7,6 +7,7 @@
 
  */
 
+#include <set>
 #include <string>
 #include <vector>
 #include <stdio.h>
@@ -20,6 +21,7 @@ using namespace std;
 
 static const unsigned int N_REC = 10001;
 static const unsigned int N_REC_HASH = 1001;
+static const unsigned int N_REC_AVAIL = 301;
 
 class kv_pair {
 public:
@@ -68,7 +70,8 @@ static int gen_plan_empty(bool numsync, string db_fn, string json_fn)
 	return 0;
 }
 
-static int write_plan(const vector<kv_pair> & data, bool numsync, string db_fn, string json_fn)
+static int write_plan(const vector<kv_pair> & data, bool numsync, string db_fn, string json_fn,
+		      const set<string> & removed = set<string>())
 {
 	GDBM_FILE dbf = gdbm_open(db_fn.c_str(), 512, GDBM_NEWDB | (numsync ? GDBM_NUMSYNC : 0), 0666, NULL);
 	if (!dbf) {
@@ -83,6 +86,14 @@ static int write_plan(const vector<kv_pair> & data, bool numsync, string db_fn, 
 		if (rc != 0) {
 			fprintf(stderr, "gdbm_store failed, rc %d, key %s\n",
 				rc, p.key.c_str());
+			return 1;
+		}
+	}
+
+	for (auto & key : removed) {
+		datum db_key = { (char *) key.c_str(), (int) key.size() };
+		if (gdbm_delete(dbf, db_key) != 0) {
+			fprintf(stderr, "gdbm_delete failed, key %s\n", key.c_str());
 			return 1;
 		}
 	}
@@ -103,10 +114,13 @@ static int write_plan(const vector<kv_pair> & data, bool numsync, string db_fn, 
 	"  \"data_records\": %zu,"
 	"  \"data\": [",
 		t,
-		data.size());
+		data.size() - removed.size());
 
 	bool first = true;
 	for (auto & p : data) {
+		if (removed.count(p.key))
+			continue;
+
 		fprintf(f, "%s[\"%s\",\"%s\"]",
 			first ? "" : ",",
 			p.key.c_str(),
@@ -163,6 +177,33 @@ static int gen_plan_hash(bool numsync, string db_fn, string json_fn)
 	return write_plan(data, numsync, db_fn, json_fn);
 }
 
+static int gen_plan_avail(bool numsync, string db_fn, string json_fn)
+{
+	vector<kv_pair> data;
+	set<string> removed;
+
+	// Large values, mostly deleted: freed extents >= block size go to the header avail
+	// table, overflowing it onto the avail stack.
+	char s[128];
+	for (unsigned int i = 0; i < N_REC_AVAIL; i++) {
+		kv_pair p;
+
+		snprintf(s, sizeof(s), "key %u", i);
+		p.key = s;
+
+		snprintf(s, sizeof(s), "value %u ", i);
+		while (p.value.size() < 512 + (i * 397) % 1024)
+			p.value += s;
+
+		if (i % 3)
+			removed.insert(p.key);
+
+		data.push_back(p);
+	}
+
+	return write_plan(data, numsync, db_fn, json_fn, removed);
+}
+
 static void usage(const char *progname)
 {
 	fprintf(stderr, "Usage: %s -o output-db -j output-json [options]\n", progname);
@@ -173,7 +214,7 @@ static void usage(const char *progname)
 "\t-j JSON-FILE\tOutput JSON metadata to file\n"
 "Options:\n"
 "\t-p PLAN\tGenerate according to test-plan PLAN\n"
-"\t\t\tAvailable plans: basic, empty, hash\n"
+"\t\t\tAvailable plans: basic, empty, hash, avail\n"
 "\t-n Make DB numsync\n"
 	);
 }
@@ -217,6 +258,8 @@ int main (int argc, char *argv[])
 		return gen_plan_empty(numsync, out_fn, out_json);
 	if (plan == "hash")
 		return gen_plan_hash(numsync, out_fn, out_json);
+	if (plan == "avail")
+		return gen_plan_avail(numsync, out_fn, out_json);
 
 	fprintf(stderr, "Unknown test plan %s\n", plan.c_str());
 	return 1;

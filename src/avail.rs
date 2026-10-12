@@ -11,6 +11,7 @@
 use std::io::{self, Read, Write};
 
 use crate::ser::{read32, read64, write32, write64, Alignment, Layout, Offset};
+use crate::{Error, Result};
 
 #[derive(Default, Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct AvailElem {
@@ -143,50 +144,6 @@ impl AvailBlock {
         Ok(())
     }
 
-    // Merge elements from self and other and retuen a new AvailableBlock.
-    // Retuns Some(block) if combined elements fit in bolck, otherwise None.
-    pub fn merge(&self, other: &Self) -> Option<Self> {
-        // gather offsets and length from both blocks
-        let mut offsets_and_lengths = self
-            .elems
-            .iter()
-            .chain(other.elems.iter())
-            .map(|AvailElem { sz, addr }| (*addr, *sz))
-            .collect::<Vec<_>>();
-
-        // sort by offsets
-        offsets_and_lengths.sort_unstable();
-
-        // fold resulting regions whilst joining adjacent regions
-        let mut elems = offsets_and_lengths.into_iter().fold(
-            Vec::new(),
-            |mut elems: Vec<AvailElem>, (addr, sz)| {
-                let last = elems.pop();
-                match last {
-                    None => vec![AvailElem { sz, addr }],
-                    Some(last) if last.addr + u64::from(last.sz) == addr => {
-                        vec![AvailElem {
-                            addr: last.addr,
-                            sz: last.sz + sz,
-                        }]
-                    }
-                    Some(last) => vec![last, AvailElem { sz, addr }],
-                }
-                .into_iter()
-                .for_each(|elem| elems.push(elem));
-                elems
-            },
-        );
-
-        elems.sort();
-
-        (elems.len() as u32 <= self.sz).then_some(AvailBlock {
-            sz: self.sz,
-            next_block: other.next_block,
-            elems,
-        })
-    }
-
     // resize Self and return a Vec of elements that can no longer be accommodated.
     pub fn resize(&mut self, size: u32) -> Vec<(u64, u32)> {
         self.sz = size;
@@ -196,9 +153,75 @@ impl AvailBlock {
             .collect()
     }
 
-    // extent returns the size of this block when serialized
-    pub fn extent(&self, layout: Layout) -> u32 {
-        Self::sizeof(layout, self.elems.len() as u32)
+    // Size in bytes of a block pushed onto the avail stack when the header avail table (of
+    // `table_sz` elements) overflows: half the table plus the C struct avail_block, whose sizeof
+    // includes one table element. Mirrors push_avail_block() in C GDBM's falloc.c.
+    pub fn stack_block_size(layout: Layout, table_sz: u32) -> u32 {
+        table_sz * AvailElem::sizeof(layout) / 2 + Self::sizeof(layout, 1)
+    }
+
+    // Number of elements that fit in a block of stack_block_size() bytes.
+    pub fn stack_block_capacity(layout: Layout, table_sz: u32) -> u32 {
+        (Self::stack_block_size(layout, table_sz) - Self::sizeof(layout, 0))
+            / AvailElem::sizeof(layout)
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.elems.len() >= self.sz as usize
+    }
+
+    // Insert, first coalescing with any adjacent free extents.
+    pub fn insert_elem_coalesce(&mut self, offset: u64, length: u32) {
+        let (mut offset, mut length) = (offset, length);
+        self.elems.retain(|elem| {
+            if elem.addr + u64::from(elem.sz) == offset {
+                offset = elem.addr;
+                length += elem.sz;
+                false
+            } else if offset + u64::from(length) == elem.addr {
+                length += elem.sz;
+                false
+            } else {
+                true
+            }
+        });
+        self.insert_elem(offset, length);
+    }
+
+    // Validate a block read from `block_offset`: at most `capacity` elements, each lying within
+    // [min_addr, next_block).
+    pub fn validate(
+        &self,
+        block_offset: u64,
+        capacity: u32,
+        min_addr: u64,
+        next_block: u64,
+    ) -> Result<()> {
+        if self.elems.len() > capacity as usize || self.elems.len() > self.sz as usize {
+            return Err(Error::BadAvailCount {
+                block_offset,
+                elems: self.elems.len() as u32,
+                maximum: capacity.min(self.sz),
+            });
+        }
+
+        self.elems
+            .iter()
+            .enumerate()
+            .try_for_each(|(elem, AvailElem { sz, addr })| {
+                (*addr >= min_addr
+                    && addr
+                        .checked_add(u64::from(*sz))
+                        .is_some_and(|end| end <= next_block))
+                .then_some(())
+                .ok_or(Error::BadAvailElem {
+                    block_offset,
+                    elem,
+                    offset: *addr,
+                    size: *sz,
+                    next_block,
+                })
+            })
     }
 }
 
@@ -276,69 +299,6 @@ mod tests {
         assert_eq!(remove_elem(&mut elems, 4), None);
 
         assert_eq!(elems, vec![]);
-    }
-
-    #[test]
-    fn test_merge_block() {
-        struct Test<'a> {
-            name: &'a str,
-            first: super::AvailBlock,
-            second: super::AvailBlock,
-            expected: Option<super::AvailBlock>,
-        }
-
-        fn block(elems: &[(u64, u32)], sz: u32, next_block: u64) -> super::AvailBlock {
-            super::AvailBlock {
-                sz,
-                next_block,
-                elems: elems
-                    .iter()
-                    .copied()
-                    .map(|(addr, sz)| super::AvailElem { sz, addr })
-                    .collect(),
-            }
-        }
-
-        for test in [
-            Test {
-                name: "sorts",
-                first: block(&[(40, 5), (0, 12)], 12, 0),
-                second: block(&[(20, 10)], 10, 42),
-                expected: Some(block(&[(40, 5), (20, 10), (0, 12)], 12, 42)),
-            },
-            Test {
-                name: "combines blocks",
-                first: block(&[(40, 5), (0, 10)], 2, 0),
-                second: block(&[(10, 30)], 10, 42),
-                expected: Some(block(&[(0, 45)], 2, 42)),
-            },
-            Test {
-                name: "fails",
-                first: block(&[(40, 5), (0, 12)], 2, 0),
-                second: block(&[(20, 10)], 10, 42),
-                expected: None,
-            },
-            Test {
-                name: "empty self",
-                first: block(&[], 10, 0),
-                second: block(&[(20, 10)], 10, 42),
-                expected: Some(block(&[(20, 10)], 10, 42)),
-            },
-            Test {
-                name: "empty other",
-                first: block(&[(20, 10)], 10, 0),
-                second: block(&[], 10, 42),
-                expected: Some(block(&[(20, 10)], 10, 42)),
-            },
-        ] {
-            let merged = test.first.merge(&test.second);
-            assert!(
-                merged == test.expected,
-                "test \"{}\" failed: expected:\n{:?}\ngot:\n{merged:?}",
-                test.name,
-                test.expected
-            );
-        }
     }
 
     #[test]

@@ -44,7 +44,7 @@ pub enum Error {
         /// Minimum is sizeof header.
         minimum: u32,
     },
-    /// Next block offset in header is greater than file size.
+    /// Next block offset in header is less than file size.
     BadHeaderNextBlock {
         /// Next block from header.
         next_block: u64,
@@ -80,7 +80,7 @@ pub enum Error {
     },
     /// Bucket elements in header inconsistent with bucket size.
     BadHeaderBucketElems { elems: u32, expected: u32 },
-    /// Free space offset is outside of file.
+    /// Free space lies outside the allocated area of the file.
     BadAvailElem {
         /// Start of the avail block in the file.
         block_offset: u64,
@@ -90,8 +90,8 @@ pub enum Error {
         offset: u64,
         /// Size of free space.
         size: u32,
-        /// File size.
-        file_size: u64,
+        /// End of allocated file space (`next_block` from the header).
+        next_block: u64,
     },
     /// Avail size is 0 or blocksize in header not sufficient for header + available block.
     BadHeaderAvail {
@@ -102,11 +102,13 @@ pub enum Error {
         /// Block size.
         block_size: u32,
     },
-    /// Too many items in the available block.
-    BadHeaderAvailCount {
+    /// Too many items in an avail block.
+    BadAvailCount {
+        /// Start of the avail block in the file.
+        block_offset: u64,
         /// Number of elements in avail block.
         elems: u32,
-        /// Maximum expected from header.
+        /// Maximum the block can hold.
         maximum: u32,
     },
     /// Numsync version must be 0.

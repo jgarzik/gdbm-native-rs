@@ -50,6 +50,8 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 mod avail;
 mod bucket;
 mod bytes;
+#[cfg(test)]
+mod check;
 mod dir;
 mod error;
 mod hashutil;
@@ -59,7 +61,7 @@ mod magic;
 mod options;
 mod ser;
 
-use avail::AvailBlock;
+use avail::{AvailBlock, AvailElem};
 use bucket::{Bucket, BucketCache, BucketElement};
 use bytes::{FromBytes, ToBytesRef};
 use dir::{build_dir_size, Directory};
@@ -125,6 +127,16 @@ pub struct ReadWrite {
 
 trait CacheBucket {
     fn cache_bucket(&mut self, offset: u64, bucket: Bucket) -> Result<()>;
+}
+
+// Write a bucket padded to the header's bucket size, which may exceed the serialized size of a
+// bucket (C GDBM sets bucket size to the block size).
+fn write_bucket(f: &mut File, header: &Header, bucket: &Bucket, offset: u64) -> io::Result<()> {
+    let mut buffer = Vec::with_capacity(header.bucket_sz as usize);
+    bucket.serialize(header.layout, &mut buffer)?;
+    buffer.resize(buffer.len().max(header.bucket_sz as usize), 0);
+    f.seek(SeekFrom::Start(offset))?;
+    f.write_all(&buffer)
 }
 
 // read and return file data stored at (ofs,total_size)
@@ -877,85 +889,100 @@ impl Gdbm<ReadWrite> {
         (offset, length)
     }
 
-    // Free list is full.  Split in half, and store 1/2 in new list block.
-    fn push_avail_block(&mut self) -> io::Result<()> {
-        let (header_elems, new_elems) = avail::partition_elems(&self.header.avail.elems);
+    // Header avail table is full: move half of it (the odd-indexed elements) into a new block
+    // pushed onto the avail stack. Mirrors push_avail_block() in C GDBM's falloc.c, including
+    // the on-disk block size, so that C GDBM can pop blocks written here and vice versa.
+    fn push_avail_block(&mut self) -> Result<()> {
+        let layout = self.header.layout;
+        let size = AvailBlock::stack_block_size(layout, self.header.avail.sz);
 
-        // write extension block to storage (immediately)
-        let new_blk_ofs = {
-            let block = AvailBlock::new(
-                new_elems.len() as u32,
-                self.header.avail.next_block,
-                new_elems,
-            );
-            let offset = self.allocate_record(block.extent(self.header.layout))?;
-            let mut buffer = Vec::with_capacity(self.header.block_sz as usize);
-            block.serialize(self.header.layout, &mut buffer)?;
-            self.f.seek(SeekFrom::Start(offset))?;
-            self.f.write_all(&buffer)?;
-
-            offset
+        // space for the new block comes from the header table itself, else end of file
+        let (offset, length) = match self.header.allocate(size) {
+            Some(block) => block,
+            None => self.extend(size),
         };
 
-        self.header.avail = AvailBlock::new(self.header.avail.sz, new_blk_ofs, header_elems);
+        let (keep, pushed) = avail::partition_elems(&self.header.avail.elems);
+        let block = AvailBlock::new(self.header.avail.sz, self.header.avail.next_block, pushed);
+        self.header.avail = AvailBlock::new(self.header.avail.sz, offset, keep);
         self.header.dirty = true;
+
+        // header table is now half empty, so this cannot recurse back here
+        self.free_record(offset + u64::from(size), length - size)?;
+
+        let mut buffer = Vec::with_capacity(size as usize);
+        block.serialize(layout, &mut buffer)?;
+        buffer.resize(size as usize, 0);
+        self.f.seek(SeekFrom::Start(offset))?;
+        self.f.write_all(&buffer)?;
 
         Ok(())
     }
 
-    // pops a block of the avail block list into the header block, only if it can accommodate it
-    fn pop_avail_block(&mut self) -> io::Result<()> {
-        let next_addr = self.header.avail.next_block;
+    // Pop the block at the top of the avail stack, merging its elements into the header avail
+    // table, then free the block itself. Mirrors pop_avail_block() in C GDBM's falloc.c.
+    fn pop_avail_block(&mut self) -> Result<()> {
+        let layout = self.header.layout;
+        let offset = self.header.avail.next_block;
+        let size = AvailBlock::stack_block_size(layout, self.header.avail.sz);
 
-        let next = {
-            self.f.seek(SeekFrom::Start(self.header.avail.next_block))?;
-            AvailBlock::from_reader(self.header.layout, &mut self.f)?
-        };
+        self.f.seek(SeekFrom::Start(offset))?;
+        let block = AvailBlock::from_reader(layout, &mut self.f)?;
+        block.validate(
+            offset,
+            AvailBlock::stack_block_capacity(layout, self.header.avail.sz),
+            u64::from(self.header.block_sz),
+            self.header.next_block,
+        )?;
 
-        if let Some(block) = self.header.avail.merge(&next) {
-            self.header.avail = block;
-            self.header.dirty = true;
+        // Unlink the block before merging, so that any push below links to the remainder of
+        // the stack. (C GDBM unlinks afterwards, leaking blocks pushed while merging.)
+        self.header.avail.next_block = block.next_block;
+        self.header.dirty = true;
 
-            // free the block we just merged
-            self.free_record(next_addr, AvailBlock::sizeof(self.header.layout, next.sz))?;
+        for elem in block.elems.iter().chain(&[AvailElem {
+            addr: offset,
+            sz: size,
+        }]) {
+            if self.header.avail.is_full() {
+                self.push_avail_block()?;
+            }
+            self.header.avail.insert_elem_coalesce(elem.addr, elem.sz);
         }
 
         Ok(())
     }
 
-    // Add (addr,sz) to db-wide free list
-    fn free_record(&mut self, addr: u64, sz: u32) -> io::Result<()> {
+    // Return (addr, sz) to the free space pool. Mirrors _gdbm_free() in C GDBM's falloc.c.
+    fn free_record(&mut self, addr: u64, sz: u32) -> Result<()> {
         // simply forget elements too small to worry about
         if (sz as usize) <= IGNORE_SMALL {
             return Ok(());
         }
 
-        // smaller items go into bucket avail list
-        let bucket = self.bucket_cache.current_bucket().unwrap();
-        if sz < self.header.block_sz && (bucket.avail.len() as u32) < Bucket::AVAIL {
-            self.bucket_cache
+        // small extents go into the current bucket's avail table, if there is room
+        if sz < self.header.block_sz {
+            if let Some(bucket) = self
+                .bucket_cache
                 .current_bucket_mut()
-                .unwrap()
-                .free(addr, sz);
-        } else {
-            // larger items go into the header avail list
-            // (and also when bucket avail list is full)
-            self.header.free(addr, sz);
-            if self.header.avail.elems.len() == self.header.avail.sz as usize {
-                self.push_avail_block()?;
+                .filter(|bucket| (bucket.avail.len() as u32) < Bucket::AVAIL)
+            {
+                bucket.free(addr, sz);
+                return Ok(());
             }
         }
+
+        // everything else goes into the header avail table
+        if self.header.avail.is_full() {
+            self.push_avail_block()?;
+        }
+        self.header.free(addr, sz);
 
         Ok(())
     }
 
     fn write_bucket(&mut self, bucket: &Bucket, offset: u64) -> io::Result<()> {
-        let mut buffer = Vec::with_capacity(self.header.block_sz as usize);
-        bucket.serialize(self.header.layout, &mut buffer)?;
-        self.f.seek(SeekFrom::Start(offset))?;
-        self.f.write_all(&buffer)?;
-
-        Ok(())
+        write_bucket(&mut self.f, &self.header, bucket, offset)
     }
 
     // write out any cached, not-yet-written metadata and data to storage
@@ -964,12 +991,7 @@ impl Gdbm<ReadWrite> {
             .dirty_list()
             .iter()
             .try_for_each(|(offset, bucket)| {
-                // Can't use self.write_bucket() here. We have a borrow in bucket list.
-                let mut buffer = Vec::with_capacity(self.header.block_sz as usize);
-                bucket
-                    .serialize(self.header.layout, &mut buffer)
-                    .and_then(|()| self.f.seek(SeekFrom::Start(*offset)))
-                    .and_then(|_| self.f.write_all(&buffer))
+                write_bucket(&mut self.f, &self.header, bucket, *offset)
             })
             .map(|()| self.bucket_cache.clear_dirty())
     }
@@ -1000,6 +1022,12 @@ impl Gdbm<ReadWrite> {
         self.header.serialize(&mut buffer)?;
         self.f.seek(SeekFrom::Start(0))?;
         self.f.write_all(&buffer)?;
+
+        // Like C GDBM, extend the file to cover all allocated space, some of which may not have
+        // been written (e.g. free space at the end of the file).
+        if self.f.metadata()?.len() < self.header.next_block {
+            self.f.set_len(self.header.next_block)?;
+        }
 
         self.header.dirty = false;
 
@@ -1111,16 +1139,19 @@ impl Gdbm<ReadWrite> {
             })
     }
 
-    fn allocate_record(&mut self, size: u32) -> io::Result<u64> {
+    // Allocate size bytes of file space. Mirrors _gdbm_alloc() in C GDBM's falloc.c.
+    fn allocate_record(&mut self, size: u32) -> Result<u64> {
         let (offset, length) = if let Some(block) = self
             .bucket_cache
             .current_bucket_mut()
-            .unwrap()
-            .allocate(size)
+            .and_then(|bucket| bucket.allocate(size))
         {
             block
         } else {
-            if self.header.avail.elems.len() as u32 > self.header.avail.sz / 2 {
+            // refill the header avail table from the stack when it is half empty
+            if self.header.avail.elems.len() as u32 <= self.header.avail.sz / 2
+                && self.header.avail.next_block != 0
+            {
                 self.pop_avail_block()?;
             }
 
@@ -1247,7 +1278,7 @@ impl Gdbm<ReadWrite> {
         })
     }
 
-    fn split_bucket(&mut self) -> io::Result<()> {
+    fn split_bucket(&mut self) -> Result<()> {
         if self.bucket_cache.current_bucket().unwrap().bits == self.header.dir_bits {
             self.extend_directory()?;
         }
@@ -1289,7 +1320,7 @@ impl Gdbm<ReadWrite> {
     // The maximum number of hash_bits represented by each element is increased by 1.
     // The header is updated with new offset, size and bits.
     // Both the directory and header are marked dirty, but not written.
-    fn extend_directory(&mut self) -> io::Result<()> {
+    fn extend_directory(&mut self) -> Result<()> {
         let directory = self.dir.extend();
         let size = directory.extent(self.header.layout);
         let offset = self.allocate_record(size)?;
@@ -1337,8 +1368,7 @@ impl Gdbm<ReadWrite> {
         self.header
             .convert_numsync(numsync)
             .into_iter()
-            .try_for_each(|(offset, length)| self.free_record(offset, length))
-            .map_err(Error::Io)?;
+            .try_for_each(|(offset, length)| self.free_record(offset, length))?;
 
         self.read_write.state = WriteState::Dirty;
 
