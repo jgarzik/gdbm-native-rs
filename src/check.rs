@@ -8,7 +8,7 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::io::{Seek, SeekFrom};
 
 use crate::avail::AvailBlock;
@@ -29,60 +29,9 @@ impl Gdbm {
             "file size"
         );
 
-        let header = &self.header;
-        let mut extents: Vec<(u64, u64, String)> = vec![
-            (0, u64::from(header.block_sz), "header".into()),
-            (header.dir_ofs, u64::from(header.dir_sz), "directory".into()),
-        ];
-        header
-            .avail
-            .elems
-            .iter()
-            .for_each(|e| extents.push((e.addr, e.sz.into(), "header avail".into())));
-
-        let bucket_offsets = self.dir.dir.iter().copied().collect::<BTreeSet<_>>();
-        for offset in bucket_offsets {
-            self.f.seek(SeekFrom::Start(offset))?;
-            let bucket = Bucket::from_reader(header.bucket_elems, header.layout, &mut self.f)?;
-            extents.push((offset, header.bucket_sz.into(), format!("bucket@{offset}")));
-            bucket.tab.iter().filter(|e| e.is_occupied()).for_each(|e| {
-                extents.push((
-                    e.data_ofs,
-                    u64::from(e.key_size) + u64::from(e.data_size),
-                    format!("record in bucket@{offset}"),
-                ));
-            });
-            bucket.avail.iter().for_each(|e| {
-                extents.push((e.addr, e.sz.into(), format!("avail in bucket@{offset}")));
-            });
+        if let Err(e) = self.verify() {
+            panic!("{e}");
         }
-
-        let stack_block_size = AvailBlock::stack_block_size(header.layout, header.avail.sz);
-        let mut next = header.avail.next_block;
-        while next != 0 {
-            self.f.seek(SeekFrom::Start(next))?;
-            let block = AvailBlock::from_reader(header.layout, &mut self.f)?;
-            extents.push((next, stack_block_size.into(), format!("avail block@{next}")));
-            block.elems.iter().for_each(|e| {
-                extents.push((e.addr, e.sz.into(), format!("avail in block@{next}")));
-            });
-            next = block.next_block;
-        }
-
-        extents.sort();
-        for pair in extents.windows(2) {
-            let ((a_ofs, a_len, a_name), (b_ofs, _, b_name)) = (&pair[0], &pair[1]);
-            assert!(
-                a_ofs + a_len <= *b_ofs,
-                "{a_name} ({a_ofs}+{a_len}) overlaps {b_name} ({b_ofs})"
-            );
-        }
-        let (ofs, len, name) = extents.last().unwrap();
-        assert!(
-            ofs + len <= header.next_block,
-            "{name} ({ofs}+{len}) beyond next_block {}",
-            header.next_block
-        );
 
         Ok(())
     }

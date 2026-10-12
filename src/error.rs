@@ -24,6 +24,11 @@ pub enum Error {
     Inconsistent,
     /// The database file is locked by another user.
     Locked,
+    /// [`Gdbm::verify`](crate::Gdbm::verify) found an inconsistency.
+    Corrupt {
+        /// What is wrong.
+        description: String,
+    },
     /// A record being imported with [`ImportMode::Insert`](crate::ImportMode::Insert) has a key
     /// that is already in the database.
     KeyExists {
@@ -180,6 +185,7 @@ impl Display for Error {
                 "database may be inconsistent after an earlier error; writes are disabled"
             ),
             Error::Locked => write!(f, "database is locked by another user"),
+            Error::Corrupt { description } => write!(f, "corrupt database: {description}"),
             Error::KeyExists { key } => write!(f, "key {key:x?} already exists"),
             Error::BadBucketElement {
                 data_offset,

@@ -64,7 +64,8 @@ impl Header {
             avail: AvailBlock::new(avail_elems, 0, vec![]),
             dirty: true,
             layout,
-            numsync: None,
+            // like C GDBM, which zero-fills a new header
+            numsync: numsync.then_some(0),
         }
     }
 
@@ -227,10 +228,7 @@ impl Header {
 
     pub fn increment_numsync(&mut self) {
         if self.magic.is_numsync() {
-            self.numsync = match self.numsync {
-                Some(n) => Some(n + 1),
-                None => Some(0),
-            };
+            self.numsync = Some(self.numsync.unwrap_or(0).wrapping_add(1));
 
             self.dirty = true;
         }
@@ -243,7 +241,7 @@ impl Header {
             / AvailElem::sizeof(self.layout);
 
         self.magic = Magic::new(self.magic.endian(), self.magic.offset(), use_numsync);
-        self.numsync = None;
+        self.numsync = use_numsync.then_some(0);
         self.dirty = true;
         self.avail.resize(new_avail_sz)
     }

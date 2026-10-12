@@ -60,6 +60,7 @@ pub struct OpenOptions {
     pub(crate) create: bool,
     pub(crate) sync: bool,
     pub(crate) lock: bool,
+    pub(crate) lock_wait: Option<std::time::Duration>,
     pub(crate) cachesize: Option<usize>,
     pub(crate) char_sign: Option<CharSign>,
     pub(crate) numsync: bool,
@@ -75,6 +76,7 @@ impl Default for OpenOptions {
             create: false,
             sync: false,
             lock: true,
+            lock_wait: None,
             cachesize: None,
             char_sign: None,
             numsync: true,
@@ -123,6 +125,13 @@ impl OpenOptions {
         self
     }
 
+    /// If the lock is not available, keep trying for up to `timeout` before failing with
+    /// [`Error::Locked`], like C GDBM's `GDBM_LOCKWAIT_RETRY`. By default opening fails at once.
+    pub fn lock_wait(&mut self, timeout: std::time::Duration) -> &mut Self {
+        self.lock_wait = Some(timeout);
+        self
+    }
+
     /// Size in bytes of the in-memory bucket cache (default
     /// [`DEFAULT_CACHESIZE`](crate::DEFAULT_CACHESIZE)).
     pub fn cachesize(&mut self, cachesize: usize) -> &mut Self {
@@ -168,15 +177,27 @@ impl OpenOptions {
             return Ok(());
         }
 
-        if exclusive {
-            f.try_lock()
-        } else {
-            f.try_lock_shared()
+        let deadline = self.lock_wait.map(|wait| std::time::Instant::now() + wait);
+        loop {
+            let result = if exclusive {
+                f.try_lock()
+            } else {
+                f.try_lock_shared()
+            };
+            match result {
+                Ok(()) => return Ok(()),
+                Err(std::fs::TryLockError::Error(e)) => return Err(Error::Io(e)),
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    let now = std::time::Instant::now();
+                    match deadline {
+                        Some(deadline) if now < deadline => std::thread::sleep(
+                            (deadline - now).min(std::time::Duration::from_millis(10)),
+                        ),
+                        _ => return Err(Error::Locked),
+                    }
+                }
+            }
         }
-        .map_err(|e| match e {
-            std::fs::TryLockError::WouldBlock => Error::Locked,
-            std::fs::TryLockError::Error(e) => Error::Io(e),
-        })
     }
 
     /// Open the database at `path` with these options.
@@ -193,11 +214,13 @@ impl OpenOptions {
             .open(&path)?;
         self.lock_file(&f, writable)?;
 
-        if self.create && f.metadata()?.len() == 0 {
+        let mut db = if self.create && f.metadata()?.len() == 0 {
             Gdbm::create(f, self)
         } else {
             Gdbm::open(f, self, writable)
-        }
+        }?;
+        db.path = Some(path.as_ref().to_path_buf());
+        Ok(db)
     }
 
     /// Create a temporary database.

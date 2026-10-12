@@ -81,7 +81,7 @@ use ser::{Format, Offset};
 use std::fs::File;
 
 /// Our claimed GDBM lib version compatibility. Appears in dump files.
-pub const COMPAT_GDBM_VERSION: &str = "1.23";
+pub const COMPAT_GDBM_VERSION: &str = "1.26";
 
 const IGNORE_SMALL: usize = 4;
 
@@ -178,6 +178,38 @@ pub struct Gdbm {
 
     // None if opened read-only
     read_write: Option<WriteMode>,
+    // None for temporary databases
+    pub(crate) path: Option<std::path::PathBuf>,
+}
+
+/// Summary of a consistent database, returned by [`Gdbm::verify`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct VerifyReport {
+    /// Number of distinct buckets.
+    pub buckets: usize,
+    /// Number of records (entries).
+    pub records: usize,
+    /// Number of free space extents.
+    pub free_extents: usize,
+    /// Total free space in bytes.
+    pub free_bytes: u64,
+}
+
+/// Outcome of [`Gdbm::recover`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RecoverReport {
+    /// Records copied to the rebuilt database.
+    pub recovered_keys: usize,
+    /// Records that could not be read.
+    pub failed_keys: usize,
+    /// Records skipped because their key had already been recovered.
+    pub duplicate_keys: usize,
+    /// Buckets that could not be read.
+    pub failed_buckets: usize,
+    /// Where the original database file was copied, if a backup was requested.
+    pub backup: Option<std::path::PathBuf>,
 }
 
 impl Gdbm {
@@ -246,6 +278,7 @@ impl Gdbm {
             dir,
             bucket_cache: RefCell::new(bucket_cache),
             char_sign: Cell::new(open_options.char_sign),
+            path: None,
             read_write: writable.then_some(WriteMode {
                 sync: open_options.sync,
                 state: WriteState::Clean,
@@ -495,6 +528,163 @@ impl Gdbm {
     /// # }
     /// ```
     #[allow(clippy::len_without_is_empty)]
+    /// Block size of the database file.
+    pub fn block_size(&self) -> u32 {
+        self.header.block_sz
+    }
+
+    /// Size of a hash bucket in the database file.
+    pub fn bucket_size(&self) -> u32 {
+        self.header.bucket_sz
+    }
+
+    /// Number of bits of key hash that select a bucket: the directory has `2^dir_depth()`
+    /// entries.
+    pub fn dir_depth(&self) -> u32 {
+        self.header.dir_bits
+    }
+
+    /// Number of distinct hash buckets, like C GDBM's `gdbm_bucket_count`.
+    pub fn bucket_count(&self) -> usize {
+        self.dir
+            .dir
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+    }
+
+    /// Whether the database has a numsync header.
+    pub fn is_numsync(&self) -> bool {
+        self.header.magic.is_numsync()
+    }
+
+    /// The numsync counter, incremented on every sync, if the database has a numsync header.
+    pub fn numsync(&self) -> Option<u32> {
+        self.header.numsync
+    }
+
+    /// The path the database was opened from; `None` for temporary databases.
+    pub fn path(&self) -> Option<&std::path::Path> {
+        self.path.as_deref()
+    }
+
+    /// Check the consistency of the database's use of file space, like C GDBM's
+    /// `gdbm_avail_verify` but covering every structure: the header, directory, buckets,
+    /// records and free space must all lie within the allocated file space and must not
+    /// overlap.
+    ///
+    /// # Errors
+    /// [`Error::Corrupt`] describing the first inconsistency found, or an I/O error.
+    pub fn verify(&self) -> Result<VerifyReport> {
+        let corrupt = |description: String| Error::Corrupt { description };
+        let header = &self.header;
+        let mut report = VerifyReport::default();
+        let mut extents: Vec<(u64, u64, String)> = vec![
+            (0, u64::from(header.block_sz), "header".into()),
+            (header.dir_ofs, u64::from(header.dir_sz), "directory".into()),
+        ];
+        let mut free = |extents: &mut Vec<_>, elem: &AvailElem, name: String| {
+            report.free_extents += 1;
+            report.free_bytes += u64::from(elem.sz);
+            extents.push((elem.addr, u64::from(elem.sz), name));
+        };
+
+        for elem in &header.avail.elems {
+            free(&mut extents, elem, "header free space".into());
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        for index in 0..self.dir.dir.len() {
+            let offset = self.dir.dir[index];
+            if !seen.insert(offset) {
+                continue;
+            }
+            let (elems, avail) = self.with_bucket(index, |bucket| {
+                (
+                    bucket
+                        .tab
+                        .iter()
+                        .filter(|elem| elem.is_occupied())
+                        .copied()
+                        .collect::<Vec<_>>(),
+                    bucket.avail.clone(),
+                )
+            })?;
+            extents.push((
+                offset,
+                u64::from(header.bucket_sz),
+                format!("bucket at {offset}"),
+            ));
+            for elem in elems {
+                extents.push((
+                    elem.data_ofs,
+                    u64::from(elem.key_size) + u64::from(elem.data_size),
+                    format!("record in bucket at {offset}"),
+                ));
+            }
+            report.records += self.with_bucket(index, |bucket| bucket.count as usize)?;
+            for elem in &avail {
+                free(
+                    &mut extents,
+                    elem,
+                    format!("free space in bucket at {offset}"),
+                );
+            }
+        }
+        report.buckets = seen.len();
+
+        let stack_block_size = AvailBlock::stack_block_size(header.layout, header.avail.sz);
+        let mut next = header.avail.next_block;
+        let mut blocks = std::collections::HashSet::new();
+        while next != 0 {
+            if !blocks.insert(next) {
+                return Err(corrupt(format!("avail stack loops at {next}")));
+            }
+            let mut f = &self.f;
+            f.seek(SeekFrom::Start(next))?;
+            let block = AvailBlock::from_reader(header.layout, &mut f)?;
+            block.validate(
+                next,
+                AvailBlock::stack_block_capacity(header.layout, header.avail.sz),
+                u64::from(header.block_sz),
+                header.next_block,
+            )?;
+            extents.push((
+                next,
+                u64::from(stack_block_size),
+                format!("avail block at {next}"),
+            ));
+            for elem in &block.elems {
+                free(
+                    &mut extents,
+                    elem,
+                    format!("free space in avail block at {next}"),
+                );
+            }
+            next = block.next_block;
+        }
+
+        extents.sort();
+        for pair in extents.windows(2) {
+            let ((a_ofs, a_len, a_name), (b_ofs, _, b_name)) = (&pair[0], &pair[1]);
+            if a_ofs.saturating_add(*a_len) > *b_ofs {
+                return Err(corrupt(format!(
+                    "{a_name} ({a_ofs}+{a_len}) overlaps {b_name} ({b_ofs})"
+                )));
+            }
+        }
+        if let Some((ofs, len, name)) = extents.last()
+            && ofs.saturating_add(*len) > header.next_block
+        {
+            return Err(corrupt(format!(
+                "{name} ({ofs}+{len}) is beyond the end of the database ({})",
+                header.next_block
+            )));
+        }
+
+        Ok(report)
+    }
+
     /// Whether the database has no entries. Unlike [`len`](Gdbm::len), this stops at the first
     /// entry found.
     ///
@@ -679,8 +869,12 @@ impl Gdbm {
                 if elem.key_size <= PartialKey::SIZEOF && elem.key_start.is_ascii() {
                     continue;
                 }
-                let elem = valid_element(elem, self.header.next_block)?;
-                let key = read_ofs(&self.f, elem.data_ofs, elem.key_size as usize)?;
+                // skip unreadable records, so that recover() can use detection
+                let Ok(key) = valid_element(elem, self.header.next_block)
+                    .and_then(|elem| Ok(read_ofs(&self.f, elem.data_ofs, elem.key_size as usize)?))
+                else {
+                    continue;
+                };
                 if key.is_ascii() {
                     continue;
                 }
@@ -888,6 +1082,7 @@ impl Gdbm {
             dir,
             bucket_cache: RefCell::new(bucket_cache),
             char_sign: Cell::new(open_options.char_sign),
+            path: None,
             read_write: Some(WriteMode {
                 sync: open_options.sync,
                 state: WriteState::Dirty,
@@ -1575,27 +1770,32 @@ impl Gdbm {
     /// ```
     pub fn compact(&mut self) -> Result<()> {
         self.check_writable()?;
+        let mut tmpdb = self.new_like()?;
+        self.iter::<Vec<u8>, Vec<u8>>().try_for_each(|entry| {
+            let (key, value) = entry?;
+            tmpdb.insert(&key, &value).map(|_| ())
+        })?;
+        self.replace_with(tmpdb)
+    }
+
+    // An empty temporary database with the same format as self.
+    fn new_like(&self) -> Result<Gdbm> {
         let char_sign = self.resolve_char_sign()?;
-        let mut tmpdb = {
-            let magic = self.magic();
-            OpenOptions::new()
-                .char_sign(char_sign)
-                .layout(self.layout())
-                .endian(magic.endian())
-                .numsync(magic.is_numsync())
-                .block_size(BlockSize::Exactly(self.header.block_sz))
-                .tempfile()
-        }?;
-
+        let magic = self.magic();
+        let mut tmpdb = OpenOptions::new()
+            .char_sign(char_sign)
+            .layout(self.layout())
+            .endian(magic.endian())
+            .numsync(magic.is_numsync())
+            .block_size(BlockSize::Exactly(self.header.block_sz))
+            .tempfile()?;
         tmpdb.header.numsync = self.header.numsync;
+        Ok(tmpdb)
+    }
 
-        self.iter::<Vec<u8>, Vec<u8>>()
-            .try_for_each(|entry| {
-                let (key, value) = entry?;
-                tmpdb.insert(&key, &value).map(|_| ())
-            })
-            .and_then(|()| tmpdb.sync())?;
-
+    // Replace the contents of self with those of tmpdb.
+    fn replace_with(&mut self, mut tmpdb: Gdbm) -> Result<()> {
+        tmpdb.sync()?;
         tmpdb.f.seek(SeekFrom::Start(0))?;
         self.f.seek(SeekFrom::Start(0))?;
         std::io::copy(&mut tmpdb.f, &mut self.f)?;
@@ -1611,8 +1811,102 @@ impl Gdbm {
             self.bucket_cache.get_mut().cachesize,
             None,
         ));
+        // the file now holds a consistent, synced database
+        self.rw().state = WriteState::Clean;
 
         Ok(())
+    }
+
+    /// Rebuild the database from whatever records can still be read, like C GDBM's
+    /// `gdbm_recover`. Unreadable buckets and records are skipped and counted. With `backup`, the
+    /// database file is first copied to an unused `<path>.bak`, `<path>.bak.1`, ... file.
+    ///
+    /// This also clears the [`Error::Inconsistent`] state left by a failed write.
+    ///
+    /// # Errors
+    /// Fails if the database is read-only, `backup` is requested for a temporary database, or
+    /// the backup or rebuilt database cannot be written.
+    pub fn recover(&mut self, backup: bool) -> Result<RecoverReport> {
+        self.check_writable()?;
+        let mut report = RecoverReport::default();
+
+        if backup {
+            report.backup = Some(self.backup()?);
+        }
+
+        let mut tmpdb = self.new_like()?;
+        let mut seen = std::collections::HashSet::new();
+        for index in 0..self.dir.dir.len() {
+            if !seen.insert(self.dir.dir[index]) {
+                continue;
+            }
+            let Ok(elems) = self.with_bucket(index, |bucket| {
+                bucket
+                    .tab
+                    .iter()
+                    .filter(|elem| elem.is_occupied())
+                    .copied()
+                    .collect::<Vec<_>>()
+            }) else {
+                report.failed_buckets += 1;
+                continue;
+            };
+            for elem in elems {
+                let record = valid_element(elem, self.header.next_block).and_then(|elem| {
+                    Ok(read_ofs(
+                        &self.f,
+                        elem.data_ofs,
+                        elem.key_size as usize + elem.data_size as usize,
+                    )?)
+                });
+                let Ok(record) = record else {
+                    report.failed_keys += 1;
+                    continue;
+                };
+                let (key, value) = record.split_at(elem.key_size as usize);
+                match tmpdb.try_insert(key, value)? {
+                    None => report.recovered_keys += 1,
+                    Some(_) => report.duplicate_keys += 1,
+                }
+            }
+        }
+
+        self.replace_with(tmpdb)?;
+        Ok(report)
+    }
+
+    // Copy the database file to an unused <path>.bak[.N] and return its name.
+    fn backup(&mut self) -> Result<std::path::PathBuf> {
+        let path = self.path.clone().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "temporary databases cannot be backed up",
+            )
+        })?;
+        for n in 0.. {
+            let mut name = path.clone().into_os_string();
+            name.push(if n == 0 {
+                ".bak".to_string()
+            } else {
+                format!(".bak.{n}")
+            });
+            let backup = std::path::PathBuf::from(name);
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&backup)
+            {
+                Ok(mut out) => {
+                    self.f.seek(SeekFrom::Start(0))?;
+                    std::io::copy(&mut self.f, &mut out)?;
+                    out.sync_all()?;
+                    return Ok(backup);
+                }
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => (),
+                Err(e) => return Err(e.into()),
+            }
+        }
+        unreachable!()
     }
 }
 
