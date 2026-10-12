@@ -8,7 +8,7 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
-use crate::{Alignment, Endian, Error, Gdbm, Offset, ReadOnly, ReadWrite, Result};
+use crate::{Alignment, CharSign, Endian, Error, Gdbm, Offset, ReadOnly, ReadWrite, Result};
 
 /// `Blocksize` can be used when creating a database to override the default block size, which is
 /// the underlying filesystem block size, or 512, whichever is largest. The minimum blocksize is
@@ -71,6 +71,10 @@ pub struct OpenOptions<W> {
     pub alignment: Option<Alignment>,
     /// Bytesize of in-memory bucket cache (defaults to [`DEFAULT_CACHESIZE`])
     pub cachesize: Option<usize>,
+    /// Key hashing compatibility; see [`CharSign`](crate::CharSign).
+    pub char_sign: CharSign,
+    /// Don't lock the database file. Set via [`OpenOptions::lock()`].
+    pub no_lock: bool,
 
     pub(crate) write: W,
 }
@@ -117,19 +121,59 @@ impl<W> OpenOptions<W> {
     pub fn cachesize(self, cachesize: Option<usize>) -> OpenOptions<W> {
         OpenOptions { cachesize, ..self }
     }
+
+    /// Override default [`CharSign`](crate::CharSign) used when hashing keys. Only needed for
+    /// databases with non-ASCII keys written by C GDBM on a platform with unsigned `char`.
+    pub fn char_sign(self, char_sign: CharSign) -> OpenOptions<W> {
+        OpenOptions { char_sign, ..self }
+    }
+
+    /// Whether to lock the database file (default `true`). Like C GDBM, a database opened for
+    /// reading takes a shared lock and one opened for writing takes an exclusive lock, so many
+    /// readers or one writer may use the database at a time. Opening fails with
+    /// [`Error::Locked`] rather than waiting if the lock is not available.
+    pub fn lock(self, lock: bool) -> OpenOptions<W> {
+        OpenOptions {
+            no_lock: !lock,
+            ..self
+        }
+    }
+
+    fn with_write<W2>(self, write: W2) -> OpenOptions<W2> {
+        OpenOptions {
+            alignment: self.alignment,
+            cachesize: self.cachesize,
+            char_sign: self.char_sign,
+            no_lock: self.no_lock,
+            write,
+        }
+    }
+
+    // Lock f, shared or exclusive, unless locking is disabled.
+    fn lock_file(&self, f: &std::fs::File, exclusive: bool) -> Result<()> {
+        if self.no_lock {
+            return Ok(());
+        }
+
+        if exclusive {
+            f.try_lock()
+        } else {
+            f.try_lock_shared()
+        }
+        .map_err(|e| match e {
+            std::fs::TryLockError::WouldBlock => Error::Locked,
+            std::fs::TryLockError::Error(e) => Error::Io(e),
+        })
+    }
 }
 
 impl OpenOptions<NotWrite> {
     /// Cause the builder to open the data base for read and write access.
     pub fn write(self) -> OpenOptions<Write<NotCreate>> {
-        OpenOptions {
-            alignment: self.alignment,
-            cachesize: self.cachesize,
-            write: Write {
-                sync: false,
-                create: NotCreate,
-            },
-        }
+        self.with_write(Write {
+            sync: false,
+            create: NotCreate,
+        })
     }
 }
 
@@ -139,103 +183,75 @@ impl<C> OpenOptions<Write<C>> {
     /// the expense of performance.
     pub fn sync(self, sync: bool) -> OpenOptions<Write<C>> {
         OpenOptions {
-            alignment: self.alignment,
-            cachesize: self.cachesize,
-            write: Write {
-                sync,
-                create: self.write.create,
-            },
+            write: Write { sync, ..self.write },
+            ..self
         }
     }
 }
 
 impl OpenOptions<Write<NotCreate>> {
-    /// When opening a database in reade-write mode, `create` will cause the database to be created
-    /// if it doesn't exist or is not a valid database. Take care, as this will cause a corrupted
-    /// or non-database file to be replaced with an empty database.
+    /// When opening a database in read-write mode, `create` will cause the database to be created
+    /// if the file doesn't exist or is empty.
     pub fn create(self) -> OpenOptions<Write<Create>> {
-        OpenOptions {
-            alignment: self.alignment,
-            cachesize: self.cachesize,
-            write: Write {
-                create: Create::default(),
-                sync: self.write.sync,
-            },
-        }
+        let sync = self.write.sync;
+        self.with_write(Write {
+            sync,
+            create: Create::default(),
+        })
     }
 }
 
 impl OpenOptions<Write<Create>> {
-    /// Override the default [`Offset`](crate::Offset) when creating a database.
-    pub fn offset(self, offset: Option<Offset>) -> OpenOptions<Write<Create>> {
+    fn with_create(self, create: Create) -> OpenOptions<Write<Create>> {
         OpenOptions {
-            alignment: self.alignment,
-            cachesize: self.cachesize,
             write: Write {
-                create: Create {
-                    offset,
-                    ..self.write.create
-                },
+                create,
                 ..self.write
             },
+            ..self
         }
+    }
+
+    /// Override the default [`Offset`](crate::Offset) when creating a database.
+    pub fn offset(self, offset: Option<Offset>) -> OpenOptions<Write<Create>> {
+        self.with_create(Create {
+            offset,
+            ..self.write.create
+        })
     }
 
     /// Override the default [`Endian`](crate::Endian) when creating a database.
     pub fn endian(self, endian: Option<Endian>) -> OpenOptions<Write<Create>> {
-        OpenOptions {
-            alignment: self.alignment,
-            cachesize: self.cachesize,
-            write: Write {
-                create: Create {
-                    endian,
-                    ..self.write.create
-                },
-                ..self.write
-            },
-        }
+        self.with_create(Create {
+            endian,
+            ..self.write.create
+        })
     }
 
     /// Specify whether or not a new database should have a numsync header. For information on
     /// numsync see <https://www.gnu.org.ua/software/gdbm/manual/Numsync.html>
     pub fn numsync(self, numsync: bool) -> OpenOptions<Write<Create>> {
-        OpenOptions {
-            alignment: self.alignment,
-            cachesize: self.cachesize,
-            write: Write {
-                create: Create {
-                    no_numsync: !numsync,
-                    ..self.write.create
-                },
-                ..self.write
-            },
-        }
+        self.with_create(Create {
+            no_numsync: !numsync,
+            ..self.write.create
+        })
     }
 
     /// Override the default [`Blocksize`](BlockSize) of a new database.
     pub fn block_size(self, block_size: BlockSize) -> OpenOptions<Write<Create>> {
-        OpenOptions {
-            alignment: self.alignment,
-            cachesize: self.cachesize,
-            write: Write {
-                create: Create {
-                    block_size,
-                    ..self.write.create
-                },
-                ..self.write
-            },
-        }
+        self.with_create(Create {
+            block_size,
+            ..self.write.create
+        })
     }
 }
 
 impl OpenOptions<NotWrite> {
     /// The default `open`; opens a database file at `path` in read-only mode.
     pub fn open<P: AsRef<std::path::Path>>(&self, path: P) -> Result<Gdbm<ReadOnly>> {
-        std::fs::OpenOptions::new()
-            .read(true)
-            .open(path)
-            .map_err(Error::Io)
-            .and_then(|f| Gdbm::<ReadOnly>::open(f, self.alignment, self.cachesize))
+        let f = std::fs::OpenOptions::new().read(true).open(path)?;
+        self.lock_file(&f, false)?;
+        Gdbm::<ReadOnly>::open(f, self)
     }
 }
 
@@ -243,43 +259,40 @@ impl OpenOptions<Write<NotCreate>> {
     /// The `open` called when [`write()`](OpenOptions::write) was called on `OpenOptions`, causes
     /// the database file at `path` to be opened in read-write mode.
     pub fn open<P: AsRef<std::path::Path>>(&self, path: P) -> Result<Gdbm<ReadWrite>> {
-        std::fs::OpenOptions::new()
+        let f = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .open(path)
-            .map_err(Error::Io)
-            .and_then(|f| Gdbm::<ReadWrite>::open(f, self.alignment, self.cachesize))
-            .map(|mut db| {
-                db.set_sync(self.write.sync);
-                db
-            })
+            .open(path)?;
+        self.lock_file(&f, true)?;
+        Gdbm::<ReadWrite>::open(f, self).map(|mut db| {
+            db.set_sync(self.write.sync);
+            db
+        })
     }
 }
 
 impl OpenOptions<Write<Create>> {
     /// The `open` called when [`write()`](OpenOptions::write)`.`[`create()`](OpenOptions::create)
     /// was called on `OpenOptions`, causes the database file at `path` to be opened in read-write
-    /// mode, and created if the file at `path` isn't already a database.
+    /// mode. A new database is created if the file does not exist or is empty. As with any open,
+    /// an existing file that is not a valid database results in an error and is left untouched.
     pub fn open<P: AsRef<std::path::Path>>(&self, path: P) -> Result<Gdbm<ReadWrite>> {
-        std::fs::OpenOptions::new()
+        let f = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .open(&path)
-            .map_err(Error::Io)
-            .and_then(|f| Gdbm::<ReadWrite>::open(f, self.alignment, self.cachesize))
-            .or_else(|_| {
-                std::fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create_new(true)
-                    .open(&path)
-                    .map_err(Error::Io)
-                    .and_then(|f| Gdbm::create(f, self))
-            })
-            .map(|mut db| {
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        self.lock_file(&f, true)?;
+
+        if f.metadata()?.len() == 0 {
+            Gdbm::create(f, self)
+        } else {
+            Gdbm::<ReadWrite>::open(f, self).map(|mut db| {
                 db.set_sync(self.write.sync);
                 db
             })
+        }
     }
 
     /// Open a temporary database.
@@ -303,12 +316,6 @@ impl OpenOptions<Write<Create>> {
     /// # }
     /// ```
     pub fn tempfile(&self) -> Result<Gdbm<ReadWrite>> {
-        tempfile::tempfile()
-            .map_err(Error::Io)
-            .and_then(|f| Gdbm::create(f, self))
-            .map(|mut db| {
-                db.set_sync(self.write.sync);
-                db
-            })
+        Gdbm::create(tempfile::tempfile()?, self)
     }
 }

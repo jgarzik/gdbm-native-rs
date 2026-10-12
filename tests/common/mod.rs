@@ -1,3 +1,6 @@
+// shared by several test crates, each of which uses only part of it
+#![allow(dead_code)]
+
 extern crate gdbm_native;
 
 use gdbm_native::Alignment;
@@ -6,7 +9,6 @@ use std::fs;
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
 
-#[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct TestMetadata {
     pub generated_by: String,
@@ -16,14 +18,10 @@ pub struct TestMetadata {
 }
 
 pub struct TestInfo {
-    #[allow(dead_code)]
     pub json_path: String,
     pub db_path: String,
-    #[allow(dead_code)]
     pub is_basic: bool,
-    #[allow(dead_code)]
     pub n_records: usize,
-    #[allow(dead_code)]
     pub metadata: TestMetadata,
     pub alignment: Option<Alignment>,
 }
@@ -53,7 +51,6 @@ impl TestInfo {
         }
     }
 
-    #[allow(dead_code)]
     pub fn tempfile(&self) -> NamedTempFile {
         let file = NamedTempFile::new().unwrap();
         let test_filename = file.path();

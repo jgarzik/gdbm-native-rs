@@ -42,17 +42,34 @@ impl PartialKey {
     }
 }
 
-// core gdbm hashing function
-pub fn hash_key(key: &[u8]) -> u32 {
-    let mut value: u32 = key.len() as u32;
-    value = value.wrapping_mul(0x238F_13AF);
+/// Signedness of the C `char` type on the platform whose GDBM library wrote a database.
+///
+/// C GDBM hashes keys one `char` at a time, so key bytes >= 0x80 hash differently depending on
+/// whether `char` is signed (x86, x86-64, MIPS) or unsigned (ARM, PowerPC, RISC-V, s390x). The
+/// database file does not record which was used, so databases containing such keys must be
+/// opened with the matching `CharSign`. Databases whose keys are all ASCII are unaffected.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum CharSign {
+    /// Signed `char`, as on x86 and x86-64. This is the default.
+    #[default]
+    Signed,
+    /// Unsigned `char`, as on ARM, PowerPC, RISC-V and s390x.
+    Unsigned,
+}
 
-    for (index, ch) in key.iter().enumerate() {
-        value = (value + (u32::from(*ch) << (index * 5 % 24))) & 0x7FFF_FFFF;
+// core gdbm hashing function, a port of C GDBM's _gdbm_hash()
+pub fn hash_key(char_sign: CharSign, key: &[u8]) -> u32 {
+    let mut value = (key.len() as u32).wrapping_mul(0x238F_13AF);
+
+    for (index, &ch) in key.iter().enumerate() {
+        let ch = match char_sign {
+            CharSign::Signed => i32::from(ch as i8) as u32,
+            CharSign::Unsigned => u32::from(ch),
+        };
+        value = value.wrapping_add(ch << (index * 5 % 24)) & 0x7FFF_FFFF;
     }
-    value = (value.wrapping_mul(1_103_515_243) + 12345) & 0x7FFF_FFFF;
 
-    value
+    value.wrapping_mul(1_103_515_243).wrapping_add(12345) & 0x7FFF_FFFF
 }
 
 // hash-to-bucket lookup
@@ -61,8 +78,13 @@ pub fn bucket_dir(dir_bits: u32, hash: u32) -> usize {
 }
 
 // derives hash and bucket metadata from key
-pub fn key_loc(dir_bits: u32, bucket_elems: u32, key: &[u8]) -> (u32, usize, u32) {
-    let hash = hash_key(key);
+pub fn key_loc(
+    char_sign: CharSign,
+    dir_bits: u32,
+    bucket_elems: u32,
+    key: &[u8],
+) -> (u32, usize, u32) {
+    let hash = hash_key(char_sign, key);
     let bucket = bucket_dir(dir_bits, hash);
     let ofs = hash % bucket_elems;
 
@@ -73,10 +95,28 @@ pub fn key_loc(dir_bits: u32, bucket_elems: u32, key: &[u8]) -> (u32, usize, u32
 mod tests {
     use super::*;
 
+    // Expected values are from C GDBM 1.23's _gdbm_hash() built with -fsigned-char and
+    // -funsigned-char respectively.
+    const HASHES: &[(&[u8], u32, u32)] = &[
+        (b"hello", 1_730_502_474, 1_730_502_474),
+        (b"hello\0", 72_084_335, 72_084_335),
+        (b"", 12345, 12345),
+        (b"caf\xc3\xa9", 1_431_509_427, 986_913_203),
+        (b"\xe2\x82\xac", 1_744_248_542, 834_595_294),
+        (b"\xff\x80\xaa", 929_500_733, 19_847_485),
+        (b"\xe0\xfb\xed\x03", 909_659_277, 6029),
+        (b"\x7f\x80", 1_992_785_816, 1_083_498_392),
+    ];
+
     #[test]
     fn test_hash() {
-        assert_eq!(hash_key(b"hello"), 1_730_502_474);
-        assert_eq!(hash_key(b"hello\0"), 72_084_335);
-        assert_eq!(hash_key(b""), 12345);
+        for (key, signed, unsigned) in HASHES {
+            assert_eq!(hash_key(CharSign::Signed, key), *signed, "signed {key:?}");
+            assert_eq!(
+                hash_key(CharSign::Unsigned, key),
+                *unsigned,
+                "unsigned {key:?}"
+            );
+        }
     }
 }

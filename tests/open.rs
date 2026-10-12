@@ -5,7 +5,7 @@ use gdbm_native::{
     BlockSize,
     Endian::{Big, Little},
     Magic,
-    Offset::{Small, LFS},
+    Offset::{LFS, Small},
     OpenOptions,
 };
 use tempfile::tempdir;
@@ -21,6 +21,41 @@ fn api_open_create() {
 
     assert!(OpenOptions::new().write().create().open(no_db).is_ok());
     assert!(OpenOptions::new().write().create().open(bad_db).is_err());
+}
+
+#[test]
+// Like C GDBM's GDBM_WRCREAT, create initializes an existing empty file as a new database.
+fn api_open_create_empty_file() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("empty");
+    std::fs::write(&path, "").unwrap();
+
+    let mut db = OpenOptions::new().write().create().open(&path).unwrap();
+    db.insert("key", "value").unwrap();
+    drop(db);
+
+    let mut db = OpenOptions::new().open(&path).unwrap();
+    assert_eq!(
+        db.get::<_, String>("key").unwrap().as_deref(),
+        Some("value")
+    );
+}
+
+#[test]
+// Create on an existing non-database reports why it isn't a database, and leaves it untouched.
+fn api_open_create_bad_file() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("bad");
+    std::fs::write(&path, [0x55u8; 4096]).unwrap();
+
+    let Err(err) = OpenOptions::new().write().create().open(&path) else {
+        panic!("opened a non-database");
+    };
+    assert!(
+        matches!(err, gdbm_native::Error::BadMagic { magic: 0x5555_5555 }),
+        "unexpected error {err:?}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), [0x55u8; 4096]);
 }
 
 #[test]

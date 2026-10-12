@@ -11,7 +11,7 @@
 use std::io::{self, Read, Write};
 
 use crate::hashutil::HASH_BITS;
-use crate::ser::{read32, read64, write32, write64, Layout, Offset};
+use crate::ser::{Layout, Offset, read32, read64, write32, write64};
 
 pub fn build_dir_size(offset: Offset, block_sz: u32) -> (u32, u32) {
     let block_sz = block_sz.max(512);
@@ -72,7 +72,7 @@ impl Directory {
                 .dir
                 .iter()
                 .copied()
-                .flat_map(|offset| std::iter::repeat(offset).take(2))
+                .flat_map(|offset| std::iter::repeat_n(offset, 2))
                 .collect(),
             dirty: true,
         }
@@ -88,9 +88,12 @@ impl Directory {
 
     // validate all buckets are inside file
     pub fn validate(&self, start: u64, end: u64, bucket_size: u32) -> bool {
-        self.dir
-            .iter()
-            .all(|&offset| offset >= start && offset + u64::from(bucket_size) <= end)
+        self.dir.iter().all(|&offset| {
+            offset >= start
+                && offset
+                    .checked_add(u64::from(bucket_size))
+                    .is_some_and(|bucket_end| bucket_end <= end)
+        })
     }
 
     // update_bucket_split is called after a bucket is split.

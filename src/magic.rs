@@ -1,7 +1,8 @@
 use std::fmt;
-use std::io::{self, ErrorKind};
+use std::io;
 
 use crate::ser::{Alignment, Endian, Offset};
+use crate::{Error, Result};
 
 const GDBM_OMAGIC_LE: [u8; 4] = [0xce, 0x9a, 0x57, 0x13];
 const GDBM_OMAGIC_BE: [u8; 4] = [0x13, 0x57, 0x9a, 0xce];
@@ -57,7 +58,7 @@ impl Magic {
         }
     }
 
-    pub(super) fn from_reader(rdr: &mut impl std::io::Read) -> io::Result<Self> {
+    pub(super) fn from_reader(rdr: &mut impl io::Read) -> Result<Self> {
         let mut buf = [0u8; 4];
         rdr.read_exact(&mut buf)?;
         match buf {
@@ -71,10 +72,9 @@ impl Magic {
             GDBM_NUMSYNC_MAGIC_BE_32 => Ok(Magic::BE32NS),
             GDBM_NUMSYNC_MAGIC_LE_64 => Ok(Magic::LE64NS),
             GDBM_NUMSYNC_MAGIC_BE_64 => Ok(Magic::BE64NS),
-            _ => Err(io::Error::new(
-                ErrorKind::Other,
-                "Unknown/invalid magic number",
-            )),
+            _ => Err(Error::BadMagic {
+                magic: u32::from_be_bytes(buf),
+            }),
         }
     }
 

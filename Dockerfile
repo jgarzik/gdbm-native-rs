@@ -57,6 +57,9 @@ COPY --from=testgen-x86_64 /tmp/testgen .
 RUN ./testgen -o basic.db.le64 -j basic.json.le64 -p basic && \
     ./testgen -o empty.db.le64 -j empty.json.le64 -p empty && \
     ./testgen -n -o basic.db.le64.numsync -j /dev/null -p basic && \
+    ./testgen -o hash.db.le64 -j hash.json.le64 -p hash && \
+    ./testgen -n -o hash.db.le64.numsync -j /dev/null -p hash && \
+    ./testgen -o avail.db.le64 -j avail.json.le64 -p avail && \
     ./testgen -n -o empty.db.le64.numsync -j /dev/null -p empty
 COPY --from=testgen-i386 /tmp/testgen .
 RUN ./testgen -o basic.db.le32 -j basic.json.le32 -p basic && \

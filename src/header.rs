@@ -14,7 +14,7 @@ use crate::avail::{AvailBlock, AvailElem};
 use crate::bucket::{Bucket, BucketElement};
 use crate::dir::build_dir_size;
 use crate::magic::Magic;
-use crate::ser::{read32, read64, write32, write64, Alignment, Endian, Layout, Offset};
+use crate::ser::{Alignment, Endian, Layout, Offset, read32, read64, write32, write64};
 use crate::{Error, Result};
 
 #[derive(Debug)]
@@ -39,12 +39,13 @@ pub struct Header {
 
 impl Header {
     pub fn sizeof(layout: Layout, is_numsync: bool, avail_elems: u32) -> u32 {
-        match (layout.offset, is_numsync) {
-            (Offset::Small, true) => 32 + 32 + AvailBlock::sizeof(layout, avail_elems),
-            (Offset::Small, false) => 32 + AvailBlock::sizeof(layout, avail_elems),
-            (Offset::LFS, true) => 40 + 32 + AvailBlock::sizeof(layout, avail_elems),
-            (Offset::LFS, false) => 40 + AvailBlock::sizeof(layout, avail_elems),
-        }
+        let fixed = match (layout.offset, is_numsync) {
+            (Offset::Small, true) => 32 + 32,
+            (Offset::Small, false) => 32,
+            (Offset::LFS, true) => 40 + 32,
+            (Offset::LFS, false) => 40,
+        };
+        AvailBlock::sizeof(layout, avail_elems).saturating_add(fixed)
     }
 
     pub fn new(block_size: u32, layout: Layout, dir_bits: u32, numsync: bool) -> Self {
@@ -135,7 +136,11 @@ impl Header {
             });
         }
 
-        if self.dir_ofs + u64::from(self.dir_sz) > file_size {
+        if self
+            .dir_ofs
+            .checked_add(u64::from(self.dir_sz))
+            .is_none_or(|end| end > file_size)
+        {
             return Err(Error::BadHeaderDirectoryOffset {
                 offset: self.dir_ofs,
                 size: self.dir_sz,
@@ -171,26 +176,16 @@ impl Header {
             });
         }
 
-        self.avail
-            .elems
-            .iter()
-            .enumerate()
-            .try_for_each(|(i, elem)| {
-                (elem.addr >= u64::from(self.block_sz)
-                    && elem.addr + u64::from(elem.sz) <= file_size)
-                    .then_some(())
-                    .ok_or_else(|| Error::BadAvailElem {
-                        block_offset: u64::from(Self::sizeof(
-                            self.layout,
-                            self.magic.is_numsync(),
-                            0,
-                        )),
-                        elem: i,
-                        offset: elem.addr,
-                        size: elem.sz,
-                        file_size,
-                    })
-            })?;
+        // Free space may lie beyond the physical end of file, up to next_block.
+        self.avail.validate(
+            u64::from(
+                Self::sizeof(self.layout, self.magic.is_numsync(), 0)
+                    - AvailBlock::sizeof(self.layout, 0),
+            ),
+            self.avail.sz,
+            u64::from(self.block_sz),
+            self.next_block,
+        )?;
 
         if self.avail.sz == 0
             || self.block_sz < Self::sizeof(self.layout, self.magic.is_numsync(), self.avail.sz)
@@ -199,13 +194,6 @@ impl Header {
                 elems: self.avail.sz,
                 size: Self::sizeof(self.layout, self.magic.is_numsync(), self.avail.sz),
                 block_size: self.block_sz,
-            });
-        }
-
-        if self.avail.elems.len() as u32 > self.avail.sz {
-            return Err(Error::BadHeaderAvailCount {
-                elems: self.avail.elems.len() as u32,
-                maximum: self.avail.sz,
             });
         }
 

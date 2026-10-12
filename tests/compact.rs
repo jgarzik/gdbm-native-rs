@@ -72,8 +72,8 @@ fn api_compact() {
                             [false, true].into_iter().try_for_each(|numsync| {
                                 test(alignment, endian, offset, numsync).map_err(|e| {
                                     format!(
-                                    "{alignment:?} {offset:?} {endian:?} numsync {numsync}: {e}"
-                                )
+                                        "{alignment:?} {offset:?} {endian:?} numsync {numsync}: {e}"
+                                    )
                                 })
                             })
                         })
