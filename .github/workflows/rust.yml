@@ -1,0 +1,67 @@
+name: Rust
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+          - name: linux-aarch64
+            os: ubuntu-24.04-arm
+          - name: macos-x86_64
+            os: macos-15-intel
+          - name: macos-aarch64
+            os: macos-latest
+    name: test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install libgdbm (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgdbm-dev
+      - name: Install libgdbm (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install gdbm
+          echo "GDBM_PREFIX=$(brew --prefix gdbm)" >> "$GITHUB_ENV"
+      - name: Build
+        run: cargo build --all-targets --all-features
+      - name: Test
+        run: cargo test --all-features
+      - name: C GDBM interoperability
+        run: tests/interop/run.sh
+        env:
+          REQUIRE_GDBM: 1
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --all-features
