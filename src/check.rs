@@ -450,3 +450,30 @@ fn churn_every_format() {
         }
     }
 }
+
+// Bug: replace_with() (used by compact() and recover()) overwrote the file without first marking
+// the database inconsistent, so after a failure part way through, a later sync wrote the old
+// in-memory header, directory and buckets over a partly replaced file.
+#[test]
+fn failed_replace_leaves_database_inconsistent() {
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.db");
+    let mut db = create(&path);
+    db.insert("key", "value").unwrap();
+
+    // a rebuilt database whose file has a bad magic number, so reloading it fails after the copy
+    let mut tmpdb = db.new_like().unwrap();
+    tmpdb.sync().unwrap();
+    let mut f = &tmpdb.f;
+    f.seek(SeekFrom::Start(0)).unwrap();
+    f.write_all(b"XXXX").unwrap();
+
+    assert!(db.replace_with(tmpdb).is_err());
+    assert!(matches!(
+        db.insert("other", "x"),
+        Err(crate::Error::Inconsistent)
+    ));
+    assert!(matches!(db.sync(), Err(crate::Error::Inconsistent)));
+}

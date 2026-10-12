@@ -1910,6 +1910,11 @@ impl Gdbm {
     fn replace_with(&mut self, mut tmpdb: Gdbm) -> Result<()> {
         tmpdb.sync()?;
         tmpdb.f.seek(SeekFrom::Start(0))?;
+
+        // Until the new contents are copied and reloaded, the in-memory header, directory and
+        // bucket cache do not match the file: refuse writes, and sync (or Drop) writing them.
+        self.rw().state = WriteState::Inconsistent;
+
         self.f.seek(SeekFrom::Start(0))?;
         std::io::copy(&mut tmpdb.f, &mut self.f)?;
         self.f.set_len(tmpdb.header.next_block)?;
