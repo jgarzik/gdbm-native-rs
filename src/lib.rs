@@ -64,7 +64,8 @@ use bucket::{Bucket, BucketCache, BucketElement};
 use bytes::{FromBytes, ToBytesRef};
 use dir::{build_dir_size, Directory};
 pub use error::Error;
-use hashutil::{bucket_dir, key_loc, PartialKey};
+pub use hashutil::CharSign;
+use hashutil::{bucket_dir, hash_key, key_loc, PartialKey};
 use header::Header;
 use import::{ASCIIImportIterator, BinaryImportIterator};
 pub use magic::Magic;
@@ -144,6 +145,7 @@ pub struct Gdbm<R: 'static> {
     header: Header,
     dir: Directory,
     bucket_cache: BucketCache,
+    char_sign: CharSign,
 
     read_write: R,
 }
@@ -174,15 +176,11 @@ where
     Gdbm<R>: CacheBucket,
     R: Default,
 {
-    fn open(
-        mut f: File,
-        alignment: Option<Alignment>,
-        cachesize: Option<usize>,
-    ) -> Result<Gdbm<R>> {
+    fn open<W>(mut f: File, open_options: &OpenOptions<W>) -> Result<Gdbm<R>> {
         let metadata = f.metadata()?;
 
         f.seek(SeekFrom::Start(0))?;
-        let header = Header::from_reader(alignment, metadata.len(), &mut f)?;
+        let header = Header::from_reader(open_options.alignment, metadata.len(), &mut f)?;
 
         f.seek(SeekFrom::Start(header.dir_ofs))?;
         let dir = Directory::from_reader(header.layout, header.dir_sz, &mut f)?;
@@ -201,7 +199,7 @@ where
 
         let bucket_cache = {
             let cache_buckets = {
-                let bytes = cachesize.unwrap_or(DEFAULT_CACHESIZE);
+                let bytes = open_options.cachesize.unwrap_or(DEFAULT_CACHESIZE);
                 let buckets = bytes / header.bucket_sz as usize;
                 buckets.max(1)
             };
@@ -213,6 +211,7 @@ where
             header,
             dir,
             bucket_cache,
+            char_sign: open_options.char_sign,
             read_write: R::default(),
         })
     }
@@ -555,8 +554,12 @@ where
 
     // retrieve record data, and element offset in bucket, for given key
     fn int_get(&mut self, key: &[u8]) -> Result<Option<(usize, Vec<u8>)>> {
-        let (key_hash, bucket_dir, elem_ofs) =
-            key_loc(self.header.dir_bits, self.header.bucket_elems, key);
+        let (key_hash, bucket_dir, elem_ofs) = key_loc(
+            self.char_sign,
+            self.header.dir_bits,
+            self.header.bucket_elems,
+            key,
+        );
         let key_start = PartialKey::new(key);
 
         let bucket = self.cache_load_bucket(bucket_dir)?;
@@ -742,6 +745,7 @@ impl Gdbm<ReadWrite> {
             header,
             dir,
             bucket_cache,
+            char_sign: open_options.char_sign,
             read_write: ReadWrite {
                 sync: open_options.write.sync,
                 state: WriteState::Dirty,
@@ -1145,7 +1149,7 @@ impl Gdbm<ReadWrite> {
             .and_then(|_| self.f.write_all(key))
             .and_then(|()| self.f.write_all(data))?;
 
-        let bucket_elem = BucketElement::new(key, data, offset);
+        let bucket_elem = BucketElement::new(hash_key(self.char_sign, key), key, data, offset);
         self.cache_load_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash))?;
 
         while self.bucket_cache.current_bucket().unwrap().count == self.header.bucket_elems {
@@ -1364,6 +1368,7 @@ impl Gdbm<ReadWrite> {
         let mut tmpdb = {
             let magic = self.magic();
             OpenOptions::new()
+                .char_sign(self.char_sign)
                 .write()
                 .create()
                 .alignment(Some(self.header.layout.alignment))

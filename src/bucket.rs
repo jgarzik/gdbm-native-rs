@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::io::{self, Read, Write};
 
 use crate::avail::{self, AvailElem};
-use crate::hashutil::{hash_key, PartialKey};
+use crate::hashutil::PartialKey;
 use crate::ser::{read32, read64, write32, write64, Alignment, Layout, Offset};
 
 #[derive(Debug, Copy, Clone)]
@@ -44,9 +44,9 @@ impl BucketElement {
         }
     }
 
-    pub fn new(key: &[u8], data: &[u8], offset: u64) -> Self {
+    pub fn new(hash: u32, key: &[u8], data: &[u8], offset: u64) -> Self {
         Self {
-            hash: hash_key(key),
+            hash,
             key_start: PartialKey::new(key),
             data_ofs: offset,
             key_size: key.len() as u32,

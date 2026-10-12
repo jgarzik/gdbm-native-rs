@@ -19,6 +19,7 @@
 using namespace std;
 
 static const unsigned int N_REC = 10001;
+static const unsigned int N_REC_HASH = 1001;
 
 class kv_pair {
 public:
@@ -67,23 +68,8 @@ static int gen_plan_empty(bool numsync, string db_fn, string json_fn)
 	return 0;
 }
 
-static int gen_plan_basic(bool numsync, string db_fn, string json_fn)
+static int write_plan(const vector<kv_pair> & data, bool numsync, string db_fn, string json_fn)
 {
-	vector<kv_pair> data;
-
-	char s[128];
-	for (unsigned int i = 0; i < N_REC; i++) {
-		kv_pair p;
-
-		snprintf(s, sizeof(s), "key %u", i);
-		p.key = s;
-
-		snprintf(s, sizeof(s), "value %u", i);
-		p.value = s;
-
-		data.push_back(p);
-	}
-
 	GDBM_FILE dbf = gdbm_open(db_fn.c_str(), 512, GDBM_NEWDB | (numsync ? GDBM_NUMSYNC : 0), 0666, NULL);
 	if (!dbf) {
 		fprintf(stderr, "gdbm_open failed\n");
@@ -136,6 +122,47 @@ static int gen_plan_basic(bool numsync, string db_fn, string json_fn)
 	return 0;
 }
 
+static int gen_plan_basic(bool numsync, string db_fn, string json_fn)
+{
+	vector<kv_pair> data;
+
+	char s[128];
+	for (unsigned int i = 0; i < N_REC; i++) {
+		kv_pair p;
+
+		snprintf(s, sizeof(s), "key %u", i);
+		p.key = s;
+
+		snprintf(s, sizeof(s), "value %u", i);
+		p.value = s;
+
+		data.push_back(p);
+	}
+
+	return write_plan(data, numsync, db_fn, json_fn);
+}
+
+static int gen_plan_hash(bool numsync, string db_fn, string json_fn)
+{
+	vector<kv_pair> data;
+
+	// keys contain bytes >= 0x80, whose hash depends on the signedness of char
+	char s[128];
+	for (unsigned int i = 0; i < N_REC_HASH; i++) {
+		kv_pair p;
+
+		snprintf(s, sizeof(s), "cl\xc3\xa9 %u \xe2\x82\xac", i);
+		p.key = s;
+
+		snprintf(s, sizeof(s), "valeur %u", i);
+		p.value = s;
+
+		data.push_back(p);
+	}
+
+	return write_plan(data, numsync, db_fn, json_fn);
+}
+
 static void usage(const char *progname)
 {
 	fprintf(stderr, "Usage: %s -o output-db -j output-json [options]\n", progname);
@@ -146,7 +173,7 @@ static void usage(const char *progname)
 "\t-j JSON-FILE\tOutput JSON metadata to file\n"
 "Options:\n"
 "\t-p PLAN\tGenerate according to test-plan PLAN\n"
-"\t\t\tAvailable plans: basic, empty\n"
+"\t\t\tAvailable plans: basic, empty, hash\n"
 "\t-n Make DB numsync\n"
 	);
 }
@@ -188,6 +215,8 @@ int main (int argc, char *argv[])
 		return gen_plan_basic(numsync, out_fn, out_json);
 	if (plan == "empty")
 		return gen_plan_empty(numsync, out_fn, out_json);
+	if (plan == "hash")
+		return gen_plan_hash(numsync, out_fn, out_json);
 
 	fprintf(stderr, "Unknown test plan %s\n", plan.c_str());
 	return 1;

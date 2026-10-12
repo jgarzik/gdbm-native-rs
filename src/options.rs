@@ -8,7 +8,7 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
-use crate::{Alignment, Endian, Error, Gdbm, Offset, ReadOnly, ReadWrite, Result};
+use crate::{Alignment, CharSign, Endian, Error, Gdbm, Offset, ReadOnly, ReadWrite, Result};
 
 /// `Blocksize` can be used when creating a database to override the default block size, which is
 /// the underlying filesystem block size, or 512, whichever is largest. The minimum blocksize is
@@ -71,6 +71,8 @@ pub struct OpenOptions<W> {
     pub alignment: Option<Alignment>,
     /// Bytesize of in-memory bucket cache (defaults to [`DEFAULT_CACHESIZE`])
     pub cachesize: Option<usize>,
+    /// Key hashing compatibility; see [`CharSign`](crate::CharSign).
+    pub char_sign: CharSign,
 
     pub(crate) write: W,
 }
@@ -117,6 +119,12 @@ impl<W> OpenOptions<W> {
     pub fn cachesize(self, cachesize: Option<usize>) -> OpenOptions<W> {
         OpenOptions { cachesize, ..self }
     }
+
+    /// Override default [`CharSign`](crate::CharSign) used when hashing keys. Only needed for
+    /// databases with non-ASCII keys written by C GDBM on a platform with unsigned `char`.
+    pub fn char_sign(self, char_sign: CharSign) -> OpenOptions<W> {
+        OpenOptions { char_sign, ..self }
+    }
 }
 
 impl OpenOptions<NotWrite> {
@@ -125,6 +133,7 @@ impl OpenOptions<NotWrite> {
         OpenOptions {
             alignment: self.alignment,
             cachesize: self.cachesize,
+            char_sign: self.char_sign,
             write: Write {
                 sync: false,
                 create: NotCreate,
@@ -141,6 +150,7 @@ impl<C> OpenOptions<Write<C>> {
         OpenOptions {
             alignment: self.alignment,
             cachesize: self.cachesize,
+            char_sign: self.char_sign,
             write: Write {
                 sync,
                 create: self.write.create,
@@ -157,6 +167,7 @@ impl OpenOptions<Write<NotCreate>> {
         OpenOptions {
             alignment: self.alignment,
             cachesize: self.cachesize,
+            char_sign: self.char_sign,
             write: Write {
                 create: Create::default(),
                 sync: self.write.sync,
@@ -171,6 +182,7 @@ impl OpenOptions<Write<Create>> {
         OpenOptions {
             alignment: self.alignment,
             cachesize: self.cachesize,
+            char_sign: self.char_sign,
             write: Write {
                 create: Create {
                     offset,
@@ -186,6 +198,7 @@ impl OpenOptions<Write<Create>> {
         OpenOptions {
             alignment: self.alignment,
             cachesize: self.cachesize,
+            char_sign: self.char_sign,
             write: Write {
                 create: Create {
                     endian,
@@ -202,6 +215,7 @@ impl OpenOptions<Write<Create>> {
         OpenOptions {
             alignment: self.alignment,
             cachesize: self.cachesize,
+            char_sign: self.char_sign,
             write: Write {
                 create: Create {
                     no_numsync: !numsync,
@@ -217,6 +231,7 @@ impl OpenOptions<Write<Create>> {
         OpenOptions {
             alignment: self.alignment,
             cachesize: self.cachesize,
+            char_sign: self.char_sign,
             write: Write {
                 create: Create {
                     block_size,
@@ -235,7 +250,7 @@ impl OpenOptions<NotWrite> {
             .read(true)
             .open(path)
             .map_err(Error::Io)
-            .and_then(|f| Gdbm::<ReadOnly>::open(f, self.alignment, self.cachesize))
+            .and_then(|f| Gdbm::<ReadOnly>::open(f, self))
     }
 }
 
@@ -248,7 +263,7 @@ impl OpenOptions<Write<NotCreate>> {
             .write(true)
             .open(path)
             .map_err(Error::Io)
-            .and_then(|f| Gdbm::<ReadWrite>::open(f, self.alignment, self.cachesize))
+            .and_then(|f| Gdbm::<ReadWrite>::open(f, self))
             .map(|mut db| {
                 db.set_sync(self.write.sync);
                 db
@@ -266,7 +281,7 @@ impl OpenOptions<Write<Create>> {
             .write(true)
             .open(&path)
             .map_err(Error::Io)
-            .and_then(|f| Gdbm::<ReadWrite>::open(f, self.alignment, self.cachesize))
+            .and_then(|f| Gdbm::<ReadWrite>::open(f, self))
             .or_else(|_| {
                 std::fs::OpenOptions::new()
                     .read(true)
