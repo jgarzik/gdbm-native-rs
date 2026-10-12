@@ -76,11 +76,6 @@ use ser::{write32, write64, Layout};
 pub use ser::{Alignment, Endian, Offset};
 use std::fs::File;
 
-#[cfg(target_os = "linux")]
-use std::os::linux::fs::MetadataExt;
-#[cfg(target_os = "macos")]
-use std::os::macos::fs::MetadataExt;
-
 /// Our claimed GDBM lib version compatibility. Appears in dump files.
 pub const COMPAT_GDBM_VERSION: &str = "1.23";
 
@@ -137,6 +132,45 @@ fn write_bucket(f: &mut File, header: &Header, bucket: &Bucket, offset: u64) -> 
     buffer.resize(buffer.len().max(header.bucket_sz as usize), 0);
     f.seek(SeekFrom::Start(offset))?;
     f.write_all(&buffer)
+}
+
+// Return elem if it describes a record within allocated file space, else an error.
+fn valid_element(elem: BucketElement, next_block: u64) -> Result<BucketElement> {
+    elem.is_valid(next_block)
+        .then_some(elem)
+        .ok_or(Error::BadBucketElement {
+            data_offset: elem.data_ofs,
+            key_size: elem.key_size,
+            data_size: elem.data_size,
+            next_block,
+        })
+}
+
+// Size of a record holding key and data. C GDBM uses int for record sizes.
+fn record_size(key_len: usize, data_len: usize) -> Result<u32> {
+    const MAXIMUM: usize = i32::MAX as usize;
+    key_len
+        .checked_add(data_len)
+        .filter(|&size| size <= MAXIMUM)
+        .map(|size| size as u32)
+        .ok_or(Error::RecordTooLarge {
+            size: key_len.saturating_add(data_len),
+            maximum: MAXIMUM,
+        })
+}
+
+// preferred I/O block size of the filesystem holding f
+fn fs_block_size(f: &File) -> io::Result<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(u32::try_from(f.metadata()?.blksize()).unwrap_or(u32::MAX))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = f;
+        Ok(4096)
+    }
 }
 
 // read and return file data stored at (ofs,total_size)
@@ -248,19 +282,14 @@ where
 
         writeln!(outf, "#:len={}", bindata.len())?;
 
-        let mut b64 = base64::prelude::BASE64_STANDARD.encode(bindata);
+        let b64 = base64::prelude::BASE64_STANDARD.encode(bindata);
 
-        while b64.len() > MAX_DUMP_LINE_LEN {
-            let line = &b64[..MAX_DUMP_LINE_LEN];
-            let rem = &b64[MAX_DUMP_LINE_LEN..];
-
-            writeln!(outf, "{line}")?;
-
-            b64 = rem.to_string();
+        if b64.is_empty() {
+            writeln!(outf)?;
         }
-        writeln!(outf, "{b64}")?;
-
-        Ok(())
+        b64.as_bytes()
+            .chunks(MAX_DUMP_LINE_LEN)
+            .try_for_each(|line| outf.write_all(line).and_then(|()| writeln!(outf)))
     }
 
     fn export_ascii_records(&mut self, outf: &mut impl Write) -> Result<usize> {
@@ -402,6 +431,13 @@ where
                     dir_bits: self.header.dir_bits,
                 });
             }
+
+            avail::validate_elems(
+                &bucket.avail,
+                offset,
+                u64::from(self.header.block_sz),
+                self.header.next_block,
+            )?;
 
             self.cache_bucket(offset, bucket)?;
         }
@@ -587,17 +623,20 @@ where
             })
             .collect::<Vec<_>>();
 
+        let next_block = self.header.next_block;
         let data_entries = bucket_entries
             .into_iter()
             .map(|(offset, elem)| {
+                let elem = valid_element(elem, next_block)?;
                 read_ofs(
                     &mut self.f,
                     elem.data_ofs,
-                    (elem.key_size + elem.data_size) as usize,
+                    elem.key_size as usize + elem.data_size as usize,
                 )
                 .map(|data| (offset, data))
+                .map_err(Error::Io)
             })
-            .collect::<io::Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>>>()?;
 
         let result = data_entries
             .into_iter()
@@ -719,9 +758,7 @@ impl Gdbm<ReadWrite> {
             BlockSize::Roughly(size) | BlockSize::Exactly(size) => {
                 build_dir_size(layout.offset, size)
             }
-            BlockSize::Filesystem => {
-                build_dir_size(layout.offset, f.metadata()?.st_blksize() as u32)
-            }
+            BlockSize::Filesystem => build_dir_size(layout.offset, fs_block_size(&f)?),
         };
 
         if let BlockSize::Exactly(size) = open_options.write.create.block_size {
@@ -1171,9 +1208,11 @@ impl Gdbm<ReadWrite> {
             return Err(Error::Inconsistent);
         }
 
+        let size = record_size(key.len(), data.len())?;
+
         self.read_write.state = WriteState::Inconsistent;
 
-        let offset = self.allocate_record((key.len() + data.len()) as u32)?;
+        let offset = self.allocate_record(size)?;
 
         self.f
             .seek(SeekFrom::Start(offset))
@@ -1550,24 +1589,20 @@ where
             None => None,
             Some(Err(e)) => Some(Err(e)),
             Some(Ok(slot)) => {
+                let next_block = self.db.header.next_block;
                 let data = self
                     .db
                     .cache_load_bucket(slot.bucket)
-                    .map(|bucket| {
-                        bucket
-                            .tab
-                            .get(slot.element)
-                            .map(|e| (e.data_ofs, e.key_size as usize, e.data_size as usize))
-                            .unwrap()
-                    })
+                    .and_then(|bucket| valid_element(bucket.tab[slot.element], next_block))
+                    .map(|e| (e.data_ofs, e.key_size as usize, e.data_size as usize))
                     .and_then(
                         |(offset, key_length, data_length)| match self.key_or_value {
                             KeyOrValue::Key => read_ofs(&mut self.db.f, offset, key_length)
-                                .map(|data| (data.clone(), vec![]))
+                                .map(|data| (data, vec![]))
                                 .map_err(Error::Io),
                             KeyOrValue::Value => {
                                 read_ofs(&mut self.db.f, offset + key_length as u64, data_length)
-                                    .map(|data| (vec![], data.clone()))
+                                    .map(|data| (vec![], data))
                                     .map_err(Error::Io)
                             }
                             KeyOrValue::Both => {

@@ -45,7 +45,7 @@ impl<'a> ASCIIImportIterator<'a> {
             .by_ref()
             .bytes()
             .filter(|b| b.is_err() || !b.as_ref().unwrap().is_ascii_whitespace())
-            .take((4 * length / 3 + 3) & !3) // length of base64 representation
+            .take((length.saturating_mul(4) / 3).saturating_add(3) & !3) // length of base64 representation
             .collect::<io::Result<Vec<_>>>()?;
 
         // read past line ending
@@ -130,19 +130,20 @@ impl<'a> BinaryImportIterator<'a> {
             .and_then(|buf| match (self.alignment, buf.len()) {
                 (_, 0) => Ok(None),
                 (Alignment::Align32, 4) => {
-                    Ok(Some(u32::from_be_bytes(buf.try_into().unwrap()) as usize))
+                    Ok(Some(u64::from(u32::from_be_bytes(buf.try_into().unwrap()))))
                 }
-                (Alignment::Align64, 8) => {
-                    Ok(Some(u64::from_be_bytes(buf.try_into().unwrap()) as usize))
-                }
+                (Alignment::Align64, 8) => Ok(Some(u64::from_be_bytes(buf.try_into().unwrap()))),
                 _ => Err(io::Error::new(ErrorKind::UnexpectedEof, "partial read")),
             })?;
 
         match length {
             Some(n) => {
-                let mut buf = vec![0; n];
-                self.buf_reader.read_exact(&mut buf)?;
-                Ok(Some(buf))
+                // read incrementally rather than trusting n for an allocation
+                let mut buf = Vec::new();
+                self.buf_reader.by_ref().take(n).read_to_end(&mut buf)?;
+                (buf.len() as u64 == n)
+                    .then_some(Some(buf))
+                    .ok_or_else(|| io::Error::new(ErrorKind::UnexpectedEof, "partial read"))
             }
             None => Ok(None),
         }
@@ -195,5 +196,17 @@ ybGQh
             })
             .collect::<String>();
         assert_eq!(kv, "Hello, world!");
+    }
+
+    // A dump claiming an enormous length must fail cleanly, not attempt the allocation.
+    #[test]
+    fn binary_huge_length() {
+        let mut dump = b"# header\n# header\n# header\n# header\n".to_vec();
+        dump.extend_from_slice(&[0xff; 8]);
+        dump.extend_from_slice(b"short");
+
+        let mut reader = dump.as_slice();
+        let mut iter = BinaryImportIterator::new(Alignment::Align64, &mut reader).unwrap();
+        assert!(iter.next().unwrap().is_err());
     }
 }

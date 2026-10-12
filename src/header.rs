@@ -39,12 +39,13 @@ pub struct Header {
 
 impl Header {
     pub fn sizeof(layout: Layout, is_numsync: bool, avail_elems: u32) -> u32 {
-        match (layout.offset, is_numsync) {
-            (Offset::Small, true) => 32 + 32 + AvailBlock::sizeof(layout, avail_elems),
-            (Offset::Small, false) => 32 + AvailBlock::sizeof(layout, avail_elems),
-            (Offset::LFS, true) => 40 + 32 + AvailBlock::sizeof(layout, avail_elems),
-            (Offset::LFS, false) => 40 + AvailBlock::sizeof(layout, avail_elems),
-        }
+        let fixed = match (layout.offset, is_numsync) {
+            (Offset::Small, true) => 32 + 32,
+            (Offset::Small, false) => 32,
+            (Offset::LFS, true) => 40 + 32,
+            (Offset::LFS, false) => 40,
+        };
+        AvailBlock::sizeof(layout, avail_elems).saturating_add(fixed)
     }
 
     pub fn new(block_size: u32, layout: Layout, dir_bits: u32, numsync: bool) -> Self {
@@ -135,7 +136,11 @@ impl Header {
             });
         }
 
-        if self.dir_ofs + u64::from(self.dir_sz) > file_size {
+        if self
+            .dir_ofs
+            .checked_add(u64::from(self.dir_sz))
+            .is_none_or(|end| end > file_size)
+        {
             return Err(Error::BadHeaderDirectoryOffset {
                 offset: self.dir_ofs,
                 size: self.dir_sz,

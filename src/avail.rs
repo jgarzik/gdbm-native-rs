@@ -72,12 +72,14 @@ pub struct AvailBlock {
 }
 
 impl AvailBlock {
+    // saturates rather than overflowing for implausible element counts read from a file
     pub fn sizeof(layout: Layout, elems: u32) -> u32 {
-        elems * AvailElem::sizeof(layout)
-            + match (layout.alignment, layout.offset) {
+        elems
+            .saturating_mul(AvailElem::sizeof(layout))
+            .saturating_add(match (layout.alignment, layout.offset) {
                 (Alignment::Align32, Offset::Small) => 12,
                 _ => 16,
-            }
+            })
     }
 
     pub fn new(sz: u32, next_block: u64, elems: Vec<AvailElem>) -> Self {
@@ -157,7 +159,8 @@ impl AvailBlock {
     // `table_sz` elements) overflows: half the table plus the C struct avail_block, whose sizeof
     // includes one table element. Mirrors push_avail_block() in C GDBM's falloc.c.
     pub fn stack_block_size(layout: Layout, table_sz: u32) -> u32 {
-        table_sz * AvailElem::sizeof(layout) / 2 + Self::sizeof(layout, 1)
+        (table_sz.saturating_mul(AvailElem::sizeof(layout)) / 2)
+            .saturating_add(Self::sizeof(layout, 1))
     }
 
     // Number of elements that fit in a block of stack_block_size() bytes.
@@ -205,24 +208,35 @@ impl AvailBlock {
             });
         }
 
-        self.elems
-            .iter()
-            .enumerate()
-            .try_for_each(|(elem, AvailElem { sz, addr })| {
-                (*addr >= min_addr
-                    && addr
-                        .checked_add(u64::from(*sz))
-                        .is_some_and(|end| end <= next_block))
-                .then_some(())
-                .ok_or(Error::BadAvailElem {
-                    block_offset,
-                    elem,
-                    offset: *addr,
-                    size: *sz,
-                    next_block,
-                })
-            })
+        validate_elems(&self.elems, block_offset, min_addr, next_block)
     }
+}
+
+// Validate avail elements of a block (or bucket) at `block_offset`: each must lie within
+// [min_addr, next_block).
+pub fn validate_elems(
+    elems: &[AvailElem],
+    block_offset: u64,
+    min_addr: u64,
+    next_block: u64,
+) -> Result<()> {
+    elems
+        .iter()
+        .enumerate()
+        .try_for_each(|(elem, AvailElem { sz, addr })| {
+            (*addr >= min_addr
+                && addr
+                    .checked_add(u64::from(*sz))
+                    .is_some_and(|end| end <= next_block))
+            .then_some(())
+            .ok_or(Error::BadAvailElem {
+                block_offset,
+                elem,
+                offset: *addr,
+                size: *sz,
+                next_block,
+            })
+        })
 }
 
 pub fn remove_elem(elems: &mut Vec<AvailElem>, size: u32) -> Option<(u64, u32)> {

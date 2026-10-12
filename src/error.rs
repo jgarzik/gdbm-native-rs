@@ -8,6 +8,24 @@ pub enum Error {
     Io(io::Error),
     /// Database may be inconsistent since an earlier error. Writes are disabled.
     Inconsistent,
+    /// Bucket element describes a record outside the allocated area of the file.
+    BadBucketElement {
+        /// Record file offset.
+        data_offset: u64,
+        /// Key size.
+        key_size: u32,
+        /// Data size.
+        data_size: u32,
+        /// End of allocated file space (`next_block` from the header).
+        next_block: u64,
+    },
+    /// Key plus value exceeds the maximum record size supported by the GDBM file format.
+    RecordTooLarge {
+        /// Key plus value size.
+        size: usize,
+        /// Maximum record size.
+        maximum: usize,
+    },
     /// Bucket has too many elements or bucket bits > directory bits.
     BadBucket {
         /// Bucket file offset.

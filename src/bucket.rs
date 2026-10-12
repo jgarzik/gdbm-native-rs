@@ -95,6 +95,14 @@ impl BucketElement {
     pub fn is_occupied(&self) -> bool {
         self.hash != 0xffff_ffff
     }
+
+    // Whether the record lies within allocated file space. Like C GDBM's
+    // gdbm_bucket_element_valid_p(), check before trusting an element read from disk.
+    pub fn is_valid(&self, next_block: u64) -> bool {
+        self.data_ofs
+            .checked_add(u64::from(self.key_size) + u64::from(self.data_size))
+            .is_some_and(|end| end <= next_block)
+    }
 }
 
 #[derive(Debug)]
@@ -135,8 +143,15 @@ impl Bucket {
             read32(layout.endian, reader)?;
         }
 
+        if av_count > Self::AVAIL {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("bucket avail count {av_count} exceeds {}", Self::AVAIL),
+            ));
+        }
+
         // read av_count entries from bucket_avail[]
-        let avail = (0..av_count)
+        let mut avail = (0..av_count)
             .map(|_| AvailElem::from_reader(layout, reader))
             .collect::<io::Result<Vec<_>>>()?;
 
@@ -144,7 +159,8 @@ impl Bucket {
         (av_count..Self::AVAIL)
             .try_for_each(|_| AvailElem::from_reader(layout, reader).map(|_| ()))?;
 
-        // todo: validate and assure-sorted avail[]
+        // maintain intrinsic: avail is always sorted by size
+        avail.sort();
 
         // read misc. section
         let bits = read32(layout.endian, reader)?;

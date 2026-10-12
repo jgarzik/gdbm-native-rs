@@ -327,3 +327,114 @@ fn compact_keeps_block_size() {
         );
     }
 }
+
+// Create a one-record database, then overwrite it with `bytes` at `offset`.
+fn corrupt(
+    offset: impl Fn(&mut Gdbm<ReadWrite>) -> u64,
+    bytes: &[u8],
+) -> (tempfile::TempDir, std::path::PathBuf) {
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.db");
+    let offset = {
+        let mut db = create(&path);
+        db.insert("key", "value").unwrap();
+        db.sync().unwrap();
+        offset(&mut db)
+    };
+
+    let mut f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    f.seek(SeekFrom::Start(offset)).unwrap();
+    f.write_all(bytes).unwrap();
+
+    (dir, path)
+}
+
+// Corrupt a database, then reopen it and read the record. Must be an error, never a panic or
+// huge allocation.
+fn corrupt_and_get(offset: impl Fn(&mut Gdbm<ReadWrite>) -> u64, bytes: &[u8]) -> Result<()> {
+    let (_dir, path) = corrupt(offset, bytes);
+    let mut db = OpenOptions::new().open(&path)?;
+    db.get::<_, Vec<u8>>("key")?;
+    let result = db
+        .iter::<Vec<u8>, Vec<u8>>()
+        .try_for_each(|kv| kv.map(|_| ()));
+    result
+}
+
+// Corrupt a database, then reopen it and insert records. Must be an error, never a panic or
+// overwriting of unrelated parts of the file.
+fn corrupt_and_insert(offset: impl Fn(&mut Gdbm<ReadWrite>) -> u64, bytes: &[u8]) -> Result<()> {
+    let (_dir, path) = corrupt(offset, bytes);
+    let mut db = OpenOptions::new().write().open(&path)?;
+    for n in 0..10 {
+        db.insert(&n.to_string(), "v")?;
+    }
+    db.sync()?;
+    drop(db);
+    OpenOptions::new().open(&path).map(|_| ())
+}
+
+// file offset of field `field_ofs` within the occupied element of the first bucket
+fn element_field(db: &mut Gdbm<ReadWrite>, field_ofs: u64) -> u64 {
+    let bucket_ofs = db.dir.dir[0];
+    db.f.seek(SeekFrom::Start(bucket_ofs)).unwrap();
+    let bucket = Bucket::from_reader(db.header.bucket_elems, db.header.layout, &mut db.f).unwrap();
+    let index = bucket.tab.iter().position(|e| e.is_occupied()).unwrap() as u64;
+    bucket_ofs
+        + u64::from(Bucket::sizeof(db.header.layout))
+        + index * u64::from(crate::bucket::BucketElement::sizeof(db.header.layout))
+        + field_ofs
+}
+
+#[test]
+fn corrupt_element_data_size() {
+    // LFS element: hash 4, key_start 4, data_ofs 8, key_size 4, data_size 4
+    assert!(corrupt_and_get(|db| element_field(db, 20), &[0xff; 4]).is_err());
+}
+
+#[test]
+fn corrupt_element_data_ofs() {
+    assert!(corrupt_and_get(|db| element_field(db, 8), &[0xff; 8]).is_err());
+}
+
+#[test]
+fn corrupt_header_dir_ofs() {
+    // LFS header: magic 4, block_size 4, dir_ofs 8
+    assert!(corrupt_and_get(|_| 8, &[0xff; 8]).is_err());
+}
+
+#[test]
+fn corrupt_directory_entry() {
+    assert!(corrupt_and_get(|db| db.header.dir_ofs, &[0xff; 8]).is_err());
+}
+
+#[test]
+fn corrupt_bucket_avail_count() {
+    // first field of a bucket is the avail count, of at most Bucket::AVAIL
+    assert!(corrupt_and_get(|db| db.dir.dir[0], &1000u32.to_le_bytes()).is_err());
+}
+
+#[test]
+fn corrupt_bucket_avail_elem() {
+    // Align64/LFS bucket: av_count 4, pad 4, then avail elements of sz 4, pad 4, addr 8.
+    // One free extent covering the file header.
+    let mut bytes = 1u32.to_le_bytes().to_vec();
+    bytes.extend_from_slice(&[0; 4]);
+    bytes.extend_from_slice(&512u32.to_le_bytes());
+    bytes.extend_from_slice(&[0; 4]);
+    bytes.extend_from_slice(&0u64.to_le_bytes());
+    assert!(corrupt_and_insert(|db| db.dir.dir[0], &bytes).is_err());
+}
+
+#[test]
+fn corrupt_header_avail_size() {
+    let avail_ofs = |db: &mut Gdbm<ReadWrite>| {
+        u64::from(
+            crate::header::Header::sizeof(db.header.layout, db.header.magic.is_numsync(), 0)
+                - AvailBlock::sizeof(db.header.layout, 0),
+        )
+    };
+    assert!(corrupt_and_get(avail_ofs, &[0xff; 4]).is_err());
+}

@@ -88,9 +88,12 @@ impl Directory {
 
     // validate all buckets are inside file
     pub fn validate(&self, start: u64, end: u64, bucket_size: u32) -> bool {
-        self.dir
-            .iter()
-            .all(|&offset| offset >= start && offset + u64::from(bucket_size) <= end)
+        self.dir.iter().all(|&offset| {
+            offset >= start
+                && offset
+                    .checked_add(u64::from(bucket_size))
+                    .is_some_and(|bucket_end| bucket_end <= end)
+        })
     }
 
     // update_bucket_split is called after a bucket is split.
