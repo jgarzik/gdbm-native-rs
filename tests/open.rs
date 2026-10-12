@@ -262,3 +262,28 @@ fn create_mode() {
     let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600);
 }
+
+#[test]
+// Bug: Header::verify did not check the avail table capacity against the block size, so a header
+// C GDBM rejects was accepted, possibly with the wrong layout.
+fn header_avail_capacity_checked() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("db");
+    OpenOptions::new()
+        .create(true)
+        .numsync(false)
+        .block_size(BlockSize::Exactly(512))
+        .open(&path)
+        .unwrap()
+        .close()
+        .unwrap();
+
+    // a standard (little endian, 64-bit offset) header is 40 bytes; the avail table size follows
+    let mut file = std::fs::read(&path).unwrap();
+    file[40..44].copy_from_slice(&10u32.to_le_bytes());
+    std::fs::write(&path, file).unwrap();
+    assert!(matches!(
+        OpenOptions::new().open(&path),
+        Err(gdbm_native::Error::BadHeaderAvail { .. })
+    ));
+}

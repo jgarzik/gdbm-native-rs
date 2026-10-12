@@ -50,8 +50,7 @@ impl Header {
 
     pub fn new(block_size: u32, layout: Format, dir_bits: u32, numsync: bool) -> Self {
         let bucket_elems = (block_size - Bucket::sizeof(layout)) / BucketElement::sizeof(layout);
-        let avail_elems =
-            (block_size - Self::sizeof(layout, numsync, 0)) / AvailElem::sizeof(layout);
+        let avail_elems = avail_capacity(layout, numsync, block_size);
         Header {
             magic: Magic::new(layout.endian, layout.offset, numsync),
             block_sz: block_size,
@@ -171,6 +170,16 @@ impl Header {
             });
         }
 
+        // Like C GDBM, require the avail table to fill the rest of the header block exactly. This
+        // also rejects a header whose layout detect_format() could not determine.
+        if self.avail.sz != avail_capacity(self.layout, self.magic.is_numsync(), self.block_sz) {
+            return Err(Error::BadHeaderAvail {
+                elems: self.avail.sz,
+                size: Self::sizeof(self.layout, self.magic.is_numsync(), self.avail.sz),
+                block_size: self.block_sz,
+            });
+        }
+
         // Free space may lie beyond the physical end of file, up to next_block.
         self.avail.validate(
             u64::from(
@@ -181,16 +190,6 @@ impl Header {
             u64::from(self.block_sz),
             self.next_block,
         )?;
-
-        if self.avail.sz == 0
-            || self.block_sz < Self::sizeof(self.layout, self.magic.is_numsync(), self.avail.sz)
-        {
-            return Err(Error::BadHeaderAvail {
-                elems: self.avail.sz,
-                size: Self::sizeof(self.layout, self.magic.is_numsync(), self.avail.sz),
-                block_size: self.block_sz,
-            });
-        }
 
         Ok(())
     }
@@ -237,8 +236,7 @@ impl Header {
     // convert_numsync converts the header to numsync and retuns a list of
     // offset/length pairs that need to be freed (because avail is shortened).
     pub fn convert_numsync(&mut self, use_numsync: bool) -> Vec<(u64, u32)> {
-        let new_avail_sz = (self.block_sz - Self::sizeof(self.layout, use_numsync, 0))
-            / AvailElem::sizeof(self.layout);
+        let new_avail_sz = avail_capacity(self.layout, use_numsync, self.block_sz);
 
         self.magic = Magic::new(self.magic.endian(), self.magic.offset(), use_numsync);
         self.numsync = use_numsync.then_some(0);
@@ -256,11 +254,18 @@ impl Header {
     }
 }
 
+// Capacity of the header's avail table: as many elements as fit in the rest of the header block
+// (C GDBM's `(block_size - sizeof (gdbm_file_header)) / sizeof (avail_elem) + 1`, its header
+// struct already holding one element).
+fn avail_capacity(layout: Format, numsync: bool, block_sz: u32) -> u32 {
+    block_sz.saturating_sub(Header::sizeof(layout, numsync, 0)) / AvailElem::sizeof(layout)
+}
+
 // C GDBM files do not record struct alignment, which differs between platforms only for 64-bit
 // offsets (4 bytes on i386, 8 elsewhere). C GDBM requires the header's avail table capacity and
 // bucket element count to equal the values computed from the block and bucket sizes, and both
 // depend on the alignment, so pick the alignment for which both match. If neither does, assume
-// 8-byte alignment and let verify() report the mismatch.
+// 8-byte alignment; verify() then rejects the header (BadHeaderAvail or BadHeaderBucketElems).
 fn detect_format(
     magic: Magic,
     block_sz: u32,
@@ -273,8 +278,7 @@ fn detect_format(
         Offset::Lfs => vec![Layout::Off64Align8, Layout::Off64Align4],
     };
     let fits = |format: Format| {
-        let header = Header::sizeof(format, magic.is_numsync(), 0);
-        avail_sz == block_sz.saturating_sub(header) / AvailElem::sizeof(format)
+        avail_sz == avail_capacity(format, magic.is_numsync(), block_sz)
             && bucket_elems
                 == bucket_sz.saturating_sub(Bucket::sizeof(format)) / BucketElement::sizeof(format)
     };
