@@ -114,7 +114,7 @@ use dir::{Directory, build_dir_size};
 pub use dump::{BinDumpFormat, DumpInfo, ImportMode};
 pub use error::Error;
 pub use hashutil::CharSign;
-use hashutil::{PartialKey, bucket_dir, hash_key, key_loc};
+use hashutil::{HASH_BITS, PartialKey, bucket_dir, hash_key, key_loc};
 use header::Header;
 use import::{ASCIIImportIterator, BinaryImportIterator};
 pub use magic::Magic;
@@ -520,7 +520,16 @@ impl Gdbm {
     // Load the bucket for directory entry bucket_dir into the cache, make it current, and apply f
     // to it. The bucket is only borrowed for the duration of f, so the cache stays usable.
     fn with_bucket<T>(&self, bucket_dir: usize, f: impl FnOnce(&Bucket) -> T) -> Result<T> {
-        let offset = self.dir.dir[bucket_dir];
+        // As C _gdbm_get_bucket: a directory shorter than dir_bits implies has no entry for
+        // every hash.
+        let offset = *self
+            .dir
+            .dir
+            .get(bucket_dir)
+            .ok_or(Error::BadDirectoryEntry {
+                index: bucket_dir,
+                entries: self.dir.dir.len(),
+            })?;
 
         if !self.bucket_cache.borrow().contains(offset) {
             // Read the bucket's bytes in one go: bucket_elems derives from the header's
@@ -943,7 +952,7 @@ impl Gdbm {
         });
         likely
             .chain(0..self.dir.dir.len())
-            .filter(|&index| seen.insert(self.dir.dir[index]))
+            .filter(|&index| self.dir.dir.get(index).is_some_and(|&ofs| seen.insert(ofs)))
             .find_map(|index| self.bucket_char_sign(index))
     }
 
@@ -1662,13 +1671,13 @@ impl Gdbm {
             .and_then(|()| self.f.write_all(data))?;
 
         let bucket_elem = BucketElement::new(hash, key, data, offset);
-        self.with_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash), |_| ())?;
+        self.with_bucket(bucket_dir(self.header.dir_bits, hash), |_| ())?;
 
         while self.bucket_cache.get_mut().current_bucket().unwrap().count
             == self.header.bucket_elems
         {
-            self.split_bucket()?;
-            self.with_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash), |_| ())?;
+            self.split_bucket(hash)?;
+            self.with_bucket(bucket_dir(self.header.dir_bits, hash), |_| ())?;
         }
 
         let cache = self.bucket_cache.get_mut();
@@ -1779,8 +1788,30 @@ impl Gdbm {
         })
     }
 
-    fn split_bucket(&mut self) -> Result<()> {
-        if self.bucket_cache.get_mut().current_bucket().unwrap().bits == self.header.dir_bits {
+    // Split the current bucket, the one that hash maps to (port of C _gdbm_split_bucket).
+    fn split_bucket(&mut self, hash: u32) -> Result<()> {
+        let cache = self.bucket_cache.get_mut();
+        let cur_bucket_offset = cache.current_bucket_offset().unwrap();
+        let old_bits = cache.current_bucket().unwrap().bits;
+
+        // Check before changing anything that the bucket's directory entries are the range that
+        // its bits imply, so that a corrupt directory or bucket is reported, not made worse.
+        let index = bucket_dir(self.header.dir_bits, hash);
+        if self.dir.dir.get(index) != Some(&cur_bucket_offset)
+            || self
+                .dir
+                .bucket_range(self.header.dir_bits, old_bits, index)
+                .is_none()
+        {
+            return Err(Error::BadDirectoryRange {
+                offset: cur_bucket_offset,
+                bits: old_bits,
+                index,
+                dir_bits: self.header.dir_bits,
+            });
+        }
+
+        if old_bits == self.header.dir_bits {
             self.extend_directory()?;
         }
 
@@ -1794,15 +1825,12 @@ impl Gdbm {
             offset
         };
 
-        let cache = self.bucket_cache.get_mut();
-        let cur_bucket_offset = cache.current_bucket_offset().unwrap();
-        let bucket = cache.current_bucket().unwrap();
+        let bucket = self.bucket_cache.get_mut().current_bucket().unwrap();
         let (bucket0, bucket1) = bucket.split().ok_or_else(|| Error::BadBucketCount {
             offset: cur_bucket_offset,
             count: bucket.count,
             occupied: bucket.occupied(),
         })?;
-        let bits = bucket0.bits;
 
         let _ = self
             .bucket_cache
@@ -1816,14 +1844,16 @@ impl Gdbm {
             self.write_bucket(&evicted_bucket, evicted_offset)?;
         }
 
-        self.dir.update_bucket_split(
-            self.header.dir_bits,
-            bits,
-            cur_bucket_offset,
-            new_bucket_offset,
-        );
-
-        Ok(())
+        // checked above; extending the directory keeps the range valid
+        let index = bucket_dir(self.header.dir_bits, hash);
+        self.dir
+            .update_bucket_split(self.header.dir_bits, old_bits, index, new_bucket_offset)
+            .ok_or(Error::BadDirectoryRange {
+                offset: cur_bucket_offset,
+                bits: old_bits,
+                index,
+                dir_bits: self.header.dir_bits,
+            })
     }
 
     // Extends the directory by duplicating each bucket offset.
@@ -1832,6 +1862,14 @@ impl Gdbm {
     // The header is updated with new offset, size and bits.
     // Both the directory and header are marked dirty, but not written.
     fn extend_directory(&mut self) -> Result<()> {
+        // As C GDBM (GDBM_MAX_DIR_HALF): the directory size must stay below i32::MAX. This also
+        // keeps dir_bits below HASH_BITS.
+        if self.header.dir_sz >= i32::MAX as u32 / 2 || self.header.dir_bits >= HASH_BITS - 1 {
+            return Err(Error::DirectoryOverflow {
+                size: self.header.dir_sz,
+            });
+        }
+
         let directory = self.dir.extend();
         let size = directory.extent(self.header.layout);
         let offset = self.allocate_record(size)?;

@@ -89,6 +89,31 @@ pub enum Error {
         /// Directory length in bytes.
         length: u32,
     },
+    /// A key hashes to a directory entry beyond the end of the directory (like C GDBM's
+    /// `GDBM_BAD_DIR_ENTRY`).
+    BadDirectoryEntry {
+        /// Directory entry index.
+        index: usize,
+        /// Number of directory entries.
+        entries: usize,
+    },
+    /// The directory entries for a bucket being split are not the aligned range of
+    /// `2^(dir_bits - bits)` entries that its bit count implies.
+    BadDirectoryRange {
+        /// Bucket file offset.
+        offset: u64,
+        /// Bucket bits.
+        bits: u32,
+        /// Index of a directory entry referring to the bucket.
+        index: usize,
+        /// Directory bits.
+        dir_bits: u32,
+    },
+    /// The directory cannot grow any further (like C GDBM's `GDBM_DIR_OVERFLOW`).
+    DirectoryOverflow {
+        /// Directory size in bytes.
+        size: u32,
+    },
     /// Write operation on a database opened read-only.
     ReadOnly,
     /// Block size found in header is impossibly small.
@@ -239,6 +264,24 @@ impl Display for Error {
                 "corrupt database: directory at {offset} ({length} bytes) refers to a \
                  bucket outside the database"
             ),
+            Error::BadDirectoryEntry { index, entries } => write!(
+                f,
+                "corrupt database: directory entry {index} is beyond the {entries}-entry \
+                 directory"
+            ),
+            Error::BadDirectoryRange {
+                offset,
+                bits,
+                index,
+                dir_bits,
+            } => write!(
+                f,
+                "corrupt database: the directory entries ({dir_bits} bits) around entry {index} \
+                 do not all refer to its bucket at {offset} ({bits} bits)"
+            ),
+            Error::DirectoryOverflow { size } => {
+                write!(f, "directory of {size} bytes cannot grow any further")
+            }
             Error::ReadOnly => write!(f, "database is open read-only"),
             Error::BadHeaderBlockSize { size, minimum } => write!(
                 f,

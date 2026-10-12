@@ -10,12 +10,13 @@
 
 use std::path::Path;
 
-use gdbm_native::{BlockSize, OpenOptions};
+use gdbm_native::{BlockSize, Error, OpenOptions};
 use tempfile::tempdir;
 
 // Databases here are little endian with 64-bit offsets aligned on 8 bytes and 512-byte blocks:
 // header fields at fixed offsets, buckets of a 112-byte header and 24-byte elements.
 const DIR_OFS: usize = 8;
+const DIR_SZ: usize = 16;
 const BUCKET_COUNT: usize = 108;
 const BUCKET_ELEMS: usize = 112;
 const ELEM_SIZE: usize = 24;
@@ -107,6 +108,46 @@ fn short_key_with_stale_prefix_bytes() {
     assert_eq!(db.len().unwrap(), 1);
 }
 
+#[test]
+// Bug: a directory with fewer entries than its bit count implies (a size that is not a power of
+// two, which C GDBM also accepts) made lookups of keys hashing past its end index out of bounds.
+// C GDBM reports GDBM_BAD_DIR_ENTRY for them.
+fn short_directory_lookup_does_not_panic() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut db = create(&path, false);
+    let mut n = 0;
+    while db.dir_depth() < 7 {
+        db.insert(format!("key {n}").as_str(), "v").unwrap();
+        n += 1;
+    }
+    db.close().unwrap();
+
+    // drop the last directory entry
+    let file = std::fs::read(&path).unwrap();
+    let dir_sz = u32::from_le_bytes(file[DIR_SZ..DIR_SZ + 4].try_into().unwrap());
+    patch(&path, DIR_SZ, &(dir_sz - 8).to_le_bytes());
+
+    let mut db = OpenOptions::new().write(true).open(&path).unwrap();
+    let bad_entry = |result: &gdbm_native::Result<_>| {
+        matches!(
+            result,
+            Err(Error::BadDirectoryEntry {
+                index: 127,
+                entries: 127
+            })
+        )
+    };
+    let results = (0..n)
+        .map(|i| db.get::<_, String>(format!("key {i}").as_str()))
+        .collect::<Vec<_>>();
+    assert!(results.iter().any(bad_entry));
+    assert!(results.iter().filter(|r| !bad_entry(r)).all(|r| r.is_ok()));
+    for i in 0..n {
+        let _ = db.insert(format!("key {i}").as_str(), "new");
+    }
+}
+
 // Insert into a possibly corrupt database: errors are fine, panics are not.
 fn insert_some(path: &Path) {
     if let Ok(mut db) = OpenOptions::new().write(true).open(path) {
@@ -144,4 +185,26 @@ fn zeroed_bucket_insert_does_not_panic() {
     let bucket0 = u64_at(&file, u64_at(&file, DIR_OFS));
     patch(&path, bucket0, &[0u8; 496]);
     insert_some(&path);
+}
+
+#[test]
+// Inputs that crashed the `open` fuzz target, kept as fixtures: opening, reading and inserting
+// into them must fail cleanly. open-split-dir-range: a directory whose entries for a bucket are
+// not the aligned range its bit count implies made a bucket split index past the directory.
+fn fuzz_crash_inputs() {
+    let fixtures: std::path::PathBuf = [env!("CARGO_MANIFEST_DIR"), "tests", "data", "fuzz"]
+        .iter()
+        .collect();
+    let dir = tempdir().unwrap();
+    for entry in std::fs::read_dir(fixtures).unwrap() {
+        let input = entry.unwrap().path();
+        let path = dir.path().join("db");
+        std::fs::copy(&input, &path).unwrap();
+        if let Ok(db) = OpenOptions::new().open(&path) {
+            let _ = db.verify();
+            let _ = db.len();
+            let _ = db.get::<_, Vec<u8>>("key \u{e9}");
+        }
+        insert_some(&path);
+    }
 }

@@ -276,7 +276,7 @@ impl Bucket {
     // Split into two buckets by the next hash bit. None only if an element does not fit, which
     // cannot happen: each new bucket has as many slots as this one.
     pub fn split(&self) -> Option<(Bucket, Bucket)> {
-        let mask = 0x80_00_00_00 >> (self.bits + 1);
+        let mask = 0x80_00_00_00_u32.checked_shr(self.bits.checked_add(1)?)?;
         let (avail0, avail1) = avail::partition_elems(&self.avail);
         let mut bucket0 = Bucket::new(self.bits + 1, self.tab.len(), avail0);
         let mut bucket1 = Bucket::new(self.bits + 1, self.tab.len(), avail1);
