@@ -160,9 +160,8 @@ impl<C> OpenOptions<Write<C>> {
 }
 
 impl OpenOptions<Write<NotCreate>> {
-    /// When opening a database in reade-write mode, `create` will cause the database to be created
-    /// if it doesn't exist or is not a valid database. Take care, as this will cause a corrupted
-    /// or non-database file to be replaced with an empty database.
+    /// When opening a database in read-write mode, `create` will cause the database to be created
+    /// if the file doesn't exist or is empty.
     pub fn create(self) -> OpenOptions<Write<Create>> {
         OpenOptions {
             alignment: self.alignment,
@@ -274,27 +273,24 @@ impl OpenOptions<Write<NotCreate>> {
 impl OpenOptions<Write<Create>> {
     /// The `open` called when [`write()`](OpenOptions::write)`.`[`create()`](OpenOptions::create)
     /// was called on `OpenOptions`, causes the database file at `path` to be opened in read-write
-    /// mode, and created if the file at `path` isn't already a database.
+    /// mode. A new database is created if the file does not exist or is empty. As with any open,
+    /// an existing file that is not a valid database results in an error and is left untouched.
     pub fn open<P: AsRef<std::path::Path>>(&self, path: P) -> Result<Gdbm<ReadWrite>> {
-        std::fs::OpenOptions::new()
+        let f = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .open(&path)
-            .map_err(Error::Io)
-            .and_then(|f| Gdbm::<ReadWrite>::open(f, self))
-            .or_else(|_| {
-                std::fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create_new(true)
-                    .open(&path)
-                    .map_err(Error::Io)
-                    .and_then(|f| Gdbm::create(f, self))
-            })
-            .map(|mut db| {
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+
+        if f.metadata()?.len() == 0 {
+            Gdbm::create(f, self)
+        } else {
+            Gdbm::<ReadWrite>::open(f, self).map(|mut db| {
                 db.set_sync(self.write.sync);
                 db
             })
+        }
     }
 
     /// Open a temporary database.

@@ -1363,6 +1363,10 @@ impl Gdbm<ReadWrite> {
             return Err(Error::Inconsistent);
         }
 
+        if self.header.magic.is_numsync() == numsync {
+            return Ok(());
+        }
+
         self.read_write.state = WriteState::Inconsistent;
 
         self.header
@@ -1405,6 +1409,7 @@ impl Gdbm<ReadWrite> {
                 .endian(Some(magic.endian()))
                 .offset(Some(magic.offset()))
                 .numsync(magic.is_numsync())
+                .block_size(BlockSize::Exactly(self.header.block_sz))
                 .tempfile()
         }?;
 

@@ -275,3 +275,55 @@ fn pop_c_avail_stack() {
     churn(&mut db, &mut rng, &mut model, 3000, 5);
     assert_contents(&mut db, &model);
 }
+
+// set_numsync(true) on a numsync database must not reset the sync counter.
+#[test]
+fn set_numsync_keeps_counter() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.db");
+    let mut db = OpenOptions::new()
+        .write()
+        .create()
+        .numsync(true)
+        .open(&path)
+        .unwrap();
+    for n in 0..5 {
+        db.insert(&n.to_string(), "v").unwrap();
+        db.sync().unwrap();
+    }
+    let numsync = db.header.numsync;
+    assert!(numsync.unwrap() > 0);
+
+    db.set_numsync(true).unwrap();
+    db.sync().unwrap();
+    assert_eq!(db.header.numsync, numsync);
+}
+
+// compact() rebuilds the database; it must keep the block size and numsync counter.
+#[test]
+fn compact_keeps_block_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.db");
+    let mut db = OpenOptions::new()
+        .write()
+        .create()
+        .block_size(crate::BlockSize::Exactly(1024))
+        .open(&path)
+        .unwrap();
+    for n in 0..500 {
+        db.insert(&n.to_string(), &value(n, 300)).unwrap();
+    }
+    db.sync().unwrap();
+    let numsync = db.header.numsync;
+
+    db.compact().unwrap();
+    assert_eq!(db.header.block_sz, 1024);
+    assert!(db.header.numsync >= numsync);
+    db.check_space().unwrap();
+    for n in 0..500 {
+        assert_eq!(
+            db.get::<_, Vec<u8>>(&n.to_string()).unwrap(),
+            Some(value(n, 300))
+        );
+    }
+}
