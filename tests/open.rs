@@ -1,12 +1,9 @@
 extern crate gdbm_native;
 
 use gdbm_native::{
-    Alignment::{Align32, Align64},
     BlockSize,
     Endian::{Big, Little},
-    Magic,
-    Offset::{LFS, Small},
-    OpenOptions,
+    Layout, Magic, OpenOptions,
 };
 use tempfile::tempdir;
 
@@ -64,56 +61,45 @@ fn tempfile() {
 }
 
 #[test]
-// Test for correct magic for new databases.
+// New databases get the magic for their layout, and reopen with that layout detected.
 fn api_open_newdb_magic() {
-    [
-        (Align32, LFS, Big, false, Magic::BE64),
-        (Align32, LFS, Little, false, Magic::LE64),
-        (Align32, Small, Big, false, Magic::BE32),
-        (Align32, Small, Little, false, Magic::LE32),
-        (Align64, LFS, Big, false, Magic::BE64),
-        (Align64, LFS, Little, false, Magic::LE64),
-        (Align64, Small, Big, false, Magic::BE32),
-        (Align64, Small, Little, false, Magic::LE32),
-        (Align32, LFS, Big, true, Magic::BE64NS),
-        (Align32, LFS, Little, true, Magic::LE64NS),
-        (Align32, Small, Big, true, Magic::BE32NS),
-        (Align32, Small, Little, true, Magic::LE32NS),
-        (Align64, LFS, Big, true, Magic::BE64NS),
-        (Align64, LFS, Little, true, Magic::LE64NS),
-        (Align64, Small, Big, true, Magic::BE32NS),
-        (Align64, Small, Little, true, Magic::LE32NS),
-    ]
-    .into_iter()
-    .try_for_each(|(alignment, offset, endian, numsync, expected_magic)| {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("db");
+    for layout in [Layout::Off32, Layout::Off64Align4, Layout::Off64Align8] {
+        for endian in [Little, Big] {
+            for numsync in [false, true] {
+                let expected = match (layout, endian, numsync) {
+                    (Layout::Off32, Little, false) => Magic::LE32,
+                    (Layout::Off32, Big, false) => Magic::BE32,
+                    (Layout::Off32, Little, true) => Magic::LE32NS,
+                    (Layout::Off32, Big, true) => Magic::BE32NS,
+                    (_, Little, false) => Magic::LE64,
+                    (_, Big, false) => Magic::BE64,
+                    (_, Little, true) => Magic::LE64NS,
+                    (_, Big, true) => Magic::BE64NS,
+                };
+                let what = format!("{layout:?} {endian:?} numsync {numsync}");
+                let dir = tempdir().unwrap();
+                let path = dir.path().join("db");
 
-        OpenOptions::new().write().create().alignment(Some(alignment)).offset(Some(offset)).endian(Some(endian)).numsync(numsync).open(
-            &path
-        )
-        .map_err(|e| format!(
-            "creating: alignment: {alignment:?}, offset: {offset:?}, endian: {endian:?}, numsync: {numsync}, expected: {expected_magic:?}, newdb error: {e}",
-        ))?;
+                let mut db = OpenOptions::new()
+                    .write()
+                    .create()
+                    .layout(layout)
+                    .endian(endian)
+                    .numsync(numsync)
+                    .open(&path)
+                    .unwrap_or_else(|e| panic!("creating {what}: {e}"));
+                db.sync().unwrap();
+                drop(db);
 
-        OpenOptions::new().alignment(Some(alignment)).open(
-            &path,
-        )
-        .map_err(|e| format!(
-            "opening: alignment: {alignment:?}, offset: {offset:?}, endian: {endian:?}, numsync: {numsync}, expected: {expected_magic:?}, open error: {e}",
-        ))
-        .and_then(|db| {
-            (db.magic() == expected_magic)
-                .then_some(())
-                .ok_or_else(|| {
-                    format!(
-                        "wrong magic: alignment: {alignment:?}, offset: {offset:?}, endian: {endian:?}, numsync: {numsync}, expected: {expected_magic:?}, got: {:?}",
-                        db.magic()
-                    )
-                })
-        })
-    })
-    .unwrap_or_else(|e: String| panic!("{e}"));
+                let db = OpenOptions::new()
+                    .open(&path)
+                    .unwrap_or_else(|e| panic!("opening {what}: {e}"));
+                assert_eq!(db.magic(), expected, "{what}");
+                assert_eq!(db.layout(), layout, "{what}");
+                assert_eq!(db.endian(), endian, "{what}");
+            }
+        }
+    }
 }
 
 #[test]

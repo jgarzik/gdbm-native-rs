@@ -37,7 +37,6 @@ fn api_export_bin() {
                         .map_err(|e| e.to_string())
                         .and_then(|mut f| {
                             OpenOptions::new()
-                                .alignment(test.alignment)
                                 .open(&test.db_path)
                                 .and_then(|mut db| db.export_bin(&mut f, mode))
                                 .map_err(|e| e.to_string())
@@ -95,7 +94,6 @@ fn api_export_ascii() {
             .map_err(|e| e.to_string())
             .and_then(|mut f| {
                 OpenOptions::new()
-                    .alignment(testdb.alignment)
                     .open(&testdb.db_path)
                     .and_then(|mut db| db.export_ascii(&mut f, None::<&str>))
                     .map_err(|e| e.to_string())

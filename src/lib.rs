@@ -72,8 +72,8 @@ use header::Header;
 use import::{ASCIIImportIterator, BinaryImportIterator};
 pub use magic::Magic;
 pub use options::{BlockSize, Create, OpenOptions};
-pub use ser::{Alignment, Endian, Offset};
-use ser::{Layout, write32, write64};
+use ser::{Alignment, Format, Offset, write32, write64};
+pub use ser::{Endian, Layout};
 use std::fs::File;
 
 /// Our claimed GDBM lib version compatibility. Appears in dump files.
@@ -237,7 +237,7 @@ where
         let metadata = f.metadata()?;
 
         f.seek(SeekFrom::Start(0))?;
-        let header = Header::from_reader(open_options.alignment, metadata.len(), &mut f)?;
+        let header = Header::from_reader(metadata.len(), &mut f)?;
 
         f.seek(SeekFrom::Start(header.dir_ofs))?;
         let dir = Directory::from_reader(header.layout, header.dir_sz, &mut f)?;
@@ -696,7 +696,7 @@ where
         self.header.magic
     }
 
-    /// Get the database alignment.
+    /// The C struct [`Layout`] of the database file.
     ///
     /// # Examples
     /// ```
@@ -705,11 +705,16 @@ where
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
-    /// println!("database alignment: {:?}", db.alignment());
+    /// println!("database layout: {:?}", db.layout());
     /// # }
     /// ```
-    pub fn alignment(&self) -> Alignment {
-        self.header.layout.alignment
+    pub fn layout(&self) -> Layout {
+        self.header.layout.layout()
+    }
+
+    /// The byte order of the database file.
+    pub fn endian(&self) -> Endian {
+        self.header.layout.endian
     }
 
     #[cfg(feature = "diagnostic")]
@@ -755,11 +760,10 @@ impl Gdbm<ReadWrite> {
         f: File,
         open_options: &OpenOptions<options::Write<Create>>,
     ) -> Result<Gdbm<ReadWrite>> {
-        let layout = Layout {
-            offset: open_options.write.create.offset.unwrap_or(Offset::LFS),
-            alignment: open_options.alignment.unwrap_or(Alignment::Align64),
-            endian: open_options.write.create.endian.unwrap_or(Endian::Little),
-        };
+        let layout = Format::new(
+            open_options.write.create.layout,
+            open_options.write.create.endian,
+        );
 
         let (block_size, dir_bits) = match open_options.write.create.block_size {
             BlockSize::Roughly(size) | BlockSize::Exactly(size) => {
@@ -923,7 +927,7 @@ impl Gdbm<ReadWrite> {
         // C GDBM's off_t is signed, so 32-bit offset databases are limited to 2GiB
         let maximum = match self.header.layout.offset {
             Offset::Small => i32::MAX as u64,
-            Offset::LFS => i64::MAX as u64,
+            Offset::Lfs => i64::MAX as u64,
         };
         let next_block = offset
             .checked_add(u64::from(length))
@@ -1456,9 +1460,8 @@ impl Gdbm<ReadWrite> {
                 .char_sign(self.char_sign)
                 .write()
                 .create()
-                .alignment(Some(self.header.layout.alignment))
-                .endian(Some(magic.endian()))
-                .offset(Some(magic.offset()))
+                .layout(self.layout())
+                .endian(magic.endian())
                 .numsync(magic.is_numsync())
                 .block_size(BlockSize::Exactly(self.header.block_sz))
                 .tempfile()
@@ -1479,11 +1482,7 @@ impl Gdbm<ReadWrite> {
         self.f.set_len(tmpdb.header.next_block)?;
 
         self.f.seek(SeekFrom::Start(0))?;
-        self.header = Header::from_reader(
-            Some(self.header.layout.alignment),
-            tmpdb.header.next_block,
-            &mut self.f,
-        )?;
+        self.header = Header::from_reader(tmpdb.header.next_block, &mut self.f)?;
 
         self.f.seek(SeekFrom::Start(self.header.dir_ofs))?;
         self.dir = Directory::from_reader(self.header.layout, self.header.dir_sz, &mut self.f)?;

@@ -31,7 +31,6 @@ fn api_remove() {
 
             // Open database for testing
             let mut db = OpenOptions::new()
-                .alignment(testdb.alignment)
                 .write()
                 .open(&newdb_fn)
                 .expect("GDBM open failed");
@@ -67,14 +66,13 @@ fn api_insert() {
 
     tests
         .iter()
-        .filter_map(|test| (!test.is_basic).then_some((test.db_path.clone(), test.alignment)))
-        .try_for_each(|(filename, alignment)| {
+        .filter_map(|test| (!test.is_basic).then_some(test.db_path.clone()))
+        .try_for_each(|filename| {
             let file = NamedTempFile::new().unwrap();
             let test_filename = file.path();
             fs::copy(filename, test_filename).unwrap();
 
             let mut db = OpenOptions::new()
-                .alignment(alignment)
                 .write()
                 .open(test_filename.to_str().unwrap())
                 .map_err(|e| e.to_string())?;

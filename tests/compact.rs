@@ -1,17 +1,16 @@
 extern crate gdbm_native;
 
-use gdbm_native::{Alignment, Endian, Offset, OpenOptions};
+use gdbm_native::{Endian, Layout, OpenOptions};
 
 #[test]
 fn api_compact() {
-    let test = |alignment, endian, offset, numsync| {
+    let test = |layout, endian, numsync| {
         // create a temporary database
         let mut db = OpenOptions::new()
             .write()
             .create()
-            .alignment(Some(alignment))
-            .offset(Some(offset))
-            .endian(Some(endian))
+            .layout(layout)
+            .endian(endian)
             .numsync(numsync)
             .tempfile()
             .map_err(|e| format!("creating: {e}"))?;
@@ -52,32 +51,17 @@ fn api_compact() {
             .map_err(|e| format!("removing: {e}"))?;
 
         // check database layout
-        (alignment == db.alignment()
-            && numsync == db.magic().is_numsync()
-            && endian == db.magic().endian()
-            && offset == db.magic().offset())
-        .then_some(())
-        .ok_or_else(|| "wrong layout".to_string())
+        (layout == db.layout() && numsync == db.magic().is_numsync() && endian == db.endian())
+            .then_some(())
+            .ok_or_else(|| "wrong layout".to_string())
     };
 
-    [Alignment::Align64, Alignment::Align32]
-        .into_iter()
-        .try_for_each(|alignment| {
-            [Endian::Little, Endian::Big]
-                .into_iter()
-                .try_for_each(|endian| {
-                    [Offset::LFS, Offset::Small]
-                        .into_iter()
-                        .try_for_each(|offset| {
-                            [false, true].into_iter().try_for_each(|numsync| {
-                                test(alignment, endian, offset, numsync).map_err(|e| {
-                                    format!(
-                                        "{alignment:?} {offset:?} {endian:?} numsync {numsync}: {e}"
-                                    )
-                                })
-                            })
-                        })
-                })
-        })
-        .unwrap_or_else(|e| panic!("{e}"));
+    for layout in [Layout::Off32, Layout::Off64Align4, Layout::Off64Align8] {
+        for endian in [Endian::Little, Endian::Big] {
+            for numsync in [false, true] {
+                test(layout, endian, numsync)
+                    .unwrap_or_else(|e| panic!("{layout:?} {endian:?} numsync {numsync}: {e}"));
+            }
+        }
+    }
 }

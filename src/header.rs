@@ -14,7 +14,7 @@ use crate::avail::{AvailBlock, AvailElem};
 use crate::bucket::{Bucket, BucketElement};
 use crate::dir::build_dir_size;
 use crate::magic::Magic;
-use crate::ser::{Alignment, Endian, Layout, Offset, read32, read64, write32, write64};
+use crate::ser::{Endian, Format, Layout, Offset, read32, read64, write32, write64};
 use crate::{Error, Result};
 
 #[derive(Debug)]
@@ -34,21 +34,21 @@ pub struct Header {
 
     // following fields are calculated, not stored
     pub dirty: bool,
-    pub layout: Layout,
+    pub layout: Format,
 }
 
 impl Header {
-    pub fn sizeof(layout: Layout, is_numsync: bool, avail_elems: u32) -> u32 {
+    pub fn sizeof(layout: Format, is_numsync: bool, avail_elems: u32) -> u32 {
         let fixed = match (layout.offset, is_numsync) {
             (Offset::Small, true) => 32 + 32,
             (Offset::Small, false) => 32,
-            (Offset::LFS, true) => 40 + 32,
-            (Offset::LFS, false) => 40,
+            (Offset::Lfs, true) => 40 + 32,
+            (Offset::Lfs, false) => 40,
         };
         AvailBlock::sizeof(layout, avail_elems).saturating_add(fixed)
     }
 
-    pub fn new(block_size: u32, layout: Layout, dir_bits: u32, numsync: bool) -> Self {
+    pub fn new(block_size: u32, layout: Format, dir_bits: u32, numsync: bool) -> Self {
         let bucket_elems = (block_size - Bucket::sizeof(layout)) / BucketElement::sizeof(layout);
         let avail_elems =
             (block_size - Self::sizeof(layout, numsync, 0)) / AvailElem::sizeof(layout);
@@ -68,16 +68,12 @@ impl Header {
         }
     }
 
-    pub fn from_reader(
-        alignment: Option<Alignment>,
-        file_size: u64,
-        reader: &mut impl Read,
-    ) -> Result<Self> {
+    pub fn from_reader(file_size: u64, reader: &mut impl Read) -> Result<Self> {
         let magic = Magic::from_reader(reader)?;
         let block_sz = read32(magic.endian(), reader)?;
         let dir_ofs = match magic.offset() {
             Offset::Small => u64::from(read32(magic.endian(), reader)?),
-            Offset::LFS => read64(magic.endian(), reader)?,
+            Offset::Lfs => read64(magic.endian(), reader)?,
         };
         let dir_sz = read32(magic.endian(), reader)?;
         let dir_bits = read32(magic.endian(), reader)?;
@@ -85,20 +81,18 @@ impl Header {
         let bucket_elems = read32(magic.endian(), reader)?;
         let next_block = match magic.offset() {
             Offset::Small => u64::from(read32(magic.endian(), reader)?),
-            Offset::LFS => read64(magic.endian(), reader)?,
+            Offset::Lfs => read64(magic.endian(), reader)?,
         };
         let numsync = magic
             .is_numsync()
             .then(|| read_numsync(magic.endian(), reader))
             .transpose()?;
 
-        let layout = Layout {
-            offset: magic.offset(),
-            endian: magic.endian(),
-            alignment: alignment.unwrap_or(magic.default_alignment()),
-        };
-
-        let avail = AvailBlock::from_reader(layout, reader)?;
+        // The avail table starts at the same offset whatever the alignment, so its capacity can
+        // be read before the alignment is known.
+        let avail_sz = read32(magic.endian(), reader)?;
+        let layout = detect_format(magic, block_sz, bucket_sz, bucket_elems, avail_sz);
+        let avail = AvailBlock::from_reader_sized(layout, avail_sz, reader)?;
 
         let header = Header {
             magic,
@@ -209,7 +203,7 @@ impl Header {
 
         match layout.offset {
             Offset::Small => write32(layout.endian, writer, self.dir_ofs as u32)?,
-            Offset::LFS => write64(layout.endian, writer, self.dir_ofs)?,
+            Offset::Lfs => write64(layout.endian, writer, self.dir_ofs)?,
         }
 
         write32(layout.endian, writer, self.dir_sz)?;
@@ -219,7 +213,7 @@ impl Header {
 
         match layout.offset {
             Offset::Small => write32(layout.endian, writer, self.next_block as u32)?,
-            Offset::LFS => write64(layout.endian, writer, self.next_block)?,
+            Offset::Lfs => write64(layout.endian, writer, self.next_block)?,
         }
 
         if self.magic.is_numsync() {
@@ -262,6 +256,37 @@ impl Header {
         self.avail.insert_elem(offset, length);
         self.dirty = true;
     }
+}
+
+// C GDBM files do not record struct alignment, which differs between platforms only for 64-bit
+// offsets (4 bytes on i386, 8 elsewhere). C GDBM requires the header's avail table capacity and
+// bucket element count to equal the values computed from the block and bucket sizes, and both
+// depend on the alignment, so pick the alignment for which both match. If neither does, assume
+// 8-byte alignment and let verify() report the mismatch.
+fn detect_format(
+    magic: Magic,
+    block_sz: u32,
+    bucket_sz: u32,
+    bucket_elems: u32,
+    avail_sz: u32,
+) -> Format {
+    let candidates = match magic.offset() {
+        Offset::Small => vec![Layout::Off32],
+        Offset::Lfs => vec![Layout::Off64Align8, Layout::Off64Align4],
+    };
+    let fits = |format: Format| {
+        let header = Header::sizeof(format, magic.is_numsync(), 0);
+        avail_sz == block_sz.saturating_sub(header) / AvailElem::sizeof(format)
+            && bucket_elems
+                == bucket_sz.saturating_sub(Bucket::sizeof(format)) / BucketElement::sizeof(format)
+    };
+    let formats = candidates
+        .into_iter()
+        .map(|layout| Format::new(layout, magic.endian()));
+    formats
+        .clone()
+        .find(|&format| fits(format))
+        .unwrap_or_else(|| formats.clone().next().unwrap())
 }
 
 fn read_numsync(endian: Endian, reader: &mut impl Read) -> Result<u32> {

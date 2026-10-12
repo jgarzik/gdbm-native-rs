@@ -10,11 +10,26 @@
 
 use std::io::{self, Read, Write};
 
-/// Struct field alignment of DB file. Unless specified when opening a database, alignment defaults
-/// to `Alignment::Align64` for databases created with [`Offset::LFS`](crate::Offset::LFS),
-/// otherwise `Alignemnt::Align32`.
+/// The C struct layout of a database file, which depends on the platform whose C GDBM
+/// created it. GDBM files record their byte order and offset size, but not their alignment;
+/// gdbm-native works it out when opening a database.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Layout {
+    /// 32-bit file offsets, as written by C GDBM built without large file support
+    /// (`off_t` of 4 bytes). Databases are limited to 2 GiB.
+    Off32,
+    /// 64-bit file offsets aligned on 4 bytes, as written by C GDBM on i386 with large file
+    /// support.
+    Off64Align4,
+    /// 64-bit file offsets aligned on 8 bytes, as written by C GDBM on 64-bit platforms and on
+    /// 32-bit ARM and MIPS with large file support. This is the default for new databases.
+    #[default]
+    Off64Align8,
+}
+
+// Struct field alignment of DB file.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Alignment {
+pub(crate) enum Alignment {
     /// All fields aligned on 4byte boundaries.
     /// Struct sizes are multiple of 4.
     Align32,
@@ -24,40 +39,59 @@ pub enum Alignment {
 }
 
 impl Alignment {
-    /// `true` if `self` is `Align64`, otherwise `false`.
-    #[must_use]
-    pub fn is64(&self) -> bool {
-        *self == Alignment::Align64
+    pub fn is64(self) -> bool {
+        self == Alignment::Align64
     }
 }
 
-/// Endianness of database file. This defaults to `Little` for databases created on all systems.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Byte order of a database file. GDBM files are written in the byte order of the platform that
+/// created them; gdbm-native reads and writes either. New databases default to `Little`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Endian {
     /// Little endian.
+    #[default]
     Little,
     /// Big endian.
     Big,
 }
 
-/// Offset types: `LFS` (64bit) or `Small` (32bit). This relates to how many bytes are used
-/// internally to store file offsets. `LFS` (8 bytes) is the default for new databases, but if you
-/// need to save 4 bytes per entry (both in memory and in the database file) you can use `Small`,
-/// bearing in mind that 4 byte offsets limit the database to 2^32 bytes (4GIB).
+// Size of file offset fields.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Offset {
-    /// Offset fields are 32bit.
+pub(crate) enum Offset {
     Small,
-    /// Offset fields are 64bit.
-    LFS,
+    Lfs,
 }
 
-/// Container for layout possibilities.
+// The complete on-disk format: byte order plus struct layout, the latter split into the two
+// properties the (de)serialization code needs.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct Layout {
+pub(crate) struct Format {
     pub alignment: Alignment,
     pub endian: Endian,
     pub offset: Offset,
+}
+
+impl Format {
+    pub fn new(layout: Layout, endian: Endian) -> Self {
+        let (offset, alignment) = match layout {
+            Layout::Off32 => (Offset::Small, Alignment::Align32),
+            Layout::Off64Align4 => (Offset::Lfs, Alignment::Align32),
+            Layout::Off64Align8 => (Offset::Lfs, Alignment::Align64),
+        };
+        Self {
+            alignment,
+            endian,
+            offset,
+        }
+    }
+
+    pub fn layout(self) -> Layout {
+        match (self.offset, self.alignment) {
+            (Offset::Small, _) => Layout::Off32,
+            (Offset::Lfs, Alignment::Align32) => Layout::Off64Align4,
+            (Offset::Lfs, Alignment::Align64) => Layout::Off64Align8,
+        }
+    }
 }
 
 pub fn read32(endian: Endian, reader: &mut impl Read) -> io::Result<u32> {

@@ -25,5 +25,6 @@ Pure-Rust GDBM; on-disk compatible with GNU GDBM 1.23 (C).
 - Key hash depends on C `char` signedness: `CharSign` (default Signed = x86/x86-64/macOS; Unsigned = Linux ARM/PPC/RISC-V).
 - Avail stack block size is C's `(sz*elem)/2 + sizeof(avail_block)`, which includes one elem: `AvailBlock::stack_block_size`.
 - Free space may lie past EOF up to `next_block`; validate against `next_block`. `sync` extends the file to `next_block`; buckets are padded to `bucket_sz` (C sets it to `block_size`).
-- `Offset::Small` files are capped at 2 GiB (C's signed 32-bit `off_t`).
+- Layout (struct alignment) and byte order are detected on open (`Header::from_reader` → `detect_format`): magic gives endian + offset size; alignment from avail capacity + bucket_elems. Public `Layout {Off32, Off64Align4, Off64Align8}`; internal `ser::Format` (offset, alignment, endian).
+- `Layout::Off32` files are capped at 2 GiB (C's signed 32-bit `off_t`).
 - Mutations set `WriteState::Inconsistent`; an error leaves the db refusing writes.

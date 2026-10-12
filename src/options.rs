@@ -8,7 +8,7 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
-use crate::{Alignment, CharSign, Endian, Error, Gdbm, Offset, ReadOnly, ReadWrite, Result};
+use crate::{CharSign, Endian, Error, Gdbm, Layout, ReadOnly, ReadWrite, Result};
 
 /// `Blocksize` can be used when creating a database to override the default block size, which is
 /// the underlying filesystem block size, or 512, whichever is largest. The minimum blocksize is
@@ -32,10 +32,10 @@ pub enum BlockSize {
 /// altered after the database is created.
 #[derive(Default, Copy, Clone, Debug)]
 pub struct Create {
-    /// Overide default [`Offset`](crate::Offset). Set via [`OpenOptions::offset()`].
-    pub offset: Option<Offset>,
-    /// Overide default [`Endian`](crate::Endian). Set via [`OpenOptions::endian()`].
-    pub endian: Option<Endian>,
+    /// [`Layout`](crate::Layout) of the new database. Set via [`OpenOptions::layout()`].
+    pub layout: Layout,
+    /// [`Endian`](crate::Endian) of the new database. Set via [`OpenOptions::endian()`].
+    pub endian: Endian,
     /// Overide default `numsync` (`false`). Set via [`OpenOptions::numsync()`].
     pub no_numsync: bool,
     /// Overrids the default [`BlockSize`](crate::BlockSize). Set via
@@ -64,12 +64,7 @@ pub struct Write<C> {
 #[must_use]
 #[derive(Copy, Clone, Debug, Default)]
 pub struct OpenOptions<W> {
-    /// Override default [Alignment](crate::Alignment) when opening a database. Default alignment
-    /// is system specific and need only be considered if database files are to be used on
-    /// different architectures, as might be the case if the database is stored on a network
-    /// filesystem.
-    pub alignment: Option<Alignment>,
-    /// Bytesize of in-memory bucket cache (defaults to [`DEFAULT_CACHESIZE`])
+    /// Bytesize of in-memory bucket cache (defaults to [`DEFAULT_CACHESIZE`](crate::DEFAULT_CACHESIZE))
     pub cachesize: Option<usize>,
     /// Key hashing compatibility; see [`CharSign`](crate::CharSign).
     pub char_sign: CharSign,
@@ -112,11 +107,6 @@ impl OpenOptions<NotWrite> {
 }
 
 impl<W> OpenOptions<W> {
-    /// Override default [alignment](crate::Alignment) value.
-    pub fn alignment(self, alignment: Option<Alignment>) -> OpenOptions<W> {
-        OpenOptions { alignment, ..self }
-    }
-
     /// Override default [cachesize](crate::DEFAULT_CACHESIZE) value.
     pub fn cachesize(self, cachesize: Option<usize>) -> OpenOptions<W> {
         OpenOptions { cachesize, ..self }
@@ -141,7 +131,6 @@ impl<W> OpenOptions<W> {
 
     fn with_write<W2>(self, write: W2) -> OpenOptions<W2> {
         OpenOptions {
-            alignment: self.alignment,
             cachesize: self.cachesize,
             char_sign: self.char_sign,
             no_lock: self.no_lock,
@@ -212,16 +201,19 @@ impl OpenOptions<Write<Create>> {
         }
     }
 
-    /// Override the default [`Offset`](crate::Offset) when creating a database.
-    pub fn offset(self, offset: Option<Offset>) -> OpenOptions<Write<Create>> {
+    /// Set the [`Layout`](crate::Layout) of a new database (default `Layout::Off64Align8`). Use
+    /// this to create databases for use by C GDBM on another platform. Existing databases are
+    /// always opened with the layout they were created with.
+    pub fn layout(self, layout: Layout) -> OpenOptions<Write<Create>> {
         self.with_create(Create {
-            offset,
+            layout,
             ..self.write.create
         })
     }
 
-    /// Override the default [`Endian`](crate::Endian) when creating a database.
-    pub fn endian(self, endian: Option<Endian>) -> OpenOptions<Write<Create>> {
+    /// Set the byte order of a new database (default `Endian::Little`). Existing databases are
+    /// always opened with the byte order they were created with.
+    pub fn endian(self, endian: Endian) -> OpenOptions<Write<Create>> {
         self.with_create(Create {
             endian,
             ..self.write.create

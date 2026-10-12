@@ -13,7 +13,7 @@ use std::io::{Seek, SeekFrom};
 
 use crate::avail::AvailBlock;
 use crate::bucket::Bucket;
-use crate::{Gdbm, OpenOptions, ReadWrite, Result};
+use crate::{Gdbm, Layout, OpenOptions, ReadWrite, Result};
 
 impl Gdbm<ReadWrite> {
     // Sync, then verify from on-disk state that every in-use extent (header, directory, buckets,
@@ -451,7 +451,7 @@ fn small_offset_limit() {
     let mut db = OpenOptions::new()
         .write()
         .create()
-        .offset(Some(crate::Offset::Small))
+        .layout(crate::Layout::Off32)
         .block_size(crate::BlockSize::Exactly(512))
         .open(&path)
         .unwrap();
@@ -463,4 +463,41 @@ fn small_offset_limit() {
         db.insert("big", &vec![0u8; 4096]),
         Err(crate::Error::FileTooLarge { .. })
     ));
+}
+
+// Every layout, byte order and numsync combination supports the full write path (bucket splits,
+// avail stack push/pop), and reopens with its layout detected.
+#[test]
+fn churn_every_format() {
+    for layout in [Layout::Off32, Layout::Off64Align4, Layout::Off64Align8] {
+        for endian in [crate::Endian::Little, crate::Endian::Big] {
+            for numsync in [false, true] {
+                let what = format!("{layout:?} {endian:?} numsync {numsync}");
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("test.db");
+                let mut rng = Lcg(3);
+                let mut model = HashMap::new();
+
+                let mut db = OpenOptions::new()
+                    .write()
+                    .create()
+                    .layout(layout)
+                    .endian(endian)
+                    .numsync(numsync)
+                    .block_size(crate::BlockSize::Exactly(512))
+                    .open(&path)
+                    .unwrap();
+                for phase in 0..6 {
+                    churn(&mut db, &mut rng, &mut model, 400, [10, 80][phase % 2]);
+                }
+                drop(db);
+
+                let mut db = OpenOptions::new().write().open(&path).unwrap();
+                assert_eq!(db.layout(), layout, "{what}");
+                assert_eq!(db.endian(), endian, "{what}");
+                assert_contents(&mut db, &model);
+                db.check_space().unwrap();
+            }
+        }
+    }
 }

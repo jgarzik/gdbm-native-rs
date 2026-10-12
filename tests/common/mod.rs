@@ -3,7 +3,7 @@
 
 extern crate gdbm_native;
 
-use gdbm_native::Alignment;
+use gdbm_native::Layout;
 use serde::Deserialize;
 use std::fs;
 use std::path::PathBuf;
@@ -23,11 +23,12 @@ pub struct TestInfo {
     pub is_basic: bool,
     pub n_records: usize,
     pub metadata: TestMetadata,
-    pub alignment: Option<Alignment>,
+    /// layout the fixture was written with, which opening must detect
+    pub layout: Layout,
 }
 
 impl TestInfo {
-    fn new(db_fn: &str, json_fn: &str, is_basic: bool, alignment: Option<Alignment>) -> Self {
+    fn new(db_fn: &str, json_fn: &str, is_basic: bool, layout: Layout) -> Self {
         let mut dbp = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         dbp.push("tests/data");
         dbp.push(db_fn);
@@ -47,7 +48,7 @@ impl TestInfo {
             is_basic,
             n_records: metadata.data_records,
             metadata,
-            alignment,
+            layout,
         }
     }
 
@@ -61,13 +62,15 @@ impl TestInfo {
 
 pub fn init_tests() -> Vec<TestInfo> {
     [
-        ("le64", None),
-        ("be64", None),
-        ("le32", Some(Alignment::Align32)),
-        ("be32", None),
+        ("le64", Layout::Off64Align8),
+        ("be64", Layout::Off64Align8),
+        // i386 with large file support
+        ("le32", Layout::Off64Align4),
+        // 32-bit MIPS with large file support
+        ("be32", Layout::Off64Align8),
     ]
     .into_iter()
-    .flat_map(|(flavor, alignment)| {
+    .flat_map(|(flavor, layout)| {
         ["empty", "basic"]
             .into_iter()
             .map(move |empty_or_basic| {
@@ -75,7 +78,7 @@ pub fn init_tests() -> Vec<TestInfo> {
                     &format!("{empty_or_basic}.db.{flavor}"),
                     &format!("{empty_or_basic}.json.{flavor}"),
                     empty_or_basic == "basic",
-                    alignment,
+                    layout,
                 )
             })
             .chain(["empty", "basic"].into_iter().map(move |empty_or_basic| {
@@ -83,7 +86,7 @@ pub fn init_tests() -> Vec<TestInfo> {
                     &format!("{empty_or_basic}.db.{flavor}.numsync"),
                     &format!("{empty_or_basic}.json.{flavor}"),
                     empty_or_basic == "basic",
-                    alignment,
+                    layout,
                 )
             }))
     })

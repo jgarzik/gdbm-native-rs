@@ -150,7 +150,6 @@ fn fixtures_match_manifests() {
 }
 
 #[test]
-#[ignore = "needs layout auto-detection"]
 fn open_without_hints() {
     let n = records().len();
     for_each_db(|_, db| {
