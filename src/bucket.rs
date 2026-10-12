@@ -118,20 +118,15 @@ pub struct Bucket {
 impl Bucket {
     pub const AVAIL: u32 = 6;
 
-    pub fn new(bits: u32, len: usize, avail: Vec<AvailElem>, elements: Vec<BucketElement>) -> Self {
-        elements.into_iter().fold(
-            Self {
-                dirty: true,
-                avail,
-                bits,
-                count: 0,
-                tab: vec![BucketElement::default(); len],
-            },
-            |mut bucket, elem| {
-                bucket.insert(elem);
-                bucket
-            },
-        )
+    // An empty bucket with len slots.
+    pub fn new(bits: u32, len: usize, avail: Vec<AvailElem>) -> Self {
+        Self {
+            dirty: true,
+            avail,
+            bits,
+            count: 0,
+            tab: vec![BucketElement::default(); len],
+        }
     }
 
     pub fn from_reader(elems: u32, layout: Format, reader: &mut impl Read) -> io::Result<Self> {
@@ -228,18 +223,25 @@ impl Bucket {
             }
     }
 
-    // insert an element - we assume there's space
-    pub fn insert(&mut self, element: BucketElement) {
-        self.count += 1;
+    // Number of occupied slots. For a sound bucket this equals count.
+    pub fn occupied(&self) -> u32 {
+        self.tab.iter().filter(|elem| elem.is_occupied()).count() as u32
+    }
 
-        let index = (0..self.tab.len())
-            .map(|index| (index + element.hash as usize) % self.tab.len())
-            .find(|&index| !self.tab[index].is_occupied())
-            .unwrap();
+    // Insert an element at the first free slot from its home slot and return that slot, or None
+    // if every slot is occupied (only possible in a corrupt bucket, as callers split full ones).
+    #[must_use]
+    pub fn insert(&mut self, element: BucketElement) -> Option<usize> {
+        let len = self.tab.len();
+        let index = (0..len)
+            .map(|index| (index + element.hash as usize) % len)
+            .find(|&index| !self.tab[index].is_occupied())?;
 
         self.tab[index] = element;
-
+        self.count += 1;
         self.dirty = true;
+
+        Some(index)
     }
 
     // remove an element - we assume there's an element
@@ -249,7 +251,7 @@ impl Bucket {
 
         // remove element from table
         self.tab[offset] = BucketElement::default();
-        self.count -= 1;
+        self.count = self.count.saturating_sub(1);
 
         let mut last_ofs = offset;
         let mut elem_ofs = (offset + 1) % len;
@@ -271,20 +273,27 @@ impl Bucket {
         elem
     }
 
-    pub fn split(&self) -> (Bucket, Bucket) {
+    // Split into two buckets by the next hash bit. None only if an element does not fit, which
+    // cannot happen: each new bucket has as many slots as this one.
+    pub fn split(&self) -> Option<(Bucket, Bucket)> {
         let mask = 0x80_00_00_00 >> (self.bits + 1);
-        let (elems0, elems1) = self
-            .tab
-            .iter()
-            .copied()
-            .partition::<Vec<_>, _>(|elem| elem.hash & mask == 0);
-
         let (avail0, avail1) = avail::partition_elems(&self.avail);
+        let mut bucket0 = Bucket::new(self.bits + 1, self.tab.len(), avail0);
+        let mut bucket1 = Bucket::new(self.bits + 1, self.tab.len(), avail1);
 
-        (
-            Bucket::new(self.bits + 1, self.tab.len(), avail0, elems0),
-            Bucket::new(self.bits + 1, self.tab.len(), avail1, elems1),
-        )
+        self.tab
+            .iter()
+            .filter(|elem| elem.is_occupied())
+            .try_for_each(|&elem| {
+                if elem.hash & mask == 0 {
+                    bucket0.insert(elem)
+                } else {
+                    bucket1.insert(elem)
+                }
+                .map(|_| ())
+            })?;
+
+        Some((bucket0, bucket1))
     }
 
     pub fn allocate(&mut self, size: u32) -> Option<(u64, u32)> {
@@ -511,7 +520,7 @@ mod test {
             let mut cache = BucketCache::new(
                 1,
                 test.bucket.map(|dirty| {
-                    let mut bucket = Bucket::new(0, 0, vec![], vec![]);
+                    let mut bucket = Bucket::new(0, 0, vec![]);
                     bucket.dirty = dirty;
 
                     (100, bucket)
@@ -519,7 +528,7 @@ mod test {
             );
 
             println!("{cache:?}");
-            let evicted = cache.insert(200, Bucket::new(0, 0, vec![], vec![]));
+            let evicted = cache.insert(200, Bucket::new(0, 0, vec![]));
 
             (evicted.is_some() == test.expected)
                 .then_some(())

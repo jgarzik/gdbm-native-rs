@@ -106,3 +106,42 @@ fn short_key_with_stale_prefix_bytes() {
     db.insert("ab", "new").unwrap();
     assert_eq!(db.len().unwrap(), 1);
 }
+
+// Insert into a possibly corrupt database: errors are fine, panics are not.
+fn insert_some(path: &Path) {
+    if let Ok(mut db) = OpenOptions::new().write(true).open(path) {
+        for i in 0..20u8 {
+            let _ = db.insert(&[i, 0xe9], &vec![i; usize::from(i) * 40]);
+        }
+    }
+}
+
+#[test]
+// Bug (found by fuzzing): a bucket whose header count is below capacity while every slot is
+// occupied passed validation, and inserting into it panicked in Bucket::insert. A file truncated
+// to 1 MiB has such buckets.
+fn truncated_database_insert_does_not_panic() {
+    let data: std::path::PathBuf = [env!("CARGO_MANIFEST_DIR"), "tests", "data"]
+        .iter()
+        .collect();
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("db");
+    let file = std::fs::read(data.join("basic.db.le32.numsync")).unwrap();
+    std::fs::write(&path, &file[..1 << 20]).unwrap();
+    insert_some(&path);
+}
+
+#[test]
+// The same with a hand-made bucket of zeroes: count 0, but every slot's hash is 0, i.e. occupied.
+fn zeroed_bucket_insert_does_not_panic() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut db = create(&path, true);
+    db.insert("key", "value").unwrap();
+    db.close().unwrap();
+
+    let file = std::fs::read(&path).unwrap();
+    let bucket0 = u64_at(&file, u64_at(&file, DIR_OFS));
+    patch(&path, bucket0, &[0u8; 496]);
+    insert_some(&path);
+}

@@ -525,6 +525,15 @@ impl Gdbm {
                 });
             }
 
+            // Inserting relies on a bucket with count < bucket_elems having a free slot.
+            if bucket.occupied() != bucket.count {
+                return Err(Error::BadBucketCount {
+                    offset,
+                    count: bucket.count,
+                    occupied: bucket.occupied(),
+                });
+            }
+
             avail::validate_elems(
                 &bucket.avail,
                 offset,
@@ -1139,7 +1148,7 @@ impl Gdbm {
         }
 
         let header = Header::new(block_size, layout, dir_bits, open_options.numsync);
-        let bucket = Bucket::new(0, header.bucket_elems as usize, vec![], vec![]);
+        let bucket = Bucket::new(0, header.bucket_elems as usize, vec![]);
         let bucket_offset = header.next_block - u64::from(block_size);
         let dir = Directory::new(vec![bucket_offset; 1 << header.dir_bits]);
 
@@ -1644,11 +1653,16 @@ impl Gdbm {
             self.with_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash), |_| ())?;
         }
 
-        self.bucket_cache
-            .get_mut()
-            .current_bucket_mut()
-            .unwrap()
-            .insert(bucket_elem);
+        let cache = self.bucket_cache.get_mut();
+        let offset = cache.current_bucket_offset().unwrap();
+        let bucket = cache.current_bucket_mut().unwrap();
+        bucket
+            .insert(bucket_elem)
+            .ok_or_else(|| Error::BadBucketCount {
+                offset,
+                count: bucket.count,
+                occupied: bucket.occupied(),
+            })?;
 
         self.rw().state = WriteState::Dirty;
 
@@ -1764,7 +1778,12 @@ impl Gdbm {
 
         let cache = self.bucket_cache.get_mut();
         let cur_bucket_offset = cache.current_bucket_offset().unwrap();
-        let (bucket0, bucket1) = cache.current_bucket().unwrap().split();
+        let bucket = cache.current_bucket().unwrap();
+        let (bucket0, bucket1) = bucket.split().ok_or_else(|| Error::BadBucketCount {
+            offset: cur_bucket_offset,
+            count: bucket.count,
+            occupied: bucket.occupied(),
+        })?;
         let bits = bucket0.bits;
 
         let _ = self

@@ -66,6 +66,15 @@ pub enum Error {
         /// Directory bits.
         dir_bits: u32,
     },
+    /// Bucket element count does not match the number of occupied slots in its table.
+    BadBucketCount {
+        /// Bucket file offset.
+        offset: u64,
+        /// Element count in the bucket header.
+        count: u32,
+        /// Number of occupied slots.
+        occupied: u32,
+    },
     /// Could not use supplied block size and bsexact was specified.
     BadBlockSize {
         /// Requested blocksize.
@@ -211,6 +220,15 @@ impl Display for Error {
                 f,
                 "corrupt database: bucket at {offset} has {elems} elements (maximum \
                  {max_elems}) and {bits} bits (maximum {dir_bits})"
+            ),
+            Error::BadBucketCount {
+                offset,
+                count,
+                occupied,
+            } => write!(
+                f,
+                "corrupt database: bucket at {offset} has a count of {count} but {occupied} \
+                 occupied slots"
             ),
             Error::BadBlockSize { requested, actual } => write!(
                 f,
