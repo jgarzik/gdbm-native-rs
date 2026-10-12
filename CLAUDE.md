@@ -27,4 +27,5 @@ Pure-Rust GDBM; on-disk compatible with GNU GDBM 1.23 (C).
 - Free space may lie past EOF up to `next_block`; validate against `next_block`. `sync` extends the file to `next_block`; buckets are padded to `bucket_sz` (C sets it to `block_size`).
 - Layout (struct alignment) and byte order are detected on open (`Header::from_reader` → `detect_format`): magic gives endian + offset size; alignment from avail capacity + bucket_elems. Public `Layout {Off32, Off64Align4, Off64Align8}`; internal `ser::Format` (offset, alignment, endian).
 - `Layout::Off32` files are capped at 2 GiB (C's signed 32-bit `off_t`).
+- Binary dump length = C `long` holding BE32 length, host byte order: `BinDumpFormat {Long32, Long64Le, Long64Be}`; import detects from first length field. ASCII dumps: write an empty line after `#:len=0` (C gdbm_load 1.23–1.26 cannot load C gdbm_dump's line-less form); read both. C < 1.24 cannot binary export/import empty values.
 - Mutations set `WriteState::Inconsistent`; an error leaves the db refusing writes.

@@ -13,7 +13,7 @@
 // formats differ between platforms in ways the files do not record (struct alignment, char
 // signedness, sizeof(long)), so every fixture must be usable without hints.
 
-use gdbm_native::{CharSign, OpenOptions};
+use gdbm_native::{BinDumpFormat, CharSign, ImportMode, OpenOptions};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -217,25 +217,6 @@ fn modify_and_reopen() {
     });
 }
 
-fn import_dump(
-    platform: &Platform,
-    import: impl Fn(
-        &mut gdbm_native::Gdbm<gdbm_native::ReadWrite>,
-        &mut std::fs::File,
-    ) -> gdbm_native::Result<()>,
-    dump: &str,
-) -> Result<(), String> {
-    let dir = tempfile::tempdir().unwrap();
-    let mut db = OpenOptions::new()
-        .write()
-        .create()
-        .open(dir.path().join("db"))
-        .map_err(|e| e.to_string())?;
-    let mut f = std::fs::File::open(platform.dir.join(dump)).unwrap();
-    import(&mut db, &mut f).map_err(|e| e.to_string())?;
-    verify_contents(&mut db, &records())
-}
-
 fn for_each_platform(check: impl Fn(&Platform) -> Result<(), String>) {
     let failures = platforms()
         .iter()
@@ -244,22 +225,106 @@ fn for_each_platform(check: impl Fn(&Platform) -> Result<(), String>) {
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
 
-#[test]
-#[ignore = "needs C-compatible ASCII dump import"]
-fn import_c_ascii_dumps() {
-    for_each_platform(|p| import_dump(p, |db, f| db.import_ascii(f), "mixed.txt"));
+fn new_db(dir: &tempfile::TempDir) -> gdbm_native::Gdbm<gdbm_native::ReadWrite> {
+    OpenOptions::new()
+        .write()
+        .create()
+        .open(dir.path().join("db"))
+        .unwrap()
+}
+
+// the C binary dump length field is a C long, in the platform's byte order
+fn bin_format(p: &Platform) -> BinDumpFormat {
+    match (p.manifest.sizeof_long, p.manifest.big_endian) {
+        (4, _) => BinDumpFormat::Long32,
+        (_, false) => BinDumpFormat::Long64Le,
+        (_, true) => BinDumpFormat::Long64Be,
+    }
 }
 
 #[test]
-#[ignore = "needs C-compatible binary dump import"]
-fn import_c_binary_dumps() {
+fn import_c_ascii_dumps() {
+    let expected = records();
     for_each_platform(|p| {
-        // the C binary dump length field is a C long, in the platform's byte order
-        let mode = match p.manifest.sizeof_long {
-            4 => gdbm_native::ExportBinMode::Exp32,
-            _ => gdbm_native::ExportBinMode::Exp64,
-        };
-        import_dump(p, |db, f| db.import_bin(f, mode), "mixed.bin")
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = new_db(&dir);
+        let mut f = std::fs::File::open(p.dir.join("mixed.txt")).unwrap();
+        let info = db
+            .import_ascii(&mut f, ImportMode::Replace)
+            .map_err(|e| e.to_string())?;
+        if info.count != expected.len() || info.numsync != Some(false) || info.mode.is_none() {
+            return Err(format!("dump info {info:?}"));
+        }
+        verify_contents(&mut db, &expected)
+    });
+}
+
+#[test]
+fn import_c_binary_dumps() {
+    let expected = records();
+    for_each_platform(|p| {
+        // detected, then explicit
+        for format in [None, Some(bin_format(p))] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut db = new_db(&dir);
+            let mut f = std::fs::File::open(p.dir.join("mixed.bin")).unwrap();
+            let count = db
+                .import_bin(&mut f, format, ImportMode::Replace)
+                .map_err(|e| format!("{format:?}: {e}"))?;
+            if count != expected.len() {
+                return Err(format!("{format:?}: imported {count}"));
+            }
+            verify_contents(&mut db, &expected).map_err(|e| format!("{format:?}: {e}"))?;
+        }
+        Ok(())
+    });
+}
+
+// Dumps of a C database are identical to C GDBM's own, after the header (which names the
+// software version and date) -- except that gdbm-native writes an empty line for empty values,
+// since C GDBM's gdbm_load cannot load C GDBM's own encoding of them.
+#[test]
+fn export_matches_c_binary_dumps() {
+    fn records_part(dump: &[u8]) -> &[u8] {
+        let mut newlines = dump.iter().enumerate().filter(|&(_, &b)| b == b'\n');
+        &dump[newlines.nth(3).unwrap().0 + 1..]
+    }
+
+    for_each_platform(|p| {
+        let mut db = OpenOptions::new()
+            .open(p.dir.join("mixed.db"))
+            .map_err(|e| e.to_string())?;
+        let mut ours = Vec::new();
+        db.export_bin(&mut ours, bin_format(p))
+            .map_err(|e| e.to_string())?;
+        let theirs = std::fs::read(p.dir.join("mixed.bin")).unwrap();
+        (records_part(&ours) == records_part(&theirs))
+            .then_some(())
+            .ok_or("binary dump differs from C".to_string())
+    });
+}
+
+#[test]
+fn export_matches_c_ascii_dumps() {
+    fn records_part(dump: &str) -> &str {
+        &dump[dump.find("# End of header\n").unwrap()..]
+    }
+
+    for_each_platform(|p| {
+        let mut db = OpenOptions::new()
+            .open(p.dir.join("mixed.db"))
+            .map_err(|e| e.to_string())?;
+        let mut ours = Vec::new();
+        db.export_ascii(&mut ours, None::<&str>)
+            .map_err(|e| e.to_string())?;
+        let ours = String::from_utf8(ours).unwrap().replace("\n\n", "\n");
+        let theirs = std::fs::read_to_string(p.dir.join("mixed.txt")).unwrap();
+        if !ours.contains("\n#:format=standard\n") {
+            return Err("missing #:format".to_string());
+        }
+        (records_part(&ours) == records_part(&theirs))
+            .then_some(())
+            .ok_or("ASCII dump differs from C".to_string())
     });
 }
 

@@ -8,6 +8,9 @@
      fetch DB HEXKEY                print value, or NOTFOUND (exit 1)
      churn DB new|open SEED PHASES  random inserts/removes, then verify
      hold DB r|w SECS               open (locking) and hold, or report error
+     export DB OUT | dump DB OUT    binary (gdbm_export) / ASCII (gdbm_dump) dump
+     import DB IN | load DB IN      new DB from binary / ASCII dump; print
+                                    "<count> <standard|numsync>"
  */
 
 #include <stdio.h>
@@ -146,6 +149,39 @@ int main(int argc, char **argv)
 	if (argc == 6 && !strcmp(argv[1], "churn")) {
 		rng = strtoull(argv[4], NULL, 10);
 		return churn(argv[2], !strcmp(argv[3], "new"), atoi(argv[5]));
+	}
+
+	if (argc == 4 && (!strcmp(argv[1], "export") || !strcmp(argv[1], "dump"))) {
+		GDBM_FILE f = gdbm_open(argv[2], 0, GDBM_READER, 0, NULL);
+		if (!f)
+			return fail("open");
+		int rc = !strcmp(argv[1], "export")
+			? gdbm_export(f, argv[3], GDBM_NEWDB, 0644) < 0
+			: gdbm_dump(f, argv[3], GDBM_DUMP_FMT_ASCII, GDBM_NEWDB, 0644);
+		if (rc)
+			return fail(argv[1]);
+		gdbm_close(f);
+		return 0;
+	}
+
+	if (argc == 4 && (!strcmp(argv[1], "import") || !strcmp(argv[1], "load"))) {
+		GDBM_FILE f = gdbm_open(argv[2], 512, GDBM_NEWDB, 0644, NULL);
+		unsigned long line = 0;
+		gdbm_count_t count = 0;
+		int format = 0;
+		if (!f)
+			return fail("open");
+		int rc = !strcmp(argv[1], "import")
+			? gdbm_import(f, argv[3], GDBM_REPLACE) < 0
+			: gdbm_load(&f, argv[3], GDBM_REPLACE,
+				    GDBM_META_MASK_MODE | GDBM_META_MASK_OWNER, &line);
+		if (rc)
+			return fail(argv[1]);
+		if (gdbm_count(f, &count) || gdbm_setopt(f, GDBM_GETDBFORMAT, &format, sizeof format))
+			return fail("count");
+		printf("%llu %s\n", (unsigned long long) count, format ? "numsync" : "standard");
+		gdbm_close(f);
+		return 0;
 	}
 
 	if (argc == 5 && !strcmp(argv[1], "hold")) {

@@ -22,6 +22,12 @@ pub enum Error {
     Inconsistent,
     /// The database file is locked by another user.
     Locked,
+    /// A record being imported with [`ImportMode::Insert`](crate::ImportMode::Insert) has a key
+    /// that is already in the database.
+    KeyExists {
+        /// The key.
+        key: Vec<u8>,
+    },
     /// Bucket element describes a record outside the allocated area of the file.
     BadBucketElement {
         /// Record file offset.

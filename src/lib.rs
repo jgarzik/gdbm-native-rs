@@ -53,6 +53,7 @@ mod bytes;
 #[cfg(test)]
 mod check;
 mod dir;
+mod dump;
 mod error;
 mod hashutil;
 mod header;
@@ -65,6 +66,7 @@ use avail::{AvailBlock, AvailElem};
 use bucket::{Bucket, BucketCache, BucketElement};
 use bytes::{FromBytes, ToBytesRef};
 use dir::{Directory, build_dir_size};
+pub use dump::{BinDumpFormat, DumpInfo, ImportMode};
 pub use error::Error;
 pub use hashutil::CharSign;
 use hashutil::{PartialKey, bucket_dir, hash_key, key_loc};
@@ -72,8 +74,8 @@ use header::Header;
 use import::{ASCIIImportIterator, BinaryImportIterator};
 pub use magic::Magic;
 pub use options::{BlockSize, Create, OpenOptions};
-use ser::{Alignment, Format, Offset, write32, write64};
 pub use ser::{Endian, Layout};
+use ser::{Format, Offset};
 use std::fs::File;
 
 /// Our claimed GDBM lib version compatibility. Appears in dump files.
@@ -87,31 +89,6 @@ pub const DEFAULT_CACHESIZE: usize = 4 * 1024 * 1024;
 
 /// The crate Result type.
 pub type Result<T> = std::result::Result<T, Error>;
-
-/// Mode to use when exporting a binary dump. It affects the number of bytes used to store
-/// length metadata within the dump. There is no indication of this mode stored in a dump file
-/// so the same mode must be used when restoring the dumped data. For this reason it is preferable
-/// to use the ASCII dump format.
-#[derive(Copy, Clone, Debug)]
-pub enum ExportBinMode {
-    /// Use 32 bits to store lengths if the database has 32bit alignment, otherwise use 64 bits.
-    ExpNative,
-    /// Store lengths as 32bit values.
-    Exp32,
-    /// Store lengths as 64bit values.
-    Exp64,
-}
-
-impl ExportBinMode {
-    // alignment determining the size of length fields in the dump
-    fn alignment(self, native: Alignment) -> Alignment {
-        match self {
-            ExportBinMode::ExpNative => native,
-            ExportBinMode::Exp32 => Alignment::Align32,
-            ExportBinMode::Exp64 => Alignment::Align64,
-        }
-    }
-}
 
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 enum WriteState {
@@ -274,17 +251,40 @@ where
         })
     }
 
+    // The header C GDBM's gdbm_dump writes, less the user and group names, which C GDBM also
+    // omits when it cannot look them up.
     fn export_ascii_header(
+        &self,
         outf: &mut impl Write,
         pathname: Option<&std::path::Path>,
     ) -> io::Result<()> {
-        // TODO: add ctime() to "created by" output line
-        writeln!(outf, "# GDBM dump file created by {COMPAT_GDBM_VERSION}")?;
+        writeln!(
+            outf,
+            "# GDBM dump file created by gdbm-native {} (GDBM {COMPAT_GDBM_VERSION} format)",
+            env!("CARGO_PKG_VERSION")
+        )?;
         writeln!(outf, "#:version=1.1")?;
         if let Some(pathname) = pathname {
             writeln!(outf, "#:file={}", pathname.to_string_lossy())?;
         }
-        writeln!(outf, "#:format=standard")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = self.f.metadata()?;
+            writeln!(
+                outf,
+                "#:uid={},gid={},mode={:03o}",
+                metadata.uid(),
+                metadata.gid(),
+                metadata.mode() & 0o777
+            )?;
+        }
+        let format = if self.header.magic.is_numsync() {
+            "numsync"
+        } else {
+            "standard"
+        };
+        writeln!(outf, "#:format={format}")?;
         writeln!(outf, "# End of header")?;
         Ok(())
     }
@@ -294,8 +294,9 @@ where
 
         writeln!(outf, "#:len={}", bindata.len())?;
 
+        // C GDBM's gdbm_dump writes no data line for zero-length data, but its gdbm_load (1.23
+        // to at least 1.26) then fails with "Malformed data"; an empty line loads everywhere.
         let b64 = base64::prelude::BASE64_STANDARD.encode(bindata);
-
         if b64.is_empty() {
             writeln!(outf)?;
         }
@@ -323,8 +324,10 @@ where
 
     /// Dumps the database in ASCII format.
     ///
-    /// Dumps the database in ASCII format to the supplied [`io::Write`]. If a filename is
-    /// provided it will be used to set the `#:file=<filename>` header line.
+    /// Dumps the database in ASCII format to the supplied [`io::Write`], in the format of C GDBM's
+    /// `gdbm_dump`, readable by C GDBM's `gdbm_load` on any platform. If a filename is provided
+    /// it will be used to set the `#:file=<filename>` header line. On Unix the header also records
+    /// the owner and permissions of the database file.
     ///
     /// # Examples
     /// ```
@@ -346,7 +349,7 @@ where
         outf: &mut impl Write,
         pathname: Option<&P>,
     ) -> Result<()> {
-        Gdbm::export_ascii_header(outf, pathname.as_ref().map(std::convert::AsRef::as_ref))
+        self.export_ascii_header(outf, pathname.as_ref().map(std::convert::AsRef::as_ref))
             .map_err(Error::Io)
             .and_then(|()| self.export_ascii_records(outf))
             .and_then(|n_written| Gdbm::export_ascii_footer(outf, n_written).map_err(Error::Io))
@@ -357,32 +360,29 @@ where
             outf,
             "!\r\n! GDBM FLAT FILE DUMP -- THIS IS NOT A TEXT FILE\r\n"
         )?;
-        write!(outf, "! {COMPAT_GDBM_VERSION}\r\n!\r\n")?;
+        write!(
+            outf,
+            "! gdbm-native {} (GDBM {COMPAT_GDBM_VERSION} format)\r\n!\r\n",
+            env!("CARGO_PKG_VERSION")
+        )?;
         Ok(())
     }
 
+    // record sizes are at most i32::MAX (see record_size()), so lengths fit C's 32 bits
     fn export_bin_datum(
         outf: &mut impl Write,
-        alignment: Alignment,
+        format: BinDumpFormat,
         bindata: &[u8],
     ) -> io::Result<()> {
-        // write metadata:  big-endian datum size, 32b or 64b
-        match alignment {
-            Alignment::Align32 => write32(Endian::Big, outf, bindata.len() as u32)?,
-            Alignment::Align64 => write64(Endian::Big, outf, bindata.len() as u64)?,
-        }
-
-        // write datum
-        outf.write_all(bindata)?;
-
-        Ok(())
+        format.write_len(outf, bindata.len() as u32)?;
+        outf.write_all(bindata)
     }
 
-    fn export_bin_records(&mut self, outf: &mut impl Write, alignment: Alignment) -> Result<()> {
+    fn export_bin_records(&mut self, outf: &mut impl Write, format: BinDumpFormat) -> Result<()> {
         self.iter::<Vec<_>, Vec<_>>().try_for_each(|kv| {
             kv.and_then(|(key, value)| {
-                Self::export_bin_datum(outf, alignment, &key)
-                    .and_then(|()| Self::export_bin_datum(outf, alignment, &value))
+                Self::export_bin_datum(outf, format, &key)
+                    .and_then(|()| Self::export_bin_datum(outf, format, &value))
                     .map_err(Error::Io)
             })
         })
@@ -390,35 +390,34 @@ where
 
     /// Dumps the database in binary format.
     ///
-    /// Dumps the database in binary format to the supplied [`io::Write`]. The binary encoding stores
-    /// key and value lengths as big endian integers, and [`mode`](ExportBinMode) can be used to
-    /// select whether these are stored as 4 or 8 byte values.
+    /// Dumps the database in binary ("flat file") format to the supplied [`io::Write`], in the
+    /// format of C GDBM's `gdbm_export`. The layout of its length fields depends on the platform
+    /// of the C GDBM that is to read it; see [`BinDumpFormat`] (`BinDumpFormat::host()` matches
+    /// the local platform).
     ///
-    /// Note: The binary format is more conpact than the ASCII equivalent, but decoding requires
-    /// knowing the `mode` used to export, and so ASCII dumps are preferred.
+    /// Note: The binary format is more compact than the ASCII equivalent, but platform specific,
+    /// and so ASCII dumps are preferred.
     ///
     /// # Examples
     /// ```
     /// # use tempfile::tempdir;
-    /// use gdbm_native::ExportBinMode;
+    /// use gdbm_native::BinDumpFormat;
     /// # fn main() -> Result<(), String> {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
     /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
     /// let mut buffer = Vec::new();
-    /// db.export_bin(&mut buffer, ExportBinMode::Exp32)?;
+    /// db.export_bin(&mut buffer, BinDumpFormat::host())?;
     /// println!("{buffer:?}");
     /// #         Ok(())
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
-    pub fn export_bin(&mut self, outf: &mut impl Write, mode: ExportBinMode) -> Result<()> {
-        let alignment = mode.alignment(self.header.layout.alignment);
-
+    pub fn export_bin(&mut self, outf: &mut impl Write, format: BinDumpFormat) -> Result<()> {
         Gdbm::export_bin_header(outf)
             .map_err(Error::Io)
-            .and_then(|()| self.export_bin_records(outf, alignment))
+            .and_then(|()| self.export_bin_records(outf, format))
     }
 
     // read bucket into bucket cache.
@@ -910,8 +909,9 @@ impl Gdbm<ReadWrite> {
 
     /// Imports entries from an ASCII dump into the database.
     ///
-    /// Adds all entries from a dump created with [`export_ascii`](Gdbm::export_ascii) to the
-    /// database. Values are overwritten for keys that already exist in the database.
+    /// Adds all entries from a dump created with [`export_ascii`](Gdbm::export_ascii) or C GDBM's
+    /// `gdbm_dump` to the database, storing them as `mode` says when their key already exists.
+    /// Returns the number of records imported and the dump's header information.
     ///
     /// # Examples
     /// ```
@@ -922,32 +922,49 @@ impl Gdbm<ReadWrite> {
     /// #     let new_path = tmp_dir.path().join("test1");
     /// #     || -> gdbm_native::Result<()> {
     /// #         let mut old_db = gdbm_native::OpenOptions::new().write().create().open(path)?;
-    /// use gdbm_native::OpenOptions;
+    /// use gdbm_native::{ImportMode, OpenOptions};
     ///
     /// let mut buf = Vec::new();
     /// old_db.export_ascii(&mut buf, None::<&str>)?;
     ///
     /// let mut new_db = OpenOptions::new().write().create().open(new_path)?;
-    /// new_db.import_ascii(&mut buf.as_slice())?;
+    /// let info = new_db.import_ascii(&mut buf.as_slice(), ImportMode::Replace)?;
+    /// println!("imported {} records", info.count);
     /// #         Ok(())
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
-    pub fn import_ascii(&mut self, reader: &mut impl Read) -> Result<()> {
-        ASCIIImportIterator::new(reader)
-            .map_err(Error::Io)
-            .and_then(|mut lines| {
-                lines.try_for_each(|l| {
-                    let (key, value) = l.map_err(Error::Io)?;
-                    self.insert(&key, &value).map(|_| ())
-                })
-            })
+    pub fn import_ascii(&mut self, reader: &mut impl Read, mode: ImportMode) -> Result<DumpInfo> {
+        let mut records = ASCIIImportIterator::new(reader)?;
+        let mut info = DumpInfo::from_header(&records.header);
+        info.count = self.import_records(&mut records, mode)?;
+        Ok(info)
+    }
+
+    fn import_records(
+        &mut self,
+        records: &mut impl Iterator<Item = io::Result<(Vec<u8>, Vec<u8>)>>,
+        mode: ImportMode,
+    ) -> Result<usize> {
+        records.try_fold(0, |count, record| {
+            let (key, value) = record?;
+            match mode {
+                ImportMode::Replace => self.insert(&key, &value).map(|_| ()),
+                ImportMode::Insert => match self.try_insert(&key, &value)? {
+                    None => Ok(()),
+                    Some(_) => Err(Error::KeyExists { key }),
+                },
+            }
+            .map(|()| count + 1)
+        })
     }
 
     /// Imports entries from a binary dump into the database.
     ///
-    /// Adds all entries from a dump created with [`export_bin`](Gdbm::export_bin) to the database.
-    /// Values are overwritten for keys that already exist in the database.
+    /// Adds all entries from a dump created with [`export_bin`](Gdbm::export_bin) or C GDBM's
+    /// `gdbm_export` to the database, storing them as `mode` says when their key already exists.
+    /// `format` gives the layout of the dump's length fields; `None` detects it. Returns the
+    /// number of records imported.
     ///
     /// # Examples
     /// ```
@@ -958,28 +975,25 @@ impl Gdbm<ReadWrite> {
     /// #     let new_path = tmp_dir.path().join("test1");
     /// #     || -> gdbm_native::Result<()> {
     /// #         let mut old_db = gdbm_native::OpenOptions::new().write().create().open(path)?;
-    /// use gdbm_native::{OpenOptions, ExportBinMode};
+    /// use gdbm_native::{BinDumpFormat, ImportMode, OpenOptions};
     ///
     /// let mut buf = Vec::new();
-    /// old_db.export_bin(&mut buf, ExportBinMode::Exp32)?;
+    /// old_db.export_bin(&mut buf, BinDumpFormat::Long32)?;
     ///
     /// let mut new_db = OpenOptions::new().write().create().open(new_path)?;
-    /// new_db.import_bin(&mut buf.as_slice(), ExportBinMode::Exp32)?;
+    /// new_db.import_bin(&mut buf.as_slice(), None, ImportMode::Replace)?;
     /// #         Ok(())
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
-    pub fn import_bin(&mut self, reader: &mut impl Read, mode: ExportBinMode) -> Result<()> {
-        let alignment = mode.alignment(self.header.layout.alignment);
-
-        BinaryImportIterator::new(alignment, reader)
-            .map_err(Error::Io)
-            .and_then(|mut lines| {
-                lines.try_for_each(|l| {
-                    let (key, value) = l.map_err(Error::Io)?;
-                    self.insert(&key, &value).map(|_| ())
-                })
-            })
+    pub fn import_bin(
+        &mut self,
+        reader: &mut impl Read,
+        format: Option<BinDumpFormat>,
+        mode: ImportMode,
+    ) -> Result<usize> {
+        let mut records = BinaryImportIterator::new(format, reader)?;
+        self.import_records(&mut records, mode)
     }
 
     // virtually allocate N blocks of data, at end of db file (no I/O)

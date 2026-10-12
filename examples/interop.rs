@@ -3,10 +3,13 @@
 //
 // See tests/interop/run.sh. The C side is tests/interop/cgdbm.c; both implement the same
 // commands. Set GDBM_CHAR_SIGN=unsigned to match a C GDBM built with unsigned char.
+// Rust-only command: fill DB N [empty] (N records, numsync format, one value empty if asked).
 //
 // SPDX-License-Identifier: MIT
 
-use gdbm_native::{BlockSize, CharSign, Error, Gdbm, OpenOptions, ReadWrite};
+use gdbm_native::{
+    BinDumpFormat, BlockSize, CharSign, Error, Gdbm, ImportMode, OpenOptions, ReadWrite,
+};
 use std::process::exit;
 
 // same LCG as cgdbm.c
@@ -161,6 +164,61 @@ fn main() {
             phases.parse().unwrap(),
         ),
         ["hold", path, mode, secs] => hold(path, mode == "w", secs.parse().unwrap()),
+        ["fill", path, n] | ["fill", path, n, "empty"] => {
+            let empty = args.len() == 4;
+            let mut db = OpenOptions::new()
+                .char_sign(char_sign())
+                .write()
+                .create()
+                .numsync(true)
+                .open(path)
+                .unwrap_or_else(|e| fail("open", e));
+            for i in 0..n.parse::<usize>().unwrap() {
+                let value = if empty && i == 7 {
+                    String::new()
+                } else {
+                    format!("value {i} é")
+                };
+                db.insert(format!("key {i} €").as_str(), value.as_str())
+                    .unwrap_or_else(|e| fail("insert", e));
+            }
+            db.sync().unwrap_or_else(|e| fail("sync", e));
+        }
+        ["export" | "dump", path, out] => {
+            let mut db = OpenOptions::new()
+                .char_sign(char_sign())
+                .open(path)
+                .unwrap_or_else(|e| fail("open", e));
+            let mut f = std::fs::File::create(out).unwrap();
+            if args[0] == "export" {
+                db.export_bin(&mut f, BinDumpFormat::host())
+            } else {
+                db.export_ascii(&mut f, Some(path))
+            }
+            .unwrap_or_else(|e| fail(args[0], e));
+        }
+        ["import" | "load", path, input] => {
+            let mut db = OpenOptions::new()
+                .char_sign(char_sign())
+                .write()
+                .create()
+                .open(path)
+                .unwrap_or_else(|e| fail("open", e));
+            let mut f = std::fs::File::open(input).unwrap();
+            let (count, numsync) = if args[0] == "import" {
+                db.import_bin(&mut f, None, ImportMode::Replace)
+                    .map(|count| (count, None))
+            } else {
+                db.import_ascii(&mut f, ImportMode::Replace)
+                    .map(|info| (info.count, info.numsync))
+            }
+            .unwrap_or_else(|e| fail(args[0], e));
+            let format = match numsync {
+                Some(true) => "numsync",
+                _ => "standard",
+            };
+            println!("{count} {format}");
+        }
         _ => {
             eprintln!("usage: see {}", file!());
             exit(2)

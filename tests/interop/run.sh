@@ -80,6 +80,23 @@ for first in Rust C; do
 	done
 done
 
+echo "== dumps"
+rm -f src.db bin.db r.dump c.db r.db
+"$R" fill src.db 300 empty
+# C GDBM < 1.24 cannot binary-export or -import an empty value
+"$R" fill bin.db 300
+"$R" export bin.db r.dump
+check "Rust binary dump, C import" "300 standard" "$("$C" import c.db r.dump 2>&1)"
+rm -f r.dump c.db
+"$R" dump src.db r.dump
+check "Rust ASCII dump keeps numsync for C" "300 numsync" "$("$C" load c.db r.dump 2>&1)"
+"$C" dump c.db c.dump
+check "C ASCII dump, Rust load" "300 numsync" "$("$R" load r.db c.dump 2>&1)"
+rm -f r.db c2.db c.flat
+"$R" store c2.db 6b6579 value
+"$C" export c2.db c.flat
+check "C binary dump, Rust import (detected)" "1 standard" "$("$R" import r.db c.flat 2>&1)"
+
 echo "== locking"
 rm -f lock.db
 "$R" store lock.db 6b v
