@@ -3,7 +3,7 @@
 Pure-Rust GDBM; on-disk compatible with GNU GDBM 1.23 (C).
 
 ## Rules
-- Pre-1.0 (0.9.0), no external users: change API freely, no compat shims. Keep `~/repo/gdbmtool-rs` (sole consumer; git dep, `diagnostic` feature) building. Record user-visible changes in `CHANGELOG.md`.
+- Pre-1.0 (0.9.0), no external users: change API freely, no compat shims. Keep `~/repo/gdbmtool-rs` (sole consumer; git dep, `diagnostic` feature) building. History is git; no changelog file.
 - Never push, never open PRs, never install anything or touch the Rust toolchain (`rustup`, `cross`): ask the user.
 - On-disk behaviour must match C GDBM. Port from C source (`src/falloc.c`, `avail.c`, `findkey.c`, `gdbmopen.c`), not memory; verify with real libgdbm.
 - File/dump contents are untrusted: checked/saturating math, validate before use, never allocate a claimed length.

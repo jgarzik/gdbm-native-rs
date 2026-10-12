@@ -54,7 +54,7 @@ C GDBM and gdbm-native on the same files in CI. Crash-tolerance snapshots
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md); report security issues as described in
-[SECURITY.md](SECURITY.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+[SECURITY.md](SECURITY.md).
 
 ## License
 
