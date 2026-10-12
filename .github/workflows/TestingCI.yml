@@ -111,5 +111,5 @@ jobs:
       - name: Fuzz
         run: |
           for target in open import_ascii import_bin; do
-            cargo fuzz run "$target" "fuzz/corpus/$target" -- -max_total_time=60 -rss_limit_mb=1024
+            cargo fuzz run --target x86_64-unknown-linux-gnu "$target" "fuzz/corpus/$target" -- -max_total_time=60 -rss_limit_mb=1024
           done
