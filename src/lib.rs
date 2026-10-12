@@ -9,40 +9,83 @@
 // SPDX-License-Identifier: MIT
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
-//! Rust native implementation of GDBM key-value database.
+//! A pure-Rust implementation of the [GNU GDBM](https://www.gnu.org.ua/software/gdbm/)
+//! key-value database, file-compatible with C GDBM databases and dumps from any platform.
 //!
-//! An efficient disk based key-value store for new applications, while retaining compatibility
-//! with legacy GDBM data files.
-//!
-//! # Examples
+//! # Quick start
 //! ```
-//! use gdbm_native as gdbm;
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! # let dir = tempfile::tempdir()?;
+//! # let path = dir.path().join("users.db");
+//! use gdbm_native::OpenOptions;
 //!
-//! # use tempfile::tempdir;
-//! # fn main() -> Result<(), String> {
-//! #     let tmp_dir = tempdir().map_err(|e| e.to_string())?;
-//! #     let passwords = tmp_dir.path().join("top-level-doc-test");
-//! #     || -> gdbm::Result<()> {
-//! // Create a new database at path
-//! let mut db = gdbm::OpenOptions::new()
-//!     .write(true)
-//!     .create(true)
-//!     .open(passwords)?;
+//! // Create the database if needed, and open it for reading and writing.
+//! let mut db = OpenOptions::new().create(true).open(&path)?;
 //!
-//! // Insert key/value pairs
-//! db.insert("286755fad04869ca523320acce0dc6a4", "chal28griffin@example.com")?;
-//! db.insert("4aacf9c858c82716ab0034320bd2efe9", "floribund@gmail.com")?;
-//! db.insert("d577273ff885c3f84dadb8578bb41399", "peterxentwhisle@me.com")?;
+//! db.insert("alice", "alice@example.com")?;
+//! db.insert("bob", "bob@example.com")?;
 //!
-//! // Read the value back. The database has no knowledge of the original type of the value stored
-//! // so we need to add type hints.
-//! let value: Option<String> = db.get("4aacf9c858c82716ab0034320bd2efe9")?;
-//! assert!(value == Some("floribund@gmail.com".to_string()));
-//! #         Ok(())
-//! #     }().map_err(|e| e.to_string())
+//! // Values are untyped bytes; ask for them as the type you stored.
+//! let email: Option<String> = db.get("alice")?;
+//! assert_eq!(email.as_deref(), Some("alice@example.com"));
+//!
+//! for entry in db.iter::<String, String>() {
+//!     let (user, email) = entry?;
+//!     println!("{user}: {email}");
+//! }
+//!
+//! // Write out changes and learn of any error (dropping the database also writes them).
+//! db.close()?;
+//! # Ok(())
 //! # }
 //! ```
+//!
+//! # Compatibility with C GDBM
+//!
+//! C GDBM writes files in the native format of the platform it was built for, and records only
+//! part of that format in the file. gdbm-native reads and writes every variant, whatever the
+//! platform it runs on, and detects what the file does not record:
+//!
+//! | Property | Varies with | Recorded | gdbm-native |
+//! |---|---|---|---|
+//! | Byte order | CPU | yes | either |
+//! | File offset size | 32-bit `off_t` (no large file support) or 64-bit | yes | either; [`Layout`] |
+//! | Struct alignment | 4 bytes on i386, 8 elsewhere | no | detected; [`Layout`] |
+//! | Key hash of bytes >= 0x80 | `char` signedness: signed on x86 and MIPS, unsigned on Linux ARM, PowerPC, RISC-V, s390x | no | detected; [`CharSign`] |
+//! | Numsync header | how the database was created | yes | either; [`Gdbm::set_numsync`] |
+//! | Binary dump length fields | `sizeof(long)` and byte order | no | detected; [`BinDumpFormat`] |
+//!
+//! New databases default to little endian, 64-bit offsets aligned on 8 bytes and a numsync
+//! header, as C GDBM writes on x86-64 and arm64; [`OpenOptions`] selects other formats, e.g.
+//! to create a database for C GDBM on another platform. ASCII dumps
+//! ([`Gdbm::export_ascii`], [`Gdbm::import_ascii`]) are portable between all platforms.
+//!
+//! Like C GDBM, gdbm-native locks the database file (shared for readers, exclusive for a
+//! writer; see [`OpenOptions::lock`]). The test suite exercises databases and dumps written by
+//! C GDBM on x86-64, i386, arm64, armv7, s390x and 32-bit-offset builds, and runs C GDBM and
+//! gdbm-native against the same files.
+//!
+//! # Keys and values
+//!
+//! Keys and values are byte strings. Anything implementing [`ToBytesRef`] can be stored, and
+//! anything implementing [`FromBytes`] can be read back; both are implemented for byte slices
+//! and arrays, `Vec<u8>`, `str` and `String`. Implement them for your own types, choosing an
+//! encoding every program using the database understands.
+//!
+//! # Integrity
+//!
+//! Database files and dumps are treated as untrusted input: corruption is reported as an
+//! [`Error`] rather than a panic or unbounded allocation. [`Gdbm::verify`] checks a database's
+//! use of file space and [`Gdbm::recover`] rebuilds a damaged database from what can still be
+//! read. Writes are not atomic: if one fails part way, the database refuses further writes
+//! ([`Error::Inconsistent`]) until reopened or recovered.
+//!
+//! # Features
+//!
+//! * `diagnostic`: [`Gdbm::show_header`] and [`Gdbm::show_directory`], which print internal
+//!   structures.
 extern crate base64;
 
 use base64::Engine;
@@ -379,6 +422,9 @@ impl Gdbm {
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
+    ///
+    /// # Errors
+    /// Fails if a record cannot be read or `outf` cannot be written.
     pub fn export_ascii<P: AsRef<std::path::Path> + ?Sized>(
         &self,
         outf: &mut impl Write,
@@ -449,6 +495,9 @@ impl Gdbm {
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
+    ///
+    /// # Errors
+    /// Fails if a record cannot be read or `outf` cannot be written.
     pub fn export_bin(&self, outf: &mut impl Write, format: BinDumpFormat) -> Result<()> {
         Gdbm::export_bin_header(outf)
             .map_err(Error::Io)
@@ -711,6 +760,11 @@ impl Gdbm {
         self.sync()
     }
 
+    /// Number of entries in the database. This reads every bucket; use
+    /// [`is_empty`](Gdbm::is_empty) to test for an empty database.
+    ///
+    /// # Errors
+    /// Fails if a bucket cannot be read.
     pub fn len(&self) -> Result<usize> {
         let mut len: usize = 0;
         let mut cur_dir: usize = 0;
@@ -822,6 +876,9 @@ impl Gdbm {
     /// }
     /// # }
     /// ```
+    ///
+    /// # Errors
+    /// Fails if the database cannot be read or is corrupt.
     pub fn contains_key<K: ToBytesRef + ?Sized>(&self, key: &K) -> Result<bool> {
         self.int_get(key.to_bytes_ref().as_ref())
             .map(|result| result.is_some())
@@ -960,6 +1017,10 @@ impl Gdbm {
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
+    ///
+    /// # Errors
+    /// Fails if the database cannot be read or is corrupt, or with [`Error::BadData`] if the value
+    /// cannot be converted to `V`.
     pub fn get<K: ToBytesRef + ?Sized, V: FromBytes>(&self, key: &K) -> Result<Option<V>> {
         match self.int_get(key.to_bytes_ref().as_ref())? {
             None => Ok(None),
@@ -1008,6 +1069,9 @@ impl Gdbm {
     /// Show diagnostic information about the database header.
     ///
     /// Only available when the `diagnostic` feature is enabled.
+    ///
+    /// # Errors
+    /// Fails if `w` cannot be written.
     pub fn show_header(&self, w: &mut impl Write) -> io::Result<()> {
         let (dir_sz, dir_bits) = build_dir_size(self.header.layout.offset, self.header.block_sz);
 
@@ -1030,6 +1094,9 @@ impl Gdbm {
     /// Show diagnostic information about the database directory.
     ///
     /// Only available when the `diagnostic` feature is enabled.
+    ///
+    /// # Errors
+    /// Fails if `w` cannot be written.
     pub fn show_directory(&self, w: &mut impl Write) -> io::Result<()> {
         writeln!(w, "size {}", self.header.dir_sz)?;
         writeln!(w, "bits {}", self.header.dir_bits)?;
@@ -1151,6 +1218,10 @@ impl Gdbm {
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
+    ///
+    /// # Errors
+    /// Fails if the database is read-only, the dump is malformed, a key already exists with
+    /// [`ImportMode::Insert`], or a record cannot be stored.
     pub fn import_ascii(&mut self, reader: &mut impl Read, mode: ImportMode) -> Result<DumpInfo> {
         self.check_writable()?;
         let mut records = ASCIIImportIterator::new(reader)?;
@@ -1204,6 +1275,10 @@ impl Gdbm {
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
+    ///
+    /// # Errors
+    /// Fails if the database is read-only, the dump is malformed, a key already exists with
+    /// [`ImportMode::Insert`], or a record cannot be stored.
     pub fn import_bin(
         &mut self,
         reader: &mut impl Read,
@@ -1414,6 +1489,10 @@ impl Gdbm {
     /// #     });
     /// # }
     /// ```
+    ///
+    /// # Errors
+    /// Fails with [`Error::Inconsistent`] after an earlier failed write, or if writing the file
+    /// fails.
     pub fn sync(&mut self) -> Result<()> {
         // nothing to write if read-only
         let Some(rw) = self.read_write else {
@@ -1482,6 +1561,11 @@ impl Gdbm {
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
+    ///
+    /// # Errors
+    /// Fails if the database is read-only ([`Error::ReadOnly`]) or inconsistent after an earlier
+    /// failed write ([`Error::Inconsistent`]), if the record is too large, or if reading or writing
+    /// the file fails.
     pub fn remove<K: ToBytesRef + ?Sized>(&mut self, key: &K) -> Result<Option<Vec<u8>>> {
         self.check_writable()?;
         self.int_remove(key.to_bytes_ref().as_ref())
@@ -1577,6 +1661,11 @@ impl Gdbm {
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
+    ///
+    /// # Errors
+    /// Fails if the database is read-only ([`Error::ReadOnly`]) or inconsistent after an earlier
+    /// failed write ([`Error::Inconsistent`]), if the record is too large, or if reading or writing
+    /// the file fails.
     pub fn insert<V: ToBytesRef + ?Sized, K: ToBytesRef + ?Sized>(
         &mut self,
         key: &K,
@@ -1621,6 +1710,11 @@ impl Gdbm {
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
+    ///
+    /// # Errors
+    /// Fails if the database is read-only ([`Error::ReadOnly`]) or inconsistent after an earlier
+    /// failed write ([`Error::Inconsistent`]), if the record is too large, or if reading or writing
+    /// the file fails.
     pub fn try_insert<K: ToBytesRef + ?Sized, V: ToBytesRef + ?Sized>(
         &mut self,
         key: &K,
@@ -1727,6 +1821,9 @@ impl Gdbm {
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
+    ///
+    /// # Errors
+    /// Fails if the database is read-only or inconsistent, or if writing the file fails.
     pub fn set_numsync(&mut self, numsync: bool) -> Result<()> {
         self.check_writable()?;
         if self.rw().state == WriteState::Inconsistent {
@@ -1768,6 +1865,9 @@ impl Gdbm {
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
+    ///
+    /// # Errors
+    /// Fails if the database is read-only, or cannot be read or rebuilt.
     pub fn compact(&mut self) -> Result<()> {
         self.check_writable()?;
         let mut tmpdb = self.new_like()?;

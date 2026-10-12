@@ -1,42 +1,61 @@
-
 # gdbm-native
 
-Rust crate library for reading/writing GDBM key/value databases
+[![CI](https://github.com/jgarzik/gdbm-native-rs/actions/workflows/TestingCI.yml/badge.svg)](https://github.com/jgarzik/gdbm-native-rs/actions/workflows/TestingCI.yml)
+[![crates.io](https://img.shields.io/crates/v/gdbm-native.svg)](https://crates.io/crates/gdbm-native)
+[![docs.rs](https://img.shields.io/docsrs/gdbm-native)](https://docs.rs/gdbm-native)
+[![MSRV 1.89](https://img.shields.io/badge/MSRV-1.89-blue)](Cargo.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-## Goals
+A pure-Rust implementation of the [GNU GDBM](https://www.gnu.org.ua/software/gdbm/)
+key-value database: safe Rust (`#![forbid(unsafe_code)]`), no C library or FFI, and
+file-compatible with C GDBM databases and dumps from any platform.
 
-* Read and Write GDBM databases
-* Written in safe, native Rust (no FFI).
-* Better-than-C:  Support all 32-/64-bit and big/little endian variants
-  without recompiling.
-* Tuned for modern machines with solid state storage
+```rust
+use gdbm_native::OpenOptions;
 
-## Status
+let mut db = OpenOptions::new().create(true).open("users.db")?;
+db.insert("alice", "alice@example.com")?;
+let email: Option<String> = db.get("alice")?;
+db.close()?;
+```
 
-Beta:  Read/Write facilities recently completed and needs seasoning.  Not recommended (yet) for production use.
-
-Major categories of tasks leading to 1.0.0.  View the
-[list of issues](https://github.com/jgarzik/gdbm-native-rs/issues) and
-[milestones](https://github.com/jgarzik/gdbm-native-rs/milestones) for more.
+See the [documentation](https://docs.rs/gdbm-native) for the full API.
 
 ## Compatibility with C GDBM
 
-Databases are interchangeable with those of the GNU GDBM C library (tested
-against GDBM 1.23), including its free space management and file locking.
+C GDBM writes files in the native format of the platform it was built for, and does not
+record all of it in the file. gdbm-native handles every variant on every platform:
 
-* Key hashing in C GDBM depends on whether the platform's `char` is signed.
-  The default, `CharSign::Signed`, matches C GDBM on x86 and x86-64. Use
-  `OpenOptions::char_sign(CharSign::Unsigned)` for databases written by C GDBM
-  on ARM, PowerPC or RISC-V Linux, if they contain keys with bytes >= 0x80.
-* Like C GDBM, readers take a shared lock and writers an exclusive lock on the
-  database file. `OpenOptions::lock(false)` disables locking.
+| Varies with | gdbm-native |
+|---|---|
+| Byte order | reads and writes both |
+| 32- or 64-bit file offsets (`off_t`) | reads and writes both |
+| Struct alignment (i386 vs. everything else) | detected |
+| `char` signedness, which changes the key hash (x86 vs. ARM, s390x, ...) | detected |
+| Numsync (extended) header | reads, writes and converts |
+| Binary dump length fields (`sizeof(long)`, byte order) | detected on import, chosen on export |
 
-## Documentation
+C GDBM itself can only open files in its own platform's format. ASCII dumps are portable and
+interchangeable with C GDBM's `gdbm_dump`/`gdbm_load`.
 
-The best documentation is the original GDBM source code from the GNU
-project: https://www.gnu.org.ua/software/gdbm/
+Also like C GDBM: file locking, numsync, sync mode, compaction (`gdbm_reorganize`), consistency
+checking (`gdbm_avail_verify`) and recovery (`gdbm_recover`).
 
-A sister project also provides [additional technical
-documentation](https://github.com/jgarzik/gdbm-docs), including file
-format information.
+Compatibility is tested against databases and dumps written by C GDBM 1.24–1.26 on x86-64,
+i386, arm64, armv7, s390x and 32-bit-offset builds (x86, ARM, big-endian MIPS), and by running
+C GDBM and gdbm-native on the same files in CI. Crash-tolerance snapshots
+(`gdbm_failure_atomic`) are not yet supported.
 
+## Related
+
+* [gdbmtool-rs](https://github.com/jgarzik/gdbmtool-rs): command line tools built on this crate.
+* [gdbm-docs](https://github.com/jgarzik/gdbm-docs): GDBM file format documentation.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md); report security issues as described in
+[SECURITY.md](SECURITY.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+
+## License
+
+MIT; see [LICENSE](LICENSE).

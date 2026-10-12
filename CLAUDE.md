@@ -3,7 +3,8 @@
 Pure-Rust GDBM; on-disk compatible with GNU GDBM 1.23 (C).
 
 ## Rules
-- Pre-1.0, no external users: change API freely, no compat shims. Keep `~/repo/gdbmtool-rs` (sole consumer; git dep, `diagnostic` feature) building.
+- Pre-1.0 (0.9.0), no external users: change API freely, no compat shims. Keep `~/repo/gdbmtool-rs` (sole consumer; git dep, `diagnostic` feature) building. Record user-visible changes in `CHANGELOG.md`.
+- Never push, never open PRs, never install anything or touch the Rust toolchain (`rustup`, `cross`): ask the user.
 - On-disk behaviour must match C GDBM. Port from C source (`src/falloc.c`, `avail.c`, `findkey.c`, `gdbmopen.c`), not memory; verify with real libgdbm.
 - File/dump contents are untrusted: checked/saturating math, validate before use, never allocate a claimed length.
 
@@ -11,7 +12,8 @@ Pure-Rust GDBM; on-disk compatible with GNU GDBM 1.23 (C).
 - Test: `cargo test --all-features`
 - Lint (CI uses -D warnings): `cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings`
 - C interop: `tests/interop/run.sh` (needs libgdbm + headers; `GDBM_PREFIX=...` if nonstandard; `REQUIRE_GDBM=1` fails instead of skipping).
-- CI: linux/macos × x86_64/aarch64 + interop, lint, MSRV 1.89 (edition 2024; `File::try_lock`).
+- CI: linux/macos × x86_64/aarch64 + interop; i686/armv7/s390x via `cross`; lint + rustdoc `-D warnings`; cargo-deny (`deny.toml`); fuzz smoke (`fuzz/`, nightly); MSRV 1.89 (edition 2024; `File::try_lock`). Local MSRV: `cargo +1.89 test` (installed).
+- Docs: `#![warn(missing_docs)]`; every public `Result` fn has `# Errors`; crate guide in `lib.rs` header.
 
 ## Map
 - `lib.rs`: one `Gdbm` (runtime RO/RW: `read_write: Option<WriteMode>`, writes `check_writable()` → `Error::ReadOnly`), alloc/free (port of `falloc.c`), iteration, import/export. Reads take `&self`: cache in `RefCell`, access buckets only via `with_bucket(dir, |b| ..)` (never hold a borrow across loads); write paths use `bucket_cache.get_mut()`.
