@@ -24,8 +24,8 @@
 //! #     || -> gdbm::Result<()> {
 //! // Create a new database at path
 //! let mut db = gdbm::OpenOptions::new()
-//!     .write()
-//!     .create()
+//!     .write(true)
+//!     .create(true)
 //!     .open(passwords)?;
 //!
 //! // Insert key/value pairs
@@ -44,7 +44,6 @@
 extern crate base64;
 
 use base64::Engine;
-use std::any::Any;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
 mod avail;
@@ -73,7 +72,7 @@ use hashutil::{PartialKey, bucket_dir, hash_key, key_loc};
 use header::Header;
 use import::{ASCIIImportIterator, BinaryImportIterator};
 pub use magic::Magic;
-pub use options::{BlockSize, Create, OpenOptions};
+pub use options::{BlockSize, OpenOptions};
 pub use ser::{Endian, Layout};
 use ser::{Format, Offset};
 use std::fs::File;
@@ -98,18 +97,11 @@ enum WriteState {
     Inconsistent,
 }
 
-/// Struct used as type parameter to open a database in read-only mode.
+// state of a database opened for writing
 #[derive(Copy, Clone, Debug, Default)]
-pub struct ReadOnly;
-/// Struct used as type parameter to open a database in read-write mode.
-#[derive(Copy, Clone, Debug, Default)]
-pub struct ReadWrite {
+struct WriteMode {
     sync: bool,
     state: WriteState,
-}
-
-trait CacheBucket {
-    fn cache_bucket(&mut self, offset: u64, bucket: Bucket) -> Result<()>;
 }
 
 // Write a bucket padded to the header's bucket size, which may exceed the serialized size of a
@@ -172,9 +164,8 @@ fn read_ofs(f: &mut std::fs::File, ofs: u64, total_size: usize) -> io::Result<Ve
     Ok(data)
 }
 
-// #[derive(Debug)]
-/// GDBM database type.
-pub struct Gdbm<R: 'static> {
+/// A GDBM database, opened with [`OpenOptions`].
+pub struct Gdbm {
     f: std::fs::File,
     header: Header,
     dir: Directory,
@@ -182,20 +173,12 @@ pub struct Gdbm<R: 'static> {
     // None until known: see CharSign
     char_sign: Option<CharSign>,
 
-    read_write: R,
+    // None if opened read-only
+    read_write: Option<WriteMode>,
 }
 
-// cache_bucket for ReadOnly variant ignores (never receives) dirty displaced buckets.
-impl CacheBucket for Gdbm<ReadOnly> {
-    fn cache_bucket(&mut self, offset: u64, bucket: Bucket) -> Result<()> {
-        let _ = self.bucket_cache.insert(offset, bucket);
-
-        Ok(())
-    }
-}
-
-// cache_bucket for ReadWrite variant needs to write dirty displaced buckets.
-impl CacheBucket for Gdbm<ReadWrite> {
+impl Gdbm {
+    // Cache a bucket, writing any dirty bucket it displaces (only possible when writable).
     fn cache_bucket(&mut self, offset: u64, bucket: Bucket) -> Result<()> {
         if let Some((evicted_offset, evicted_bucket)) = self.bucket_cache.insert(offset, bucket) {
             self.write_bucket(&evicted_bucket, evicted_offset)?;
@@ -203,15 +186,27 @@ impl CacheBucket for Gdbm<ReadWrite> {
 
         Ok(())
     }
-}
 
-#[allow(private_bounds)]
-impl<R> Gdbm<R>
-where
-    Gdbm<R>: CacheBucket,
-    R: Default,
-{
-    fn open<W>(mut f: File, open_options: &OpenOptions<W>) -> Result<Gdbm<R>> {
+    // Write state, for internal use by write operations, which check_writable() first.
+    fn rw(&mut self) -> &mut WriteMode {
+        self.read_write
+            .as_mut()
+            .expect("write operation on a read-only database")
+    }
+
+    fn check_writable(&self) -> Result<()> {
+        self.read_write
+            .is_some()
+            .then_some(())
+            .ok_or(Error::ReadOnly)
+    }
+
+    /// Whether the database was opened for writing.
+    pub fn is_writable(&self) -> bool {
+        self.read_write.is_some()
+    }
+
+    fn open(mut f: File, open_options: &OpenOptions, writable: bool) -> Result<Gdbm> {
         let metadata = f.metadata()?;
 
         f.seek(SeekFrom::Start(0))?;
@@ -247,7 +242,10 @@ where
             dir,
             bucket_cache,
             char_sign: open_options.char_sign,
-            read_write: R::default(),
+            read_write: writable.then_some(WriteMode {
+                sync: open_options.sync,
+                state: WriteState::Clean,
+            }),
         })
     }
 
@@ -336,7 +334,7 @@ where
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path).unwrap();
     /// let mut buffer = Vec::new();
     /// db.export_ascii(&mut buffer, None::<&str>)?;
     /// println!("{}", std::str::from_utf8(&buffer).unwrap());
@@ -406,7 +404,7 @@ where
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path).unwrap();
     /// let mut buffer = Vec::new();
     /// db.export_bin(&mut buffer, BinDumpFormat::host())?;
     /// println!("{buffer:?}");
@@ -484,7 +482,7 @@ where
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path).unwrap();
     /// let count = db.len()?;
     /// #         Ok(())
     /// #     }().map_err(|e| e.to_string())
@@ -512,7 +510,7 @@ where
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path).unwrap();
     /// #         let spam = |_| ();
     /// for address in db.values::<String>() {
     ///     let address = address?;
@@ -523,7 +521,7 @@ where
     /// # }
     /// ```
     pub fn values<V: FromBytes>(&mut self) -> impl std::iter::Iterator<Item = Result<V>> + '_ {
-        GDBMIterator::<R>::new(self, KeyOrValue::Value)
+        GDBMIterator::new(self, KeyOrValue::Value)
             .map(|data| data.and_then(|(_, value)| V::from_bytes(&value)))
     }
 
@@ -536,7 +534,7 @@ where
     /// #     let tmp_dir = tempdir().map_err(|e| e.to_string())?;
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path)?;
     /// let mut longest = None::<String>;
     ///
     /// for key in db.keys::<String>() {
@@ -553,7 +551,7 @@ where
     /// # }
     /// ```
     pub fn keys<K: FromBytes>(&mut self) -> impl std::iter::Iterator<Item = Result<K>> + '_ {
-        GDBMIterator::<R>::new(self, KeyOrValue::Key)
+        GDBMIterator::new(self, KeyOrValue::Key)
             .map(|data| data.and_then(|(key, _)| K::from_bytes(&key)))
     }
 
@@ -565,7 +563,7 @@ where
     /// #     let tmp_dir = tempdir().map_err(|e| e.to_string())?;
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path)?;
     /// for kv in db.iter::<String, u32>() {
     ///     let (button, count) = kv?;
     ///     println!("button <{button}> was clicked {count} times")
@@ -577,7 +575,7 @@ where
     pub fn iter<K: FromBytes, V: FromBytes>(
         &mut self,
     ) -> impl std::iter::Iterator<Item = Result<(K, V)>> + '_ {
-        GDBMIterator::<R>::new(self, KeyOrValue::Both).map(|data| {
+        GDBMIterator::new(self, KeyOrValue::Both).map(|data| {
             data.and_then(|(key, value)| {
                 K::from_bytes(&key).and_then(|k| V::from_bytes(&value).map(|v| (k, v)))
             })
@@ -592,7 +590,7 @@ where
     /// # fn main() -> Result<(), String> {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
-    /// #     let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// #     let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path).unwrap();
     /// #     db.insert("fred", "dibnah");
     /// #     let username = "fred";
     /// if db.contains_key(username).unwrap() {
@@ -725,7 +723,7 @@ where
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path)?;
     /// #     let display = |_: Vec<u8>| ();
     /// #     let image_name = "";
     /// if let Some(image) = db.get(image_name)? {
@@ -750,7 +748,7 @@ where
     /// # fn main() {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
-    /// #     let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// #     let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path).unwrap();
     /// println!("database magic: {:?}", db.magic());
     /// # }
     /// ```
@@ -766,7 +764,7 @@ where
     /// # fn main() {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
-    /// #     let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// #     let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path).unwrap();
     /// println!("database layout: {:?}", db.layout());
     /// # }
     /// ```
@@ -817,24 +815,18 @@ where
     }
 }
 
-impl Gdbm<ReadWrite> {
-    fn create(
-        f: File,
-        open_options: &OpenOptions<options::Write<Create>>,
-    ) -> Result<Gdbm<ReadWrite>> {
-        let layout = Format::new(
-            open_options.write.create.layout,
-            open_options.write.create.endian,
-        );
+impl Gdbm {
+    fn create(f: File, open_options: &OpenOptions) -> Result<Gdbm> {
+        let layout = Format::new(open_options.layout, open_options.endian);
 
-        let (block_size, dir_bits) = match open_options.write.create.block_size {
+        let (block_size, dir_bits) = match open_options.block_size {
             BlockSize::Roughly(size) | BlockSize::Exactly(size) => {
                 build_dir_size(layout.offset, size)
             }
             BlockSize::Filesystem => build_dir_size(layout.offset, fs_block_size(&f)?),
         };
 
-        if let BlockSize::Exactly(size) = open_options.write.create.block_size
+        if let BlockSize::Exactly(size) = open_options.block_size
             && block_size != size
         {
             return Err(Error::BadBlockSize {
@@ -843,12 +835,7 @@ impl Gdbm<ReadWrite> {
             });
         }
 
-        let header = Header::new(
-            block_size,
-            layout,
-            dir_bits,
-            !open_options.write.create.no_numsync,
-        );
+        let header = Header::new(block_size, layout, dir_bits, open_options.numsync);
         let bucket = Bucket::new(0, header.bucket_elems as usize, vec![], vec![]);
         let bucket_offset = header.next_block - u64::from(block_size);
         let dir = Directory::new(vec![bucket_offset; 1 << header.dir_bits]);
@@ -868,13 +855,13 @@ impl Gdbm<ReadWrite> {
             dir,
             bucket_cache,
             char_sign: open_options.char_sign,
-            read_write: ReadWrite {
-                sync: open_options.write.sync,
+            read_write: Some(WriteMode {
+                sync: open_options.sync,
                 state: WriteState::Dirty,
-            },
+            }),
         };
 
-        if db.read_write.sync {
+        if db.rw().sync {
             db.sync()?;
         }
 
@@ -898,13 +885,15 @@ impl Gdbm<ReadWrite> {
     /// # fn main() {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
-    /// #     let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// #     let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path).unwrap();
     /// // Turn on sync mode.
     /// db.set_sync(true);
     /// # }
     /// ```
     pub fn set_sync(&mut self, sync: bool) {
-        self.read_write.sync = sync;
+        if let Some(rw) = self.read_write.as_mut() {
+            rw.sync = sync;
+        }
     }
 
     /// Imports entries from an ASCII dump into the database.
@@ -921,13 +910,13 @@ impl Gdbm<ReadWrite> {
     /// #     let path = tmp_dir.path().join("test");
     /// #     let new_path = tmp_dir.path().join("test1");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut old_db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// #         let mut old_db = gdbm_native::OpenOptions::new().write(true).create(true).open(path)?;
     /// use gdbm_native::{ImportMode, OpenOptions};
     ///
     /// let mut buf = Vec::new();
     /// old_db.export_ascii(&mut buf, None::<&str>)?;
     ///
-    /// let mut new_db = OpenOptions::new().write().create().open(new_path)?;
+    /// let mut new_db = OpenOptions::new().write(true).create(true).open(new_path)?;
     /// let info = new_db.import_ascii(&mut buf.as_slice(), ImportMode::Replace)?;
     /// println!("imported {} records", info.count);
     /// #         Ok(())
@@ -935,6 +924,7 @@ impl Gdbm<ReadWrite> {
     /// # }
     /// ```
     pub fn import_ascii(&mut self, reader: &mut impl Read, mode: ImportMode) -> Result<DumpInfo> {
+        self.check_writable()?;
         let mut records = ASCIIImportIterator::new(reader)?;
         let mut info = DumpInfo::from_header(&records.header);
         info.count = self.import_records(&mut records, mode)?;
@@ -974,13 +964,13 @@ impl Gdbm<ReadWrite> {
     /// #     let path = tmp_dir.path().join("test");
     /// #     let new_path = tmp_dir.path().join("test1");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut old_db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// #         let mut old_db = gdbm_native::OpenOptions::new().write(true).create(true).open(path)?;
     /// use gdbm_native::{BinDumpFormat, ImportMode, OpenOptions};
     ///
     /// let mut buf = Vec::new();
     /// old_db.export_bin(&mut buf, BinDumpFormat::Long32)?;
     ///
-    /// let mut new_db = OpenOptions::new().write().create().open(new_path)?;
+    /// let mut new_db = OpenOptions::new().write(true).create(true).open(new_path)?;
     /// new_db.import_bin(&mut buf.as_slice(), None, ImportMode::Replace)?;
     /// #         Ok(())
     /// #     }().map_err(|e| e.to_string())
@@ -992,6 +982,7 @@ impl Gdbm<ReadWrite> {
         format: Option<BinDumpFormat>,
         mode: ImportMode,
     ) -> Result<usize> {
+        self.check_writable()?;
         let mut records = BinaryImportIterator::new(format, reader)?;
         self.import_records(&mut records, mode)
     }
@@ -1166,13 +1157,13 @@ impl Gdbm<ReadWrite> {
 
     // write out any cached, not-yet-written metadata and data to storage
     fn write_dirty(&mut self) -> io::Result<()> {
-        self.read_write.state = WriteState::Inconsistent;
+        self.rw().state = WriteState::Inconsistent;
 
         self.write_buckets()?;
         self.write_dir()?;
         self.write_header()?;
 
-        self.read_write.state = WriteState::Clean;
+        self.rw().state = WriteState::Clean;
 
         Ok(())
     }
@@ -1186,7 +1177,7 @@ impl Gdbm<ReadWrite> {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     std::panic::catch_unwind(|| {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path).unwrap();
     /// // Ensure all data is saved ...
     /// db.sync();
     ///
@@ -1196,7 +1187,11 @@ impl Gdbm<ReadWrite> {
     /// # }
     /// ```
     pub fn sync(&mut self) -> Result<()> {
-        match self.read_write.state {
+        // nothing to write if read-only
+        let Some(rw) = self.read_write else {
+            return Ok(());
+        };
+        match rw.state {
             WriteState::Clean => Ok(()),
             WriteState::Inconsistent => Err(Error::Inconsistent),
             WriteState::Dirty => {
@@ -1215,11 +1210,11 @@ impl Gdbm<ReadWrite> {
             return Ok(None);
         }
 
-        if self.read_write.state == WriteState::Inconsistent {
+        if self.rw().state == WriteState::Inconsistent {
             return Err(Error::Inconsistent);
         }
 
-        self.read_write.state = WriteState::Inconsistent;
+        self.rw().state = WriteState::Inconsistent;
 
         let (elem_ofs, data) = get_opt.unwrap();
 
@@ -1232,7 +1227,7 @@ impl Gdbm<ReadWrite> {
         // release record bytes to available-space pool
         self.free_record(elem.data_ofs, elem.key_size + elem.data_size)?;
 
-        self.read_write.state = WriteState::Dirty;
+        self.rw().state = WriteState::Dirty;
 
         Ok(Some(data))
     }
@@ -1249,7 +1244,7 @@ impl Gdbm<ReadWrite> {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path)?;
     /// match db.remove("sylvian")? {
     ///     Some(old) => println!("removed \"{:?}\" from the database.", std::str::from_utf8(&old)),
     ///     None => println!("\"sylvian\" wasn't in the database."),
@@ -1259,9 +1254,10 @@ impl Gdbm<ReadWrite> {
     /// # }
     /// ```
     pub fn remove<K: ToBytesRef + ?Sized>(&mut self, key: &K) -> Result<Option<Vec<u8>>> {
+        self.check_writable()?;
         self.int_remove(key.to_bytes_ref().as_ref())
             .and_then(|old_value| {
-                if old_value.is_some() && self.read_write.sync {
+                if old_value.is_some() && self.rw().sync {
                     self.sync()?;
                 }
 
@@ -1297,14 +1293,14 @@ impl Gdbm<ReadWrite> {
     }
 
     fn int_insert(&mut self, key: &[u8], data: &[u8]) -> Result<()> {
-        if self.read_write.state == WriteState::Inconsistent {
+        if self.rw().state == WriteState::Inconsistent {
             return Err(Error::Inconsistent);
         }
 
         let size = record_size(key.len(), data.len())?;
         let hash = self.hash(key)?;
 
-        self.read_write.state = WriteState::Inconsistent;
+        self.rw().state = WriteState::Inconsistent;
 
         let offset = self.allocate_record(size)?;
 
@@ -1326,7 +1322,7 @@ impl Gdbm<ReadWrite> {
             .unwrap()
             .insert(bucket_elem);
 
-        self.read_write.state = WriteState::Dirty;
+        self.rw().state = WriteState::Dirty;
 
         Ok(())
     }
@@ -1342,7 +1338,7 @@ impl Gdbm<ReadWrite> {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path)?;
     /// db.insert("marmite", "dog")?;
     /// #         Ok(())
     /// #     }().map_err(|e| e.to_string())
@@ -1353,6 +1349,7 @@ impl Gdbm<ReadWrite> {
         key: &K,
         value: &V,
     ) -> Result<Option<Vec<u8>>> {
+        self.check_writable()?;
         let key = key.to_bytes_ref();
         self.int_remove(key.as_ref())
             .and_then(|oldvalue| {
@@ -1360,7 +1357,7 @@ impl Gdbm<ReadWrite> {
                     .map(|()| oldvalue)
             })
             .and_then(|oldvalue| {
-                if self.read_write.sync {
+                if self.rw().sync {
                     self.sync()?;
                 }
 
@@ -1380,7 +1377,7 @@ impl Gdbm<ReadWrite> {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path)?;
     /// match db.try_insert("marmite", "cat")? {
     ///     Some(v) => {
     ///         println!("marmite exists and is a {}", std::str::from_utf8(&v).unwrap())
@@ -1396,13 +1393,14 @@ impl Gdbm<ReadWrite> {
         key: &K,
         value: &V,
     ) -> Result<Option<Vec<u8>>> {
+        self.check_writable()?;
         self.get(key).and_then(|olddata| match olddata {
             Some(_) => Ok(olddata),
             _ => self
                 .int_insert(key.to_bytes_ref().as_ref(), value.to_bytes_ref().as_ref())
                 .map(|()| None)
                 .and_then(|result| {
-                    if self.read_write.sync {
+                    if self.rw().sync {
                         self.sync()?;
                     }
 
@@ -1483,7 +1481,7 @@ impl Gdbm<ReadWrite> {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path)?;
     /// // Turn on numsync for this database.
     /// db.set_numsync(true);
     /// assert!(db.magic().is_numsync());
@@ -1492,7 +1490,8 @@ impl Gdbm<ReadWrite> {
     /// # }
     /// ```
     pub fn set_numsync(&mut self, numsync: bool) -> Result<()> {
-        if self.read_write.state == WriteState::Inconsistent {
+        self.check_writable()?;
+        if self.rw().state == WriteState::Inconsistent {
             return Err(Error::Inconsistent);
         }
 
@@ -1500,14 +1499,14 @@ impl Gdbm<ReadWrite> {
             return Ok(());
         }
 
-        self.read_write.state = WriteState::Inconsistent;
+        self.rw().state = WriteState::Inconsistent;
 
         self.header
             .convert_numsync(numsync)
             .into_iter()
             .try_for_each(|(offset, length)| self.free_record(offset, length))?;
 
-        self.read_write.state = WriteState::Dirty;
+        self.rw().state = WriteState::Dirty;
 
         Ok(())
     }
@@ -1525,20 +1524,19 @@ impl Gdbm<ReadWrite> {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path)?;
     /// let result = db.compact();
     /// #         result
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
     pub fn compact(&mut self) -> Result<()> {
+        self.check_writable()?;
         let char_sign = self.resolve_char_sign()?;
         let mut tmpdb = {
             let magic = self.magic();
             OpenOptions::new()
                 .char_sign(char_sign)
-                .write()
-                .create()
                 .layout(self.layout())
                 .endian(magic.endian())
                 .numsync(magic.is_numsync())
@@ -1572,18 +1570,15 @@ impl Gdbm<ReadWrite> {
     }
 }
 
-impl<R> Drop for Gdbm<R> {
+impl Drop for Gdbm {
     fn drop(&mut self) {
-        let db: &mut dyn Any = self as &mut dyn Any;
-        if let Some(db) = db.downcast_mut::<Gdbm<ReadWrite>>() {
-            let _ = db.sync();
-        }
+        let _ = self.sync();
     }
 }
 
-struct GDBMIterator<'a, R: 'static> {
+struct GDBMIterator<'a> {
     key_or_value: KeyOrValue,
-    db: &'a mut Gdbm<R>,
+    db: &'a mut Gdbm,
     slot: Option<Result<Slot>>,
 }
 
@@ -1599,12 +1594,8 @@ struct Slot {
     element: usize,
 }
 
-impl<'a, R> GDBMIterator<'a, R>
-where
-    Gdbm<R>: CacheBucket,
-    R: Default + 'static,
-{
-    fn next_slot(db: &Gdbm<R>, slot: &Slot) -> Option<Slot> {
+impl<'a> GDBMIterator<'a> {
+    fn next_slot(db: &Gdbm, slot: &Slot) -> Option<Slot> {
         match slot {
             Slot { bucket, element } if element + 1 < db.header.bucket_elems as usize => {
                 Some(Slot {
@@ -1624,7 +1615,7 @@ where
         }
     }
 
-    fn next_occupied_slot(db: &mut Gdbm<R>, slot: &Slot) -> Option<Result<Slot>> {
+    fn next_occupied_slot(db: &mut Gdbm, slot: &Slot) -> Option<Result<Slot>> {
         let mut next_slot = Self::next_slot(db, slot);
         while let Some(slot) = next_slot {
             let is_occupied = db
@@ -1641,7 +1632,7 @@ where
         None
     }
 
-    fn new(db: &'a mut Gdbm<R>, key_or_value: KeyOrValue) -> GDBMIterator<'a, R> {
+    fn new(db: &'a mut Gdbm, key_or_value: KeyOrValue) -> GDBMIterator<'a> {
         let slot = {
             let slot = Slot {
                 bucket: 0,
@@ -1666,11 +1657,7 @@ where
     }
 }
 
-impl<R> Iterator for GDBMIterator<'_, R>
-where
-    Gdbm<R>: CacheBucket,
-    R: Default + 'static,
-{
+impl Iterator for GDBMIterator<'_> {
     type Item = Result<(Vec<u8>, Vec<u8>)>;
 
     fn next(&mut self) -> Option<Self::Item> {

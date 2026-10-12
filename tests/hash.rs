@@ -53,7 +53,7 @@ fn insert_nonascii_keys() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     std::fs::copy(data_path("hash.db.le64"), tmp.path()).unwrap();
 
-    let mut db = OpenOptions::new().write().open(tmp.path()).unwrap();
+    let mut db = OpenOptions::new().write(true).open(tmp.path()).unwrap();
     for kv in &metadata.data {
         // replacing an existing key must find (not duplicate) the C-written record
         db.insert(kv[0].as_str(), "replaced").unwrap();
@@ -72,8 +72,8 @@ fn unsigned_char_sign_roundtrip() {
     {
         let mut db = OpenOptions::new()
             .char_sign(CharSign::Unsigned)
-            .write()
-            .create()
+            .write(true)
+            .create(true)
             .open(tmp.path())
             .unwrap();
         for kv in &metadata.data {
@@ -93,7 +93,7 @@ fn unsigned_char_sign_roundtrip() {
         );
     }
 
-    let found = |mut db: gdbm_native::Gdbm<gdbm_native::ReadOnly>| {
+    let found = |mut db: gdbm_native::Gdbm| {
         metadata
             .data
             .iter()

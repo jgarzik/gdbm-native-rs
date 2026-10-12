@@ -31,7 +31,7 @@ fn api_remove() {
 
             // Open database for testing
             let mut db = OpenOptions::new()
-                .write()
+                .write(true)
                 .open(&newdb_fn)
                 .expect("GDBM open failed");
 
@@ -73,7 +73,7 @@ fn api_insert() {
             fs::copy(filename, test_filename).unwrap();
 
             let mut db = OpenOptions::new()
-                .write()
+                .write(true)
                 .open(test_filename.to_str().unwrap())
                 .map_err(|e| e.to_string())?;
 

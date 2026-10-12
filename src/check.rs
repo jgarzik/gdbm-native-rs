@@ -13,9 +13,9 @@ use std::io::{Seek, SeekFrom};
 
 use crate::avail::AvailBlock;
 use crate::bucket::Bucket;
-use crate::{Gdbm, Layout, OpenOptions, ReadWrite, Result};
+use crate::{Gdbm, Layout, OpenOptions, Result};
 
-impl Gdbm<ReadWrite> {
+impl Gdbm {
     // Sync, then verify from on-disk state that every in-use extent (header, directory, buckets,
     // records, avail stack blocks) and every free extent lies below next_block, and that no two
     // extents overlap.
@@ -105,16 +105,16 @@ fn value(n: u64, len: u64) -> Vec<u8> {
     format!("{n}:").bytes().cycle().take(len as usize).collect()
 }
 
-fn create(path: &std::path::Path) -> Gdbm<ReadWrite> {
+fn create(path: &std::path::Path) -> Gdbm {
     OpenOptions::new()
-        .write()
-        .create()
+        .write(true)
+        .create(true)
         .block_size(crate::BlockSize::Exactly(512))
         .open(path)
         .unwrap()
 }
 
-fn assert_contents(db: &mut Gdbm<ReadWrite>, model: &HashMap<String, Vec<u8>>) {
+fn assert_contents(db: &mut Gdbm, model: &HashMap<String, Vec<u8>>) {
     assert_eq!(db.len().unwrap(), model.len());
     for (k, v) in model {
         assert_eq!(
@@ -129,7 +129,7 @@ fn assert_contents(db: &mut Gdbm<ReadWrite>, model: &HashMap<String, Vec<u8>>) {
 // remove-heavy phases overflow the header avail table onto the avail stack and insert-heavy
 // phases pop it back. Space must never be double-used.
 fn churn(
-    db: &mut Gdbm<ReadWrite>,
+    db: &mut Gdbm,
     rng: &mut Lcg,
     model: &mut HashMap<String, Vec<u8>>,
     ops: usize,
@@ -176,7 +176,7 @@ fn churn_space_consistent() {
     assert!(stack_used, "test never exercised the avail stack");
 
     drop(db);
-    let mut db = OpenOptions::new().write().open(&path).unwrap();
+    let mut db = OpenOptions::new().write(true).open(&path).unwrap();
     assert_contents(&mut db, &model);
     churn(&mut db, &mut rng, &mut model, 2000, 30);
     assert_contents(&mut db, &model);
@@ -206,7 +206,7 @@ fn reopen_after_churn() {
         db.check_space().unwrap();
     }
 
-    let mut db = OpenOptions::new().write().open(&path).unwrap();
+    let mut db = OpenOptions::new().write(true).open(&path).unwrap();
     assert_contents(&mut db, &model);
 }
 
@@ -217,8 +217,8 @@ fn set_numsync_on_fresh_open() {
     let path = dir.path().join("test.db");
     {
         let mut db = OpenOptions::new()
-            .write()
-            .create()
+            .write(true)
+            .create(true)
             .numsync(false)
             .block_size(crate::BlockSize::Exactly(512))
             .open(&path)
@@ -226,13 +226,13 @@ fn set_numsync_on_fresh_open() {
         db.insert("k", "v").unwrap();
     }
 
-    let mut db = OpenOptions::new().write().open(&path).unwrap();
+    let mut db = OpenOptions::new().write(true).open(&path).unwrap();
     // fill the header avail table with blocks freshly allocated from the end of file
     while db.header.avail.elems.len() < db.header.avail.sz as usize {
         let (offset, length) = db.extend(1024).unwrap();
         db.header.free(offset, length);
     }
-    db.read_write.state = crate::WriteState::Dirty;
+    db.rw().state = crate::WriteState::Dirty;
 
     db.set_numsync(true).unwrap();
     db.check_space().unwrap();
@@ -266,7 +266,7 @@ fn pop_c_avail_stack() {
     let path = dir.path().join("test.db");
     std::fs::copy(data("avail.db.le64"), &path).unwrap();
 
-    let mut db = OpenOptions::new().write().open(&path).unwrap();
+    let mut db = OpenOptions::new().write(true).open(&path).unwrap();
     assert_ne!(db.header.avail.next_block, 0, "fixture has no avail stack");
     db.check_space().unwrap();
     assert_contents(&mut db, &model);
@@ -282,8 +282,8 @@ fn set_numsync_keeps_counter() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("test.db");
     let mut db = OpenOptions::new()
-        .write()
-        .create()
+        .write(true)
+        .create(true)
         .numsync(true)
         .open(&path)
         .unwrap();
@@ -305,8 +305,8 @@ fn compact_keeps_block_size() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("test.db");
     let mut db = OpenOptions::new()
-        .write()
-        .create()
+        .write(true)
+        .create(true)
         .block_size(crate::BlockSize::Exactly(1024))
         .open(&path)
         .unwrap();
@@ -330,7 +330,7 @@ fn compact_keeps_block_size() {
 
 // Create a one-record database, then overwrite it with `bytes` at `offset`.
 fn corrupt(
-    offset: impl Fn(&mut Gdbm<ReadWrite>) -> u64,
+    offset: impl Fn(&mut Gdbm) -> u64,
     bytes: &[u8],
 ) -> (tempfile::TempDir, std::path::PathBuf) {
     use std::io::Write;
@@ -353,7 +353,7 @@ fn corrupt(
 
 // Corrupt a database, then reopen it and read the record. Must be an error, never a panic or
 // huge allocation.
-fn corrupt_and_get(offset: impl Fn(&mut Gdbm<ReadWrite>) -> u64, bytes: &[u8]) -> Result<()> {
+fn corrupt_and_get(offset: impl Fn(&mut Gdbm) -> u64, bytes: &[u8]) -> Result<()> {
     let (_dir, path) = corrupt(offset, bytes);
     let mut db = OpenOptions::new().open(&path)?;
     db.get::<_, Vec<u8>>("key")?;
@@ -364,9 +364,9 @@ fn corrupt_and_get(offset: impl Fn(&mut Gdbm<ReadWrite>) -> u64, bytes: &[u8]) -
 
 // Corrupt a database, then reopen it and insert records. Must be an error, never a panic or
 // overwriting of unrelated parts of the file.
-fn corrupt_and_insert(offset: impl Fn(&mut Gdbm<ReadWrite>) -> u64, bytes: &[u8]) -> Result<()> {
+fn corrupt_and_insert(offset: impl Fn(&mut Gdbm) -> u64, bytes: &[u8]) -> Result<()> {
     let (_dir, path) = corrupt(offset, bytes);
-    let mut db = OpenOptions::new().write().open(&path)?;
+    let mut db = OpenOptions::new().write(true).open(&path)?;
     for n in 0..10 {
         db.insert(&n.to_string(), "v")?;
     }
@@ -376,7 +376,7 @@ fn corrupt_and_insert(offset: impl Fn(&mut Gdbm<ReadWrite>) -> u64, bytes: &[u8]
 }
 
 // file offset of field `field_ofs` within the occupied element of the first bucket
-fn element_field(db: &mut Gdbm<ReadWrite>, field_ofs: u64) -> u64 {
+fn element_field(db: &mut Gdbm, field_ofs: u64) -> u64 {
     let bucket_ofs = db.dir.dir[0];
     db.f.seek(SeekFrom::Start(bucket_ofs)).unwrap();
     let bucket = Bucket::from_reader(db.header.bucket_elems, db.header.layout, &mut db.f).unwrap();
@@ -433,7 +433,7 @@ fn corrupt_bucket_avail_elem() {
 
 #[test]
 fn corrupt_header_avail_size() {
-    let avail_ofs = |db: &mut Gdbm<ReadWrite>| {
+    let avail_ofs = |db: &mut Gdbm| {
         u64::from(
             crate::header::Header::sizeof(db.header.layout, db.header.magic.is_numsync(), 0)
                 - AvailBlock::sizeof(db.header.layout, 0),
@@ -449,8 +449,8 @@ fn small_offset_limit() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("test.db");
     let mut db = OpenOptions::new()
-        .write()
-        .create()
+        .write(true)
+        .create(true)
         .layout(crate::Layout::Off32)
         .block_size(crate::BlockSize::Exactly(512))
         .open(&path)
@@ -479,8 +479,8 @@ fn churn_every_format() {
                 let mut model = HashMap::new();
 
                 let mut db = OpenOptions::new()
-                    .write()
-                    .create()
+                    .write(true)
+                    .create(true)
                     .layout(layout)
                     .endian(endian)
                     .numsync(numsync)
@@ -492,7 +492,7 @@ fn churn_every_format() {
                 }
                 drop(db);
 
-                let mut db = OpenOptions::new().write().open(&path).unwrap();
+                let mut db = OpenOptions::new().write(true).open(&path).unwrap();
                 assert_eq!(db.layout(), layout, "{what}");
                 assert_eq!(db.endian(), endian, "{what}");
                 assert_contents(&mut db, &model);

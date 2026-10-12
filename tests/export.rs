@@ -55,8 +55,8 @@ fn api_export_bin() {
                     .map_err(|e| e.to_string())
                     .and_then(|mut f| {
                         OpenOptions::new()
-                            .write()
-                            .create()
+                            .write(true)
+                            .create(true)
                             .open(&importdb)
                             // the format is detected
                             .and_then(|mut db| db.import_bin(&mut f, None, ImportMode::Replace))
@@ -114,8 +114,8 @@ fn api_export_ascii() {
             .map_err(|e| e.to_string())
             .and_then(|mut f| {
                 OpenOptions::new()
-                    .write()
-                    .create()
+                    .write(true)
+                    .create(true)
                     .open(&importdb)
                     .and_then(|mut db| db.import_ascii(&mut f, ImportMode::Replace))
                     .map(|_| ())
@@ -140,7 +140,7 @@ fn api_export_ascii() {
     }
 }
 
-fn dump_ascii(db: &mut gdbm_native::Gdbm<gdbm_native::ReadWrite>) -> Vec<u8> {
+fn dump_ascii(db: &mut gdbm_native::Gdbm) -> Vec<u8> {
     let mut dump = Vec::new();
     db.export_ascii(&mut dump, None::<&str>).unwrap();
     dump
@@ -153,8 +153,8 @@ fn ascii_empty_values_and_format() {
     let dir = tempdir().unwrap();
     for numsync in [false, true] {
         let mut db = OpenOptions::new()
-            .write()
-            .create()
+            .write(true)
+            .create(true)
             .numsync(numsync)
             .open(dir.path().join(format!("src{numsync}")))
             .unwrap();
@@ -167,8 +167,8 @@ fn ascii_empty_values_and_format() {
         assert!(text.contains(&format!("\n#:format={format}\n")), "{text}");
 
         let mut copy = OpenOptions::new()
-            .write()
-            .create()
+            .write(true)
+            .create(true)
             .open(dir.path().join(format!("dst{numsync}")))
             .unwrap();
         let info = copy
@@ -188,8 +188,8 @@ fn ascii_empty_values_and_format() {
 fn import_modes() {
     let dir = tempdir().unwrap();
     let mut src = OpenOptions::new()
-        .write()
-        .create()
+        .write(true)
+        .create(true)
         .open(dir.path().join("src"))
         .unwrap();
     src.insert("key", "new").unwrap();
@@ -198,8 +198,8 @@ fn import_modes() {
     src.export_bin(&mut bin, BinDumpFormat::host()).unwrap();
 
     let mut db = OpenOptions::new()
-        .write()
-        .create()
+        .write(true)
+        .create(true)
         .open(dir.path().join("dst"))
         .unwrap();
     db.insert("key", "old").unwrap();

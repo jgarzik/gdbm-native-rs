@@ -16,8 +16,20 @@ fn api_open_create() {
     let bad_db = dir.path().join("bad");
     std::fs::write(&bad_db, "stuff").expect("creating a DB file");
 
-    assert!(OpenOptions::new().write().create().open(no_db).is_ok());
-    assert!(OpenOptions::new().write().create().open(bad_db).is_err());
+    assert!(
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(no_db)
+            .is_ok()
+    );
+    assert!(
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(bad_db)
+            .is_err()
+    );
 }
 
 #[test]
@@ -27,7 +39,11 @@ fn api_open_create_empty_file() {
     let path = dir.path().join("empty");
     std::fs::write(&path, "").unwrap();
 
-    let mut db = OpenOptions::new().write().create().open(&path).unwrap();
+    let mut db = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open(&path)
+        .unwrap();
     db.insert("key", "value").unwrap();
     drop(db);
 
@@ -45,7 +61,7 @@ fn api_open_create_bad_file() {
     let path = dir.path().join("bad");
     std::fs::write(&path, [0x55u8; 4096]).unwrap();
 
-    let Err(err) = OpenOptions::new().write().create().open(&path) else {
+    let Err(err) = OpenOptions::new().write(true).create(true).open(&path) else {
         panic!("opened a non-database");
     };
     assert!(
@@ -57,7 +73,13 @@ fn api_open_create_bad_file() {
 
 #[test]
 fn tempfile() {
-    assert!(OpenOptions::new().write().create().tempfile().is_ok());
+    assert!(
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .tempfile()
+            .is_ok()
+    );
 }
 
 #[test]
@@ -81,8 +103,8 @@ fn api_open_newdb_magic() {
                 let path = dir.path().join("db");
 
                 let mut db = OpenOptions::new()
-                    .write()
-                    .create()
+                    .write(true)
+                    .create(true)
                     .layout(layout)
                     .endian(endian)
                     .numsync(numsync)
@@ -117,8 +139,8 @@ fn api_open_bsexact() {
         let dir = tempdir().unwrap();
         let db = dir.path().join("db");
         match OpenOptions::new()
-            .write()
-            .create()
+            .write(true)
+            .create(true)
             .block_size(BlockSize::Exactly(block_size))
             .open(&db)
         {
@@ -139,11 +161,15 @@ fn api_open_cachesize() {
         let dir = tempdir().unwrap();
         let db = dir.path().join("testdb");
 
+        let mut options = OpenOptions::new();
+        if let Some(cachesize) = cachesize {
+            options.cachesize(cachesize);
+        }
+
         // Create a database using configured cachesize.
-        OpenOptions::new()
-            .cachesize(cachesize)
-            .write()
-            .create()
+        options
+            .clone()
+            .create(true)
             .open(&db)
             .map_err(|e| format!("write open failed: {e}"))
             .and_then(|mut db| {
@@ -155,8 +181,7 @@ fn api_open_cachesize() {
             })?;
 
         // Read a database using configured cachesize.
-        OpenOptions::new()
-            .cachesize(cachesize)
+        options
             .open(&db)
             .map_err(|e| format!("read open failed: {e}"))
             .and_then(|mut db| {
@@ -179,4 +204,42 @@ fn api_open_cachesize() {
             the_test(cachesize).map_err(|e| format!("cachesize: {cachesize:?}]: {e}"))
         })
         .unwrap_or_else(|e| panic!("{e}"));
+}
+
+#[test]
+// A database opened read-only refuses writes; create implies write.
+fn read_only_mode() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("db");
+
+    let mut db = OpenOptions::new().create(true).open(&path).unwrap();
+    assert!(db.is_writable());
+    db.insert("key", "value").unwrap();
+    drop(db);
+
+    let mut db = OpenOptions::new().open(&path).unwrap();
+    assert!(!db.is_writable());
+    assert!(matches!(
+        db.insert("key", "x"),
+        Err(gdbm_native::Error::ReadOnly)
+    ));
+    assert!(matches!(
+        db.try_insert("new", "x"),
+        Err(gdbm_native::Error::ReadOnly)
+    ));
+    assert!(matches!(
+        db.remove("key"),
+        Err(gdbm_native::Error::ReadOnly)
+    ));
+    assert!(matches!(db.compact(), Err(gdbm_native::Error::ReadOnly)));
+    assert!(matches!(
+        db.set_numsync(false),
+        Err(gdbm_native::Error::ReadOnly)
+    ));
+    // nothing to sync
+    assert!(db.sync().is_ok());
+    assert_eq!(
+        db.get::<_, String>("key").unwrap().as_deref(),
+        Some("value")
+    );
 }

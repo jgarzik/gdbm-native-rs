@@ -16,7 +16,7 @@ fn api_convert() {
 
             // open and convert to/from numsync
             OpenOptions::new()
-                .write()
+                .write(true)
                 .open(tempfile.path().to_str().unwrap())
                 .map_err(|e| format!("opening: {e}"))
                 .and_then(|mut db| {

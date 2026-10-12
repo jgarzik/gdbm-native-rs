@@ -73,8 +73,8 @@ pub enum Error {
         /// Directory length in bytes.
         length: u32,
     },
-    /// Attempting write operation on readonly database.
-    WriteToReadonly,
+    /// Write operation on a database opened read-only.
+    ReadOnly,
     /// Block size found in header is impossibly small.
     BadHeaderBlockSize {
         /// Block size from header.

@@ -7,9 +7,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-use gdbm_native::{
-    BinDumpFormat, BlockSize, CharSign, Error, Gdbm, ImportMode, OpenOptions, ReadWrite,
-};
+use gdbm_native::{BinDumpFormat, BlockSize, CharSign, Error, Gdbm, ImportMode, OpenOptions};
 use std::process::exit;
 
 // same LCG as cgdbm.c
@@ -44,7 +42,7 @@ fn char_sign() -> CharSign {
 }
 
 // every record must be readable, and agree with len()
-fn verify(db: &mut Gdbm<ReadWrite>) {
+fn verify(db: &mut Gdbm) {
     let n = db
         .iter::<Vec<u8>, Vec<u8>>()
         .try_fold(0, |n, kv| kv.map(|_| n + 1))
@@ -60,12 +58,15 @@ fn churn(path: &str, create: bool, seed: u64, phases: usize) {
     let mut db = if create {
         OpenOptions::new()
             .char_sign(char_sign())
-            .write()
-            .create()
+            .write(true)
+            .create(true)
             .block_size(BlockSize::Exactly(512))
             .open(path)
     } else {
-        OpenOptions::new().char_sign(char_sign()).write().open(path)
+        OpenOptions::new()
+            .char_sign(char_sign())
+            .write(true)
+            .open(path)
     }
     .unwrap_or_else(|e| fail("open", e));
     verify(&mut db);
@@ -105,7 +106,7 @@ fn hold(path: &str, writer: bool, secs: u64) {
     let result = if writer {
         OpenOptions::new()
             .char_sign(char_sign())
-            .write()
+            .write(true)
             .open(path)
             .map(|_db| {
                 println!("ok");
@@ -135,8 +136,8 @@ fn main() {
         ["store", path, key, value] => {
             let mut db = OpenOptions::new()
                 .char_sign(char_sign())
-                .write()
-                .create()
+                .write(true)
+                .create(true)
                 .open(path)
                 .unwrap_or_else(|e| fail("open", e));
             db.insert(&unhex(key), value)
@@ -168,8 +169,8 @@ fn main() {
             let empty = args.len() == 4;
             let mut db = OpenOptions::new()
                 .char_sign(char_sign())
-                .write()
-                .create()
+                .write(true)
+                .create(true)
                 .numsync(true)
                 .open(path)
                 .unwrap_or_else(|e| fail("open", e));
@@ -200,8 +201,8 @@ fn main() {
         ["import" | "load", path, input] => {
             let mut db = OpenOptions::new()
                 .char_sign(char_sign())
-                .write()
-                .create()
+                .write(true)
+                .create(true)
                 .open(path)
                 .unwrap_or_else(|e| fail("open", e));
             let mut f = std::fs::File::open(input).unwrap();

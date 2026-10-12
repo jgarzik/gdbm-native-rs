@@ -100,7 +100,7 @@ fn for_each_db(check: impl Fn(&Platform, &Path) -> Result<(), String>) {
 }
 
 fn verify_contents(
-    db: &mut gdbm_native::Gdbm<gdbm_native::ReadWrite>,
+    db: &mut gdbm_native::Gdbm,
     expected: &[(Vec<u8>, Vec<u8>)],
 ) -> Result<(), String> {
     let len = db.len().map_err(|e| e.to_string())?;
@@ -167,7 +167,7 @@ fn read_all_records() {
     for_each_db(|_, db| {
         let tmp = copy_to_temp(db);
         let mut db = OpenOptions::new()
-            .write()
+            .write(true)
             .open(tmp.path())
             .map_err(|e| e.to_string())?;
         verify_contents(&mut db, &expected)
@@ -183,7 +183,7 @@ fn modify_and_reopen() {
         let tmp = copy_to_temp(db);
         {
             let mut db = OpenOptions::new()
-                .write()
+                .write(true)
                 .open(tmp.path())
                 .map_err(|e| e.to_string())?;
             for (i, (k, v)) in expected.iter_mut().enumerate() {
@@ -210,7 +210,7 @@ fn modify_and_reopen() {
         }
 
         let mut db = OpenOptions::new()
-            .write()
+            .write(true)
             .open(tmp.path())
             .map_err(|e| e.to_string())?;
         verify_contents(&mut db, &expected)
@@ -225,10 +225,10 @@ fn for_each_platform(check: impl Fn(&Platform) -> Result<(), String>) {
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
 
-fn new_db(dir: &tempfile::TempDir) -> gdbm_native::Gdbm<gdbm_native::ReadWrite> {
+fn new_db(dir: &tempfile::TempDir) -> gdbm_native::Gdbm {
     OpenOptions::new()
-        .write()
-        .create()
+        .write(true)
+        .create(true)
         .open(dir.path().join("db"))
         .unwrap()
 }

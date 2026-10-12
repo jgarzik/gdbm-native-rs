@@ -7,8 +7,8 @@ fn api_compact() {
     let test = |layout, endian, numsync| {
         // create a temporary database
         let mut db = OpenOptions::new()
-            .write()
-            .create()
+            .write(true)
+            .create(true)
             .layout(layout)
             .endian(endian)
             .numsync(numsync)
