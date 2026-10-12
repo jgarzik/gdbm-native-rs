@@ -6,6 +6,18 @@ pub enum Error {
     BadData(String),
     /// IO error.
     Io(io::Error),
+    /// File does not start with a known GDBM magic number, so is not a GDBM database.
+    BadMagic {
+        /// First four bytes of the file, big endian.
+        magic: u32,
+    },
+    /// The database file would grow beyond the maximum offset its format can represent.
+    FileTooLarge {
+        /// Required file size.
+        size: u64,
+        /// Maximum file size.
+        maximum: u64,
+    },
     /// Database may be inconsistent since an earlier error. Writes are disabled.
     Inconsistent,
     /// The database file is locked by another user.

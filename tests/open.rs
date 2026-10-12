@@ -5,7 +5,7 @@ use gdbm_native::{
     BlockSize,
     Endian::{Big, Little},
     Magic,
-    Offset::{Small, LFS},
+    Offset::{LFS, Small},
     OpenOptions,
 };
 use tempfile::tempdir;
@@ -52,7 +52,7 @@ fn api_open_create_bad_file() {
         panic!("opened a non-database");
     };
     assert!(
-        !matches!(err, gdbm_native::Error::Io(ref e) if e.kind() == std::io::ErrorKind::AlreadyExists),
+        matches!(err, gdbm_native::Error::BadMagic { magic: 0x5555_5555 }),
         "unexpected error {err:?}"
     );
     assert_eq!(std::fs::read(&path).unwrap(), [0x55u8; 4096]);

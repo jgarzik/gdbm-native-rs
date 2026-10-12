@@ -13,7 +13,7 @@ use std::io::{self, Read, Write};
 
 use crate::avail::{self, AvailElem};
 use crate::hashutil::PartialKey;
-use crate::ser::{read32, read64, write32, write64, Alignment, Layout, Offset};
+use crate::ser::{Alignment, Layout, Offset, read32, read64, write32, write64};
 
 #[derive(Debug, Copy, Clone)]
 pub struct BucketElement {
@@ -472,7 +472,7 @@ mod test {
 
                 let got = bucket.tab.iter().map(|elem| elem.hash).collect::<Vec<_>>();
                 (got == expected).then_some(()).ok_or_else(|| {
-                    format!("  failed: {name}\nexpected: {expected:?}\n     got: {got:?}",)
+                    format!("  failed: {name}\nexpected: {expected:?}\n     got: {got:?}")
                 })
             },
         )

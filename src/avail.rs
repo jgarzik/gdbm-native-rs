@@ -10,7 +10,7 @@
 
 use std::io::{self, Read, Write};
 
-use crate::ser::{read32, read64, write32, write64, Alignment, Layout, Offset};
+use crate::ser::{Alignment, Layout, Offset, read32, read64, write32, write64};
 use crate::{Error, Result};
 
 #[derive(Default, Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
@@ -265,7 +265,7 @@ pub fn partition_elems(elems: &[AvailElem]) -> (Vec<AvailElem>, Vec<AvailElem>) 
 
 #[cfg(test)]
 mod tests {
-    use super::{remove_elem, AvailElem};
+    use super::{AvailElem, remove_elem};
 
     #[test]
     fn remove_elem_found() {

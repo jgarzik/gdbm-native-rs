@@ -229,7 +229,7 @@ fn set_numsync_on_fresh_open() {
     let mut db = OpenOptions::new().write().open(&path).unwrap();
     // fill the header avail table with blocks freshly allocated from the end of file
     while db.header.avail.elems.len() < db.header.avail.sz as usize {
-        let (offset, length) = db.extend(1024);
+        let (offset, length) = db.extend(1024).unwrap();
         db.header.free(offset, length);
     }
     db.read_write.state = crate::WriteState::Dirty;
@@ -357,10 +357,9 @@ fn corrupt_and_get(offset: impl Fn(&mut Gdbm<ReadWrite>) -> u64, bytes: &[u8]) -
     let (_dir, path) = corrupt(offset, bytes);
     let mut db = OpenOptions::new().open(&path)?;
     db.get::<_, Vec<u8>>("key")?;
-    let result = db
-        .iter::<Vec<u8>, Vec<u8>>()
-        .try_for_each(|kv| kv.map(|_| ()));
-    result
+
+    db.iter::<Vec<u8>, Vec<u8>>()
+        .try_for_each(|kv| kv.map(|_| ()))
 }
 
 // Corrupt a database, then reopen it and insert records. Must be an error, never a panic or
@@ -381,7 +380,11 @@ fn element_field(db: &mut Gdbm<ReadWrite>, field_ofs: u64) -> u64 {
     let bucket_ofs = db.dir.dir[0];
     db.f.seek(SeekFrom::Start(bucket_ofs)).unwrap();
     let bucket = Bucket::from_reader(db.header.bucket_elems, db.header.layout, &mut db.f).unwrap();
-    let index = bucket.tab.iter().position(|e| e.is_occupied()).unwrap() as u64;
+    let index = bucket
+        .tab
+        .iter()
+        .position(super::bucket::BucketElement::is_occupied)
+        .unwrap() as u64;
     bucket_ofs
         + u64::from(Bucket::sizeof(db.header.layout))
         + index * u64::from(crate::bucket::BucketElement::sizeof(db.header.layout))
@@ -437,4 +440,27 @@ fn corrupt_header_avail_size() {
         )
     };
     assert!(corrupt_and_get(avail_ofs, &[0xff; 4]).is_err());
+}
+
+// Databases with 32-bit offsets cannot grow past what C GDBM's 32-bit (signed) off_t can address;
+// offsets beyond that were silently truncated when written.
+#[test]
+fn small_offset_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.db");
+    let mut db = OpenOptions::new()
+        .write()
+        .create()
+        .offset(Some(crate::Offset::Small))
+        .block_size(crate::BlockSize::Exactly(512))
+        .open(&path)
+        .unwrap();
+    db.insert("small", "fits").unwrap();
+
+    // pretend the file has grown to just under the limit
+    db.header.next_block = u64::from(i32::MAX as u32) - 1024;
+    assert!(matches!(
+        db.insert("big", &vec![0u8; 4096]),
+        Err(crate::Error::FileTooLarge { .. })
+    ));
 }

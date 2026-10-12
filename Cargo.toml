@@ -2,7 +2,8 @@
 name = "gdbm-native"
 version = "0.5.2"
 authors = ["Jeff Garzik"]
-edition = "2021"
+edition = "2024"
+rust-version = "1.89"
 license = "MIT"
 readme = "README.md"
 description = "Rust-native implementation of GDBM key/value database"
@@ -16,6 +17,5 @@ base64 = "^0.22"
 tempfile = "3.13"
 
 [dev-dependencies]
-tempfile = "3.13"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

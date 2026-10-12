@@ -14,7 +14,7 @@ use crate::avail::{AvailBlock, AvailElem};
 use crate::bucket::{Bucket, BucketElement};
 use crate::dir::build_dir_size;
 use crate::magic::Magic;
-use crate::ser::{read32, read64, write32, write64, Alignment, Endian, Layout, Offset};
+use crate::ser::{Alignment, Endian, Layout, Offset, read32, read64, write32, write64};
 use crate::{Error, Result};
 
 #[derive(Debug)]
