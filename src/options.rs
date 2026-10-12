@@ -14,6 +14,7 @@ use crate::{CharSign, Endian, Error, Gdbm, Layout, Result};
 /// the underlying filesystem block size, or 512, whichever is largest. The minimum blocksize is
 /// 512.
 #[derive(Copy, Clone, Debug, PartialOrd, PartialEq, Default)]
+#[non_exhaustive]
 pub enum BlockSize {
     /// Use the filesystem default block size. This is the default.
     #[default]

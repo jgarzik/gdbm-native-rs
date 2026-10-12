@@ -19,14 +19,14 @@ fn api_compact() {
         (0usize..1000)
             .try_for_each(|n| {
                 let v = vec![1u8; n];
-                db.insert(&n, &v).map(|_| ())
+                db.insert(&n.to_le_bytes(), &v).map(|_| ())
             })
             .map_err(|e| format!("inserting entries: {e}"))?;
 
         // remove even numbere records to create "holes"
         (0usize..1000)
             .filter(|n| n % 2 == 0)
-            .try_for_each(|n| db.remove(&n).map(|_| ()))
+            .try_for_each(|n| db.remove(&n.to_le_bytes()).map(|_| ()))
             .map_err(|e| format!("removing: {e}"))?;
 
         // compact
@@ -36,7 +36,7 @@ fn api_compact() {
         (0usize..1000)
             .try_for_each(|n| {
                 let v = db
-                    .get::<usize, Vec<u8>>(&n)
+                    .get::<_, Vec<u8>>(&n.to_le_bytes())
                     .map_err(|e| format!("reading {n}: {e}"))?;
                 if n % 2 != 0 {
                     (v == Some(vec![1; n]))

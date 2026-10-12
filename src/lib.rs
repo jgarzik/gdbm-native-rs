@@ -8,6 +8,8 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
+#![forbid(unsafe_code)]
+
 //! Rust native implementation of GDBM key-value database.
 //!
 //! An efficient disk based key-value store for new applications, while retaining compatibility
@@ -64,7 +66,7 @@ mod ser;
 
 use avail::{AvailBlock, AvailElem};
 use bucket::{Bucket, BucketCache, BucketElement};
-use bytes::{FromBytes, ToBytesRef};
+pub use bytes::{FromBytes, ToBytesRef};
 use dir::{Directory, build_dir_size};
 pub use dump::{BinDumpFormat, DumpInfo, ImportMode};
 pub use error::Error;
@@ -493,6 +495,32 @@ impl Gdbm {
     /// # }
     /// ```
     #[allow(clippy::len_without_is_empty)]
+    /// Whether the database has no entries. Unlike [`len`](Gdbm::len), this stops at the first
+    /// entry found.
+    ///
+    /// # Errors
+    /// Fails if a bucket cannot be read.
+    pub fn is_empty(&self) -> Result<bool> {
+        let mut cur_dir: usize = 0;
+        while cur_dir < self.dir.dir.len() {
+            if self.with_bucket(cur_dir, |bucket| bucket.count > 0)? {
+                return Ok(false);
+            }
+            cur_dir = self.next_bucket_dir(cur_dir);
+        }
+
+        Ok(true)
+    }
+
+    /// Write out any changes and close the database, reporting any error. Dropping a `Gdbm`
+    /// also writes out changes, but cannot report errors.
+    ///
+    /// # Errors
+    /// Fails if changes cannot be written.
+    pub fn close(mut self) -> Result<()> {
+        self.sync()
+    }
+
     pub fn len(&self) -> Result<usize> {
         let mut len: usize = 0;
         let mut cur_dir: usize = 0;
@@ -568,9 +596,9 @@ impl Gdbm {
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
     /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path)?;
-    /// for kv in db.iter::<String, u32>() {
+    /// for kv in db.iter::<String, [u8; 4]>() {
     ///     let (button, count) = kv?;
-    ///     println!("button <{button}> was clicked {count} times")
+    ///     println!("button <{button}> was clicked {} times", u32::from_be_bytes(count))
     /// }
     /// #         Ok(())
     /// #     }().map_err(|e| e.to_string())
@@ -1589,8 +1617,22 @@ impl Gdbm {
 }
 
 impl Drop for Gdbm {
+    // Best effort: use close() to learn of errors writing out the database.
     fn drop(&mut self) {
         let _ = self.sync();
+    }
+}
+
+impl std::fmt::Debug for Gdbm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Gdbm")
+            .field("layout", &self.layout())
+            .field("endian", &self.endian())
+            .field("numsync", &self.header.magic.is_numsync())
+            .field("block_size", &self.header.block_sz)
+            .field("char_sign", &self.char_sign())
+            .field("writable", &self.is_writable())
+            .finish_non_exhaustive()
     }
 }
 
