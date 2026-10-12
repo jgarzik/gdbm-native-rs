@@ -14,8 +14,8 @@ Pure-Rust GDBM; on-disk compatible with GNU GDBM 1.23 (C).
 - CI: linux/macos × x86_64/aarch64 + interop, lint, MSRV 1.89 (edition 2024; `File::try_lock`).
 
 ## Map
-- `lib.rs`: `Gdbm<ReadOnly|ReadWrite>`, alloc/free (port of `falloc.c`), iteration, import/export.
-- `options.rs`: type-state `OpenOptions`. `header/dir/bucket/avail.rs`: on-disk structs.
+- `lib.rs`: one `Gdbm` (runtime RO/RW: `read_write: Option<WriteMode>`, writes `check_writable()` → `Error::ReadOnly`), alloc/free (port of `falloc.c`), iteration, import/export. Reads take `&self`: cache in `RefCell`, access buckets only via `with_bucket(dir, |b| ..)` (never hold a borrow across loads); write paths use `bucket_cache.get_mut()`.
+- `options.rs`: `std::fs`-style `OpenOptions` (`&mut self` setters, `create` implies write). `dump.rs`: `BinDumpFormat`, `ImportMode`, `DumpInfo`. `bytes.rs`: public `ToBytesRef`/`FromBytes` (no int/bool encodings). `header/dir/bucket/avail.rs`: on-disk structs.
 - `check.rs` (test only): `check_space()` asserts no overlapping extents and file size == `next_block`; churn and corruption tests.
 - `tests/data/<platform>/`: C GDBM-written `mixed` db (+numsync), C binary/ASCII dumps, `manifest.json` (char sign, sizeof long, off_t, align, endian) per platform; expected records `tests/data/mixed.json` (hex). Regenerate: `tests/testgen/gen-platforms.sh [PLATFORM...]` (Docker+QEMU, Debian 13; `*-off32` build GDBM 1.26 with 32-bit off_t). Tested by `tests/platforms.rs`.
 - `tests/data/{basic,empty,hash,avail}.*`: legacy fixtures (`tests/testgen/gen-legacy.sh`, `Dockerfile.legacy`). Generator: `tests/testgen/testgen.cc`.
