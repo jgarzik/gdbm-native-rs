@@ -923,7 +923,9 @@ impl Gdbm {
             })?;
             for elem in elems {
                 // keys of up to 4 bytes are entirely in the bucket
-                if elem.key_size <= PartialKey::SIZEOF && elem.key_start.is_ascii() {
+                if elem.key_size <= PartialKey::SIZEOF
+                    && elem.key_start.is_ascii(elem.key_size as usize)
+                {
                     continue;
                 }
                 // skip unreadable records, so that recover() can use detection
@@ -959,8 +961,6 @@ impl Gdbm {
         let key_hash = self.hash(key)?;
         let (bucket_dir, elem_ofs) =
             key_loc(self.header.dir_bits, self.header.bucket_elems, key_hash);
-        let key_start = PartialKey::new(key);
-
         let bucket_entries = self.with_bucket(bucket_dir, |bucket| {
             (0..bucket.tab.len())
                 .map(|index| (index + elem_ofs as usize) % bucket.tab.len())
@@ -969,7 +969,7 @@ impl Gdbm {
                 .filter(|(_, elem)| {
                     elem.hash == key_hash
                         && elem.key_size == key.len() as u32
-                        && elem.key_start == key_start
+                        && elem.key_start.matches(key)
                 })
                 .collect::<Vec<_>>()
         })?;

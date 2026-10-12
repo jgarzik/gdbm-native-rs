@@ -31,9 +31,23 @@ impl PartialKey {
         )
     }
 
-    // whether the stored key prefix has only bytes < 0x80
-    pub fn is_ascii(&self) -> bool {
-        self.0.is_ascii()
+    // The bytes of the prefix that belong to a key of key_len bytes. C GDBM copies only
+    // min(4, key length) bytes into a bucket element (gdbmstore.c), so in a reused slot the
+    // rest may be left over from an earlier, longer key.
+    fn prefix(&self, key_len: usize) -> &[u8] {
+        &self.0[..key_len.min(self.0.len())]
+    }
+
+    // Whether key could have this prefix, comparing only the bytes C GDBM compares
+    // (findkey.c: memcmp of min(SMALL, key size) bytes).
+    pub fn matches(&self, key: &[u8]) -> bool {
+        let prefix = self.prefix(key.len());
+        key[..prefix.len()] == *prefix
+    }
+
+    // whether the stored prefix of a key of key_len bytes has only bytes < 0x80
+    pub fn is_ascii(&self, key_len: usize) -> bool {
+        self.prefix(key_len).is_ascii()
     }
 
     pub fn from_reader(reader: &mut impl Read) -> io::Result<Self> {
