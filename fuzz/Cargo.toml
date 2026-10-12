@@ -1,0 +1,38 @@
+[package]
+name = "gdbm-native-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+tempfile = "3.27"
+gdbm-native = { path = ".." }
+
+# not part of the gdbm-native package
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "open"
+path = "fuzz_targets/open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "import_ascii"
+path = "fuzz_targets/import_ascii.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "import_bin"
+path = "fuzz_targets/import_bin.rs"
+test = false
+doc = false
+bench = false

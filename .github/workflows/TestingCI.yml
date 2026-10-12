@@ -24,7 +24,7 @@ jobs:
     name: test (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install libgdbm (Linux)
@@ -47,7 +47,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -56,12 +56,64 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Docs
+        run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Fuzz targets format
+        run: cargo fmt --manifest-path fuzz/Cargo.toml -- --check
 
   msrv:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.89
       - uses: Swatinem/rust-cache@v2
       - name: Test
         run: cargo test --all-features
+
+  # 32-bit and big-endian hosts, under QEMU
+  cross:
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - i686-unknown-linux-gnu
+          - armv7-unknown-linux-gnueabihf
+          - s390x-unknown-linux-gnu
+    name: test (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+      - name: Test
+        run: cross test --all-features --target ${{ matrix.target }}
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: Seed corpora with C GDBM fixtures
+        run: |
+          mkdir -p fuzz/corpus/{open,import_ascii,import_bin}
+          cp tests/data/*.db.* tests/data/*/mixed.db* fuzz/corpus/open/
+          cp tests/data/*/mixed.txt fuzz/corpus/import_ascii/
+          cp tests/data/*/mixed.bin fuzz/corpus/import_bin/
+      - name: Fuzz
+        run: |
+          for target in open import_ascii import_bin; do
+            cargo fuzz run "$target" "fuzz/corpus/$target" -- -max_total_time=60 -rss_limit_mb=1024
+          done
