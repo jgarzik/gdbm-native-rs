@@ -10,7 +10,7 @@
 
 use std::io::{self, Read, Write};
 
-use crate::ser::{Alignment, Layout, Offset, read32, read64, write32, write64};
+use crate::ser::{Alignment, Format, Offset, read32, read64, write32, write64};
 use crate::{Error, Result};
 
 #[derive(Default, Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
@@ -20,25 +20,25 @@ pub struct AvailElem {
 }
 
 impl AvailElem {
-    pub fn sizeof(layout: Layout) -> u32 {
+    pub fn sizeof(layout: Format) -> u32 {
         match (layout.alignment, layout.offset) {
-            (Alignment::Align32, Offset::LFS) => 12,
-            (Alignment::Align64, Offset::LFS) => 16,
+            (Alignment::Align32, Offset::Lfs) => 12,
+            (Alignment::Align64, Offset::Lfs) => 16,
             _ => 8,
         }
     }
 
-    pub fn from_reader(layout: Layout, reader: &mut impl Read) -> io::Result<Self> {
+    pub fn from_reader(layout: Format, reader: &mut impl Read) -> io::Result<Self> {
         let elem_sz = read32(layout.endian, reader)?;
 
         // skip padding
-        if layout.alignment.is64() && layout.offset == Offset::LFS {
+        if layout.alignment.is64() {
             read32(layout.endian, reader)?;
         }
 
         let elem_ofs = match layout.offset {
             Offset::Small => u64::from(read32(layout.endian, reader)?),
-            Offset::LFS => read64(layout.endian, reader)?,
+            Offset::Lfs => read64(layout.endian, reader)?,
         };
 
         Ok(AvailElem {
@@ -47,17 +47,17 @@ impl AvailElem {
         })
     }
 
-    pub fn serialize(&self, layout: Layout, writer: &mut impl Write) -> io::Result<()> {
+    pub fn serialize(&self, layout: Format, writer: &mut impl Write) -> io::Result<()> {
         write32(layout.endian, writer, self.sz)?;
 
         // insert padding
-        if layout.alignment.is64() && layout.offset == Offset::LFS {
+        if layout.alignment.is64() {
             write32(layout.endian, writer, 0)?;
         }
 
         match layout.offset {
             Offset::Small => write32(layout.endian, writer, self.addr as u32)?,
-            Offset::LFS => write64(layout.endian, writer, self.addr)?,
+            Offset::Lfs => write64(layout.endian, writer, self.addr)?,
         }
 
         Ok(())
@@ -73,7 +73,7 @@ pub struct AvailBlock {
 
 impl AvailBlock {
     // saturates rather than overflowing for implausible element counts read from a file
-    pub fn sizeof(layout: Layout, elems: u32) -> u32 {
+    pub fn sizeof(layout: Format, elems: u32) -> u32 {
         elems
             .saturating_mul(AvailElem::sizeof(layout))
             .saturating_add(match (layout.alignment, layout.offset) {
@@ -90,17 +90,40 @@ impl AvailBlock {
         }
     }
 
-    pub fn from_reader(layout: Layout, reader: &mut impl Read) -> io::Result<Self> {
+    // Read the block at `block_offset`, which can hold at most `capacity` elements.
+    pub fn from_reader(
+        layout: Format,
+        block_offset: u64,
+        capacity: u32,
+        reader: &mut impl Read,
+    ) -> Result<Self> {
         let sz = read32(layout.endian, reader)?;
+        Self::from_reader_sized(layout, sz, block_offset, capacity, reader)
+    }
+
+    // from_reader() for a block whose size field has already been read. The element count is
+    // checked against the block's capacity before reading any elements (BadAvailCount), so a
+    // corrupt count cannot drive reading far beyond the block.
+    pub fn from_reader_sized(
+        layout: Format,
+        sz: u32,
+        block_offset: u64,
+        capacity: u32,
+        reader: &mut impl Read,
+    ) -> Result<Self> {
         let count = read32(layout.endian, reader)?;
 
         let next_block = match layout.offset {
             Offset::Small => u64::from(read32(layout.endian, reader)?),
-            Offset::LFS => read64(layout.endian, reader)?,
+            Offset::Lfs => read64(layout.endian, reader)?,
         };
 
-        if layout.alignment.is64() && layout.offset == Offset::Small {
-            read32(layout.endian, reader)?;
+        if count > capacity.min(sz) {
+            return Err(Error::BadAvailCount {
+                block_offset,
+                elems: count,
+                maximum: capacity.min(sz),
+            });
         }
 
         let mut elems = (0..count)
@@ -127,16 +150,12 @@ impl AvailBlock {
         insert_elem(&mut self.elems, offset, length);
     }
 
-    pub fn serialize(&self, layout: Layout, writer: &mut impl Write) -> io::Result<()> {
+    pub fn serialize(&self, layout: Format, writer: &mut impl Write) -> io::Result<()> {
         write32(layout.endian, writer, self.sz)?;
         write32(layout.endian, writer, self.elems.len() as u32)?;
         match layout.offset {
             Offset::Small => write32(layout.endian, writer, self.next_block as u32)?,
-            Offset::LFS => write64(layout.endian, writer, self.next_block)?,
-        }
-
-        if layout.alignment.is64() && layout.offset == Offset::Small {
-            write32(layout.endian, writer, 0)?;
+            Offset::Lfs => write64(layout.endian, writer, self.next_block)?,
         }
 
         self.elems
@@ -158,13 +177,13 @@ impl AvailBlock {
     // Size in bytes of a block pushed onto the avail stack when the header avail table (of
     // `table_sz` elements) overflows: half the table plus the C struct avail_block, whose sizeof
     // includes one table element. Mirrors push_avail_block() in C GDBM's falloc.c.
-    pub fn stack_block_size(layout: Layout, table_sz: u32) -> u32 {
+    pub fn stack_block_size(layout: Format, table_sz: u32) -> u32 {
         (table_sz.saturating_mul(AvailElem::sizeof(layout)) / 2)
             .saturating_add(Self::sizeof(layout, 1))
     }
 
     // Number of elements that fit in a block of stack_block_size() bytes.
-    pub fn stack_block_capacity(layout: Layout, table_sz: u32) -> u32 {
+    pub fn stack_block_capacity(layout: Format, table_sz: u32) -> u32 {
         (Self::stack_block_size(layout, table_sz) - Self::sizeof(layout, 0))
             / AvailElem::sizeof(layout)
     }

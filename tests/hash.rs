@@ -17,7 +17,7 @@ use gdbm_native::{CharSign, OpenOptions};
 use std::path::PathBuf;
 
 fn data_path(name: &str) -> PathBuf {
-    [env!("CARGO_MANIFEST_DIR"), "src/data", name]
+    [env!("CARGO_MANIFEST_DIR"), "tests/data", name]
         .iter()
         .collect()
 }
@@ -32,7 +32,7 @@ fn read_c_nonascii_keys() {
     let metadata = metadata();
 
     for db_name in ["hash.db.le64", "hash.db.le64.numsync"] {
-        let mut db = OpenOptions::new().open(data_path(db_name)).unwrap();
+        let db = OpenOptions::new().open(data_path(db_name)).unwrap();
 
         assert_eq!(db.len().unwrap(), metadata.data_records);
         for kv in &metadata.data {
@@ -53,7 +53,7 @@ fn insert_nonascii_keys() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     std::fs::copy(data_path("hash.db.le64"), tmp.path()).unwrap();
 
-    let mut db = OpenOptions::new().write().open(tmp.path()).unwrap();
+    let mut db = OpenOptions::new().write(true).open(tmp.path()).unwrap();
     for kv in &metadata.data {
         // replacing an existing key must find (not duplicate) the C-written record
         db.insert(kv[0].as_str(), "replaced").unwrap();
@@ -61,8 +61,8 @@ fn insert_nonascii_keys() {
     assert_eq!(db.len().unwrap(), metadata.data_records);
 }
 
-// Databases written with CharSign::Unsigned must be opened with the same setting, including
-// across compact() which rebuilds the database.
+// Databases written with CharSign::Unsigned keep it across compact(), which rebuilds the
+// database; later opens detect it, unless told otherwise.
 #[test]
 fn unsigned_char_sign_roundtrip() {
     let metadata = metadata();
@@ -72,8 +72,8 @@ fn unsigned_char_sign_roundtrip() {
     {
         let mut db = OpenOptions::new()
             .char_sign(CharSign::Unsigned)
-            .write()
-            .create()
+            .write(true)
+            .create(true)
             .open(tmp.path())
             .unwrap();
         for kv in &metadata.data {
@@ -82,7 +82,7 @@ fn unsigned_char_sign_roundtrip() {
         db.compact().unwrap();
     }
 
-    let mut db = OpenOptions::new()
+    let db = OpenOptions::new()
         .char_sign(CharSign::Unsigned)
         .open(tmp.path())
         .unwrap();
@@ -93,14 +93,29 @@ fn unsigned_char_sign_roundtrip() {
         );
     }
 
-    let mut db = OpenOptions::new().open(tmp.path()).unwrap();
-    let found = metadata
-        .data
-        .iter()
-        .filter(|kv| db.contains_key(kv[0].as_str()).unwrap())
-        .count();
+    let found = |db: gdbm_native::Gdbm| {
+        metadata
+            .data
+            .iter()
+            .filter(|kv| db.contains_key(kv[0].as_str()).unwrap())
+            .count()
+    };
+
+    // detected
+    assert_eq!(
+        found(OpenOptions::new().open(tmp.path()).unwrap()),
+        metadata.data_records
+    );
+
+    // overridden with the wrong one
+    let n = found(
+        OpenOptions::new()
+            .char_sign(CharSign::Signed)
+            .open(tmp.path())
+            .unwrap(),
+    );
     assert!(
-        found < metadata.data_records / 2,
-        "found {found} keys with wrong CharSign"
+        n < metadata.data_records / 2,
+        "found {n} keys with wrong CharSign"
     );
 }

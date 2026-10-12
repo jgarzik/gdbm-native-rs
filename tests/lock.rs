@@ -22,27 +22,39 @@ fn writer_excludes_writers_and_readers() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("db");
 
-    let db = OpenOptions::new().write().create().open(&path).unwrap();
-    assert!(is_locked(OpenOptions::new().write().open(&path)));
-    assert!(is_locked(OpenOptions::new().write().create().open(&path)));
+    let db = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open(&path)
+        .unwrap();
+    assert!(is_locked(OpenOptions::new().write(true).open(&path)));
+    assert!(is_locked(
+        OpenOptions::new().write(true).create(true).open(&path)
+    ));
     assert!(is_locked(OpenOptions::new().open(&path)));
 
     drop(db);
-    assert!(OpenOptions::new().write().open(&path).is_ok());
+    assert!(OpenOptions::new().write(true).open(&path).is_ok());
 }
 
 #[test]
 fn readers_share() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("db");
-    drop(OpenOptions::new().write().create().open(&path).unwrap());
+    drop(
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(&path)
+            .unwrap(),
+    );
 
     let r1 = OpenOptions::new().open(&path).unwrap();
     let r2 = OpenOptions::new().open(&path).unwrap();
-    assert!(is_locked(OpenOptions::new().write().open(&path)));
+    assert!(is_locked(OpenOptions::new().write(true).open(&path)));
 
     drop((r1, r2));
-    assert!(OpenOptions::new().write().open(&path).is_ok());
+    assert!(OpenOptions::new().write(true).open(&path).is_ok());
 }
 
 #[test]
@@ -52,11 +64,17 @@ fn lock_disabled() {
 
     let mut w = OpenOptions::new()
         .lock(false)
-        .write()
-        .create()
+        .write(true)
+        .create(true)
         .open(&path)
         .unwrap();
     w.sync().unwrap();
     assert!(OpenOptions::new().lock(false).open(&path).is_ok());
-    assert!(OpenOptions::new().lock(false).write().open(&path).is_ok());
+    assert!(
+        OpenOptions::new()
+            .lock(false)
+            .write(true)
+            .open(&path)
+            .is_ok()
+    );
 }

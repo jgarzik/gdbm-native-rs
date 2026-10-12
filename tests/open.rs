@@ -1,12 +1,9 @@
 extern crate gdbm_native;
 
 use gdbm_native::{
-    Alignment::{Align32, Align64},
     BlockSize,
     Endian::{Big, Little},
-    Magic,
-    Offset::{LFS, Small},
-    OpenOptions,
+    Layout, Magic, OpenOptions,
 };
 use tempfile::tempdir;
 
@@ -19,8 +16,20 @@ fn api_open_create() {
     let bad_db = dir.path().join("bad");
     std::fs::write(&bad_db, "stuff").expect("creating a DB file");
 
-    assert!(OpenOptions::new().write().create().open(no_db).is_ok());
-    assert!(OpenOptions::new().write().create().open(bad_db).is_err());
+    assert!(
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(no_db)
+            .is_ok()
+    );
+    assert!(
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(bad_db)
+            .is_err()
+    );
 }
 
 #[test]
@@ -30,11 +39,15 @@ fn api_open_create_empty_file() {
     let path = dir.path().join("empty");
     std::fs::write(&path, "").unwrap();
 
-    let mut db = OpenOptions::new().write().create().open(&path).unwrap();
+    let mut db = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open(&path)
+        .unwrap();
     db.insert("key", "value").unwrap();
     drop(db);
 
-    let mut db = OpenOptions::new().open(&path).unwrap();
+    let db = OpenOptions::new().open(&path).unwrap();
     assert_eq!(
         db.get::<_, String>("key").unwrap().as_deref(),
         Some("value")
@@ -48,7 +61,7 @@ fn api_open_create_bad_file() {
     let path = dir.path().join("bad");
     std::fs::write(&path, [0x55u8; 4096]).unwrap();
 
-    let Err(err) = OpenOptions::new().write().create().open(&path) else {
+    let Err(err) = OpenOptions::new().write(true).create(true).open(&path) else {
         panic!("opened a non-database");
     };
     assert!(
@@ -60,60 +73,55 @@ fn api_open_create_bad_file() {
 
 #[test]
 fn tempfile() {
-    assert!(OpenOptions::new().write().create().tempfile().is_ok());
+    assert!(
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .tempfile()
+            .is_ok()
+    );
 }
 
 #[test]
-// Test for correct magic for new databases.
+// New databases get the magic for their layout, and reopen with that layout detected.
 fn api_open_newdb_magic() {
-    [
-        (Align32, LFS, Big, false, Magic::BE64),
-        (Align32, LFS, Little, false, Magic::LE64),
-        (Align32, Small, Big, false, Magic::BE32),
-        (Align32, Small, Little, false, Magic::LE32),
-        (Align64, LFS, Big, false, Magic::BE64),
-        (Align64, LFS, Little, false, Magic::LE64),
-        (Align64, Small, Big, false, Magic::BE32),
-        (Align64, Small, Little, false, Magic::LE32),
-        (Align32, LFS, Big, true, Magic::BE64NS),
-        (Align32, LFS, Little, true, Magic::LE64NS),
-        (Align32, Small, Big, true, Magic::BE32NS),
-        (Align32, Small, Little, true, Magic::LE32NS),
-        (Align64, LFS, Big, true, Magic::BE64NS),
-        (Align64, LFS, Little, true, Magic::LE64NS),
-        (Align64, Small, Big, true, Magic::BE32NS),
-        (Align64, Small, Little, true, Magic::LE32NS),
-    ]
-    .into_iter()
-    .try_for_each(|(alignment, offset, endian, numsync, expected_magic)| {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("db");
+    for layout in [Layout::Off32, Layout::Off64Align4, Layout::Off64Align8] {
+        for endian in [Little, Big] {
+            for numsync in [false, true] {
+                let expected = match (layout, endian, numsync) {
+                    (Layout::Off32, Little, false) => Magic::LE32,
+                    (Layout::Off32, Big, false) => Magic::BE32,
+                    (Layout::Off32, Little, true) => Magic::LE32NS,
+                    (Layout::Off32, Big, true) => Magic::BE32NS,
+                    (_, Little, false) => Magic::LE64,
+                    (_, Big, false) => Magic::BE64,
+                    (_, Little, true) => Magic::LE64NS,
+                    (_, Big, true) => Magic::BE64NS,
+                };
+                let what = format!("{layout:?} {endian:?} numsync {numsync}");
+                let dir = tempdir().unwrap();
+                let path = dir.path().join("db");
 
-        OpenOptions::new().write().create().alignment(Some(alignment)).offset(Some(offset)).endian(Some(endian)).numsync(numsync).open(
-            &path
-        )
-        .map_err(|e| format!(
-            "creating: alignment: {alignment:?}, offset: {offset:?}, endian: {endian:?}, numsync: {numsync}, expected: {expected_magic:?}, newdb error: {e}",
-        ))?;
+                let mut db = OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .layout(layout)
+                    .endian(endian)
+                    .numsync(numsync)
+                    .open(&path)
+                    .unwrap_or_else(|e| panic!("creating {what}: {e}"));
+                db.sync().unwrap();
+                drop(db);
 
-        OpenOptions::new().alignment(Some(alignment)).open(
-            &path,
-        )
-        .map_err(|e| format!(
-            "opening: alignment: {alignment:?}, offset: {offset:?}, endian: {endian:?}, numsync: {numsync}, expected: {expected_magic:?}, open error: {e}",
-        ))
-        .and_then(|db| {
-            (db.magic() == expected_magic)
-                .then_some(())
-                .ok_or_else(|| {
-                    format!(
-                        "wrong magic: alignment: {alignment:?}, offset: {offset:?}, endian: {endian:?}, numsync: {numsync}, expected: {expected_magic:?}, got: {:?}",
-                        db.magic()
-                    )
-                })
-        })
-    })
-    .unwrap_or_else(|e: String| panic!("{e}"));
+                let db = OpenOptions::new()
+                    .open(&path)
+                    .unwrap_or_else(|e| panic!("opening {what}: {e}"));
+                assert_eq!(db.magic(), expected, "{what}");
+                assert_eq!(db.layout(), layout, "{what}");
+                assert_eq!(db.endian(), endian, "{what}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -131,8 +139,8 @@ fn api_open_bsexact() {
         let dir = tempdir().unwrap();
         let db = dir.path().join("db");
         match OpenOptions::new()
-            .write()
-            .create()
+            .write(true)
+            .create(true)
             .block_size(BlockSize::Exactly(block_size))
             .open(&db)
         {
@@ -153,29 +161,32 @@ fn api_open_cachesize() {
         let dir = tempdir().unwrap();
         let db = dir.path().join("testdb");
 
+        let mut options = OpenOptions::new();
+        if let Some(cachesize) = cachesize {
+            options.cachesize(cachesize);
+        }
+
         // Create a database using configured cachesize.
-        OpenOptions::new()
-            .cachesize(cachesize)
-            .write()
-            .create()
+        options
+            .clone()
+            .create(true)
             .open(&db)
             .map_err(|e| format!("write open failed: {e}"))
             .and_then(|mut db| {
                 (0..RECORD_COUNT).try_for_each(|n| {
-                    db.insert(&n, &vec![])
+                    db.insert(&n.to_le_bytes(), &[])
                         .map(|_| ())
                         .map_err(|e| format!("insert failed: {e}"))
                 })
             })?;
 
         // Read a database using configured cachesize.
-        OpenOptions::new()
-            .cachesize(cachesize)
+        options
             .open(&db)
             .map_err(|e| format!("read open failed: {e}"))
-            .and_then(|mut db| {
+            .and_then(|db| {
                 (0..RECORD_COUNT).try_for_each(|n| {
-                    db.get(&n)
+                    db.get::<_, Vec<u8>>(&n.to_le_bytes())
                         .map_err(|e| e.to_string())
                         .and_then(|v| {
                             (v == Some(vec![]))
@@ -193,4 +204,86 @@ fn api_open_cachesize() {
             the_test(cachesize).map_err(|e| format!("cachesize: {cachesize:?}]: {e}"))
         })
         .unwrap_or_else(|e| panic!("{e}"));
+}
+
+#[test]
+// A database opened read-only refuses writes; create implies write.
+fn read_only_mode() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("db");
+
+    let mut db = OpenOptions::new().create(true).open(&path).unwrap();
+    assert!(db.is_writable());
+    db.insert("key", "value").unwrap();
+    drop(db);
+
+    let mut db = OpenOptions::new().open(&path).unwrap();
+    assert!(!db.is_writable());
+    assert!(matches!(
+        db.insert("key", "x"),
+        Err(gdbm_native::Error::ReadOnly)
+    ));
+    assert!(matches!(
+        db.try_insert("new", "x"),
+        Err(gdbm_native::Error::ReadOnly)
+    ));
+    assert!(matches!(
+        db.remove("key"),
+        Err(gdbm_native::Error::ReadOnly)
+    ));
+    assert!(matches!(db.compact(), Err(gdbm_native::Error::ReadOnly)));
+    assert!(matches!(
+        db.set_numsync(false),
+        Err(gdbm_native::Error::ReadOnly)
+    ));
+    // nothing to sync
+    assert!(db.sync().is_ok());
+    assert_eq!(
+        db.get::<_, String>("key").unwrap().as_deref(),
+        Some("value")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+// Like C gdbm_open's mode argument, mode() sets the permissions of a new database file.
+fn create_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("db");
+    OpenOptions::new()
+        .create(true)
+        .mode(0o600)
+        .open(&path)
+        .unwrap()
+        .close()
+        .unwrap();
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+}
+
+#[test]
+// Bug: Header::verify did not check the avail table capacity against the block size, so a header
+// C GDBM rejects was accepted, possibly with the wrong layout.
+fn header_avail_capacity_checked() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("db");
+    OpenOptions::new()
+        .create(true)
+        .numsync(false)
+        .block_size(BlockSize::Exactly(512))
+        .open(&path)
+        .unwrap()
+        .close()
+        .unwrap();
+
+    // a standard (little endian, 64-bit offset) header is 40 bytes; the avail table size follows
+    let mut file = std::fs::read(&path).unwrap();
+    file[40..44].copy_from_slice(&10u32.to_le_bytes());
+    std::fs::write(&path, file).unwrap();
+    assert!(matches!(
+        OpenOptions::new().open(&path),
+        Err(gdbm_native::Error::BadHeaderAvail { .. })
+    ));
 }

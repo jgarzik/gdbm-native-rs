@@ -1,19 +1,20 @@
-use std::io::{self, BufRead, BufReader, ErrorKind, Read};
+use std::io::{self, BufRead, BufReader, Chain, Cursor, ErrorKind, Read};
 
 use base64::Engine;
 
-use crate::ser::Alignment;
+use crate::dump::BinDumpFormat;
 
 pub struct ASCIIImportIterator<'a> {
     buf_reader: BufReader<&'a mut dyn Read>,
+    pub header: Vec<String>,
 }
 
 impl<'a> ASCIIImportIterator<'a> {
     pub fn new(reader: &'a mut dyn Read) -> io::Result<Self> {
         let mut buf_reader = BufReader::new(reader);
-        Self::read_header(&mut buf_reader)?;
+        let header = Self::read_header(&mut buf_reader)?;
 
-        Ok(Self { buf_reader })
+        Ok(Self { buf_reader, header })
     }
 
     fn read_header(buf_reader: &mut BufReader<&'a mut dyn Read>) -> io::Result<Vec<String>> {
@@ -37,6 +38,12 @@ impl<'a> ASCIIImportIterator<'a> {
     }
 
     fn read_base64(&mut self, length: usize) -> io::Result<Vec<u8>> {
+        // C GDBM writes no data line at all for a zero-length datum; gdbm-native writes an
+        // empty line (see export_ascii_datum), which read_datum() skips
+        if length == 0 {
+            return Ok(Vec::new());
+        }
+
         let bytes = self
             .buf_reader
             .by_ref()
@@ -63,7 +70,10 @@ impl<'a> ASCIIImportIterator<'a> {
     }
 
     fn read_datum(&mut self) -> io::Result<Option<Vec<u8>>> {
-        let line = self.read_line()?;
+        // skip the empty line gdbm-native writes after zero-length data
+        let line = std::iter::repeat_with(|| self.read_line())
+            .find(|line| !line.as_ref().is_ok_and(String::is_empty))
+            .unwrap()?;
         match line.split_once('=') {
             Some(("#:count", _)) => Ok(None),
             Some(("#:len", length)) => length
@@ -92,55 +102,85 @@ impl Iterator for ASCIIImportIterator<'_> {
     }
 }
 
+// How much of a binary dump's records is read ahead to detect its format.
+const DETECT_LIMIT: u64 = 64 * 1024;
+
 pub struct BinaryImportIterator<'a> {
-    alignment: Alignment,
-    buf_reader: BufReader<&'a mut dyn Read>,
+    format: BinDumpFormat,
+    // bytes read ahead to detect the format, then the rest of the dump
+    reader: Chain<Cursor<Vec<u8>>, BufReader<&'a mut dyn Read>>,
 }
 
 impl<'a> BinaryImportIterator<'a> {
-    pub fn new(alignment: Alignment, reader: &'a mut dyn Read) -> io::Result<Self> {
+    // Skip the header, then use format or detect it from the first DETECT_LIMIT bytes of records.
+    pub fn new(format: Option<BinDumpFormat>, reader: &'a mut dyn Read) -> io::Result<Self> {
         let mut buf_reader = BufReader::new(reader);
 
-        // skip 4 header lines
-        let mut line = String::new();
-        (0..4).try_for_each(|_| buf_reader.read_line(&mut line).map(|_| ()))?;
+        // four header lines, each starting with '!'
+        for _ in 0..4 {
+            let mut line = Vec::new();
+            buf_reader.read_until(b'\n', &mut line)?;
+            if line.first() != Some(&b'!') {
+                return Err(io::Error::new(
+                    ErrorKind::InvalidData,
+                    "not a GDBM binary dump",
+                ));
+            }
+        }
+
+        let mut prefix = Vec::new();
+        let format = match format {
+            Some(format) => format,
+            None => {
+                buf_reader
+                    .by_ref()
+                    .take(DETECT_LIMIT)
+                    .read_to_end(&mut prefix)?;
+                let complete =
+                    prefix.len() < DETECT_LIMIT as usize || buf_reader.fill_buf()?.is_empty();
+                BinDumpFormat::detect(&prefix, complete).ok_or_else(|| {
+                    io::Error::new(
+                        ErrorKind::InvalidData,
+                        "cannot detect the binary dump format; specify it",
+                    )
+                })?
+            }
+        };
 
         Ok(Self {
-            alignment,
-            buf_reader,
+            format,
+            reader: Cursor::new(prefix).chain(buf_reader),
         })
     }
 
     fn read_datum(&mut self) -> io::Result<Option<Vec<u8>>> {
-        let length = self
-            .buf_reader
+        let mut field = Vec::with_capacity(8);
+        self.reader
             .by_ref()
-            .bytes()
-            .take(match self.alignment {
-                Alignment::Align32 => 4,
-                Alignment::Align64 => 8,
-            })
-            .collect::<io::Result<Vec<_>>>()
-            .and_then(|buf| match (self.alignment, buf.len()) {
-                (_, 0) => Ok(None),
-                (Alignment::Align32, 4) => {
-                    Ok(Some(u64::from(u32::from_be_bytes(buf.try_into().unwrap()))))
-                }
-                (Alignment::Align64, 8) => Ok(Some(u64::from_be_bytes(buf.try_into().unwrap()))),
-                _ => Err(io::Error::new(ErrorKind::UnexpectedEof, "partial read")),
-            })?;
-
-        match length {
-            Some(n) => {
-                // read incrementally rather than trusting n for an allocation
-                let mut buf = Vec::new();
-                self.buf_reader.by_ref().take(n).read_to_end(&mut buf)?;
-                (buf.len() as u64 == n)
-                    .then_some(Some(buf))
-                    .ok_or_else(|| io::Error::new(ErrorKind::UnexpectedEof, "partial read"))
+            .take(self.format.field_size() as u64)
+            .read_to_end(&mut field)?;
+        let length = match field.len() {
+            0 => return Ok(None),
+            n if n == self.format.field_size() => {
+                self.format.decode_len(&field).ok_or_else(|| {
+                    io::Error::new(
+                        ErrorKind::InvalidData,
+                        format!("bad length field for {:?}", self.format),
+                    )
+                })?
             }
-            None => Ok(None),
-        }
+            _ => return Err(io::Error::new(ErrorKind::UnexpectedEof, "partial read")),
+        };
+
+        // read incrementally rather than trusting length for an allocation
+        let mut buf = Vec::new();
+        self.reader
+            .by_ref()
+            .take(u64::from(length))
+            .read_to_end(&mut buf)?;
+        (buf.len() == length as usize)
+            .then_some(Some(buf))
+            .ok_or_else(|| io::Error::new(ErrorKind::UnexpectedEof, "partial read"))
     }
 }
 
@@ -195,12 +235,12 @@ ybGQh
     // A dump claiming an enormous length must fail cleanly, not attempt the allocation.
     #[test]
     fn binary_huge_length() {
-        let mut dump = b"# header\n# header\n# header\n# header\n".to_vec();
-        dump.extend_from_slice(&[0xff; 8]);
+        let mut dump = b"!\r\n! GDBM FLAT FILE DUMP\r\n! version\r\n!\r\n".to_vec();
+        dump.extend_from_slice(&[0xff; 4]);
         dump.extend_from_slice(b"short");
 
         let mut reader = dump.as_slice();
-        let mut iter = BinaryImportIterator::new(Alignment::Align64, &mut reader).unwrap();
+        let mut iter = BinaryImportIterator::new(Some(BinDumpFormat::Long32), &mut reader).unwrap();
         assert!(iter.next().unwrap().is_err());
     }
 }

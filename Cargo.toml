@@ -1,20 +1,28 @@
 [package]
 name = "gdbm-native"
-version = "0.5.2"
+version = "0.9.0"
 authors = ["Jeff Garzik"]
 edition = "2024"
 rust-version = "1.89"
 license = "MIT"
 readme = "README.md"
-description = "Rust-native implementation of GDBM key/value database"
-repository = "https://github.com/jgarzik/gdbm-native-rs.git"
+description = "Pure-Rust GDBM key/value database, file-compatible with C GDBM on every platform"
+repository = "https://github.com/jgarzik/gdbm-native-rs"
+documentation = "https://docs.rs/gdbm-native"
+keywords = ["gdbm", "dbm", "database", "key-value", "embedded"]
+categories = ["database-implementations", "encoding"]
+# ship only the library; tests, fixtures, examples and tooling stay in the repository
+include = ["/src/**/*.rs", "/README.md", "/LICENSE"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
 diagnostic = []
 
 [dependencies]
-base64 = "^0.22"
-tempfile = "3.13"
+base64 = "0.23"
+tempfile = "3.27"
 
 [dev-dependencies]
 serde = { version = "1.0", features = ["derive"] }

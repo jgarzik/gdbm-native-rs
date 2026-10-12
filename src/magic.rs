@@ -1,7 +1,7 @@
 use std::fmt;
 use std::io;
 
-use crate::ser::{Alignment, Endian, Offset};
+use crate::ser::{Endian, Offset};
 use crate::{Error, Result};
 
 const GDBM_OMAGIC_LE: [u8; 4] = [0xce, 0x9a, 0x57, 0x13];
@@ -15,46 +15,46 @@ const GDBM_MAGIC_BE_64: [u8; 4] = [0x13, 0x57, 0x9a, 0xcf];
 const GDBM_NUMSYNC_MAGIC_BE_32: [u8; 4] = [0x13, 0x57, 0x9a, 0xd0];
 const GDBM_NUMSYNC_MAGIC_BE_64: [u8; 4] = [0x13, 0x57, 0x9a, 0xd1];
 
-/// Database magic numbers stored in the first 4 bytes of the database file. The value describes
-/// the layout options used internally by the database instance, and can be inspected using
-/// [`magic()`](crate::Gdbm::magic()`).
+/// Database magic numbers stored in the first 4 bytes of the database file. They record the byte
+/// order, the size of file offsets and whether the database has a numsync header, and can be
+/// inspected using [`magic()`](crate::Gdbm::magic()). `LE` and `BE` are the original GDBM magic
+/// numbers, which C GDBM treats as 32-bit offsets.
 #[must_use]
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Magic {
-    /// [`Offset::Small`], [`Endian::Little`], [`numsync`](crate::OpenOptions::numsync): `false`
+    /// 32-bit offsets, [`Endian::Little`], [`numsync`](crate::OpenOptions::numsync): `false`
     LE,
-    /// [`Offset::Small`], [`Endian::Big`], [`numsync`](crate::OpenOptions::numsync): `false`
+    /// 32-bit offsets, [`Endian::Big`], [`numsync`](crate::OpenOptions::numsync): `false`
     BE,
-    /// [`Offset::Small`], [`Endian::Little`], [`numsync`](crate::OpenOptions::numsync): `false`
+    /// 32-bit offsets, [`Endian::Little`], [`numsync`](crate::OpenOptions::numsync): `false`
     LE32,
-    /// [`Offset::Small`], [`Endian::Big`], [`numsync`](crate::OpenOptions::numsync): `false`
+    /// 32-bit offsets, [`Endian::Big`], [`numsync`](crate::OpenOptions::numsync): `false`
     BE32,
-    /// [`Offset::LFS`], [`Endian::Little`], [`numsync`](crate::OpenOptions::numsync): `false`
+    /// 64-bit offsets, [`Endian::Little`], [`numsync`](crate::OpenOptions::numsync): `false`
     LE64,
-    /// [`Offset::LFS`], [`Endian::Big`], [`numsync`](crate::OpenOptions::numsync): `false`
+    /// 64-bit offsets, [`Endian::Big`], [`numsync`](crate::OpenOptions::numsync): `false`
     BE64,
-    /// [`Offset::Small`], [`Endian::Little`], [`numsync`](crate::OpenOptions::numsync): `true`
+    /// 32-bit offsets, [`Endian::Little`], [`numsync`](crate::OpenOptions::numsync): `true`
     LE32NS,
-    /// [`Offset::Small`], [`Endian::Big`], [`numsync`](crate::OpenOptions::numsync): `true`
+    /// 32-bit offsets, [`Endian::Big`], [`numsync`](crate::OpenOptions::numsync): `true`
     BE32NS,
-    /// [`Offset::LFS`], [`Endian::Little`], [`numsync`](crate::OpenOptions::numsync): `true`
+    /// 64-bit offsets, [`Endian::Little`], [`numsync`](crate::OpenOptions::numsync): `true`
     LE64NS,
-    /// [`Offset::LFS`], [`Endian::Big`], [`numsync`](crate::OpenOptions::numsync): `true`
+    /// 64-bit offsets, [`Endian::Big`], [`numsync`](crate::OpenOptions::numsync): `true`
     BE64NS,
 }
 
 impl Magic {
-    /// Create a new [`Magic`].
-    pub fn new(endian: Endian, offset: Offset, numsync: bool) -> Self {
+    pub(crate) fn new(endian: Endian, offset: Offset, numsync: bool) -> Self {
         match (endian, offset, numsync) {
             (Endian::Little, Offset::Small, false) => Magic::LE32,
             (Endian::Little, Offset::Small, true) => Magic::LE32NS,
-            (Endian::Little, Offset::LFS, false) => Magic::LE64,
-            (Endian::Little, Offset::LFS, true) => Magic::LE64NS,
+            (Endian::Little, Offset::Lfs, false) => Magic::LE64,
+            (Endian::Little, Offset::Lfs, true) => Magic::LE64NS,
             (Endian::Big, Offset::Small, false) => Magic::BE32,
             (Endian::Big, Offset::Small, true) => Magic::BE32NS,
-            (Endian::Big, Offset::LFS, false) => Magic::BE64,
-            (Endian::Big, Offset::LFS, true) => Magic::BE64NS,
+            (Endian::Big, Offset::Lfs, false) => Magic::BE64,
+            (Endian::Big, Offset::Lfs, true) => Magic::BE64NS,
         }
     }
 
@@ -87,12 +87,19 @@ impl Magic {
         }
     }
 
-    /// Get [`Magic`] [`Offset`].
-    #[must_use]
-    pub fn offset(&self) -> Offset {
+    pub(crate) fn offset(&self) -> Offset {
         match self {
-            Magic::LE64 | Magic::BE64 | Magic::LE64NS | Magic::BE64NS => Offset::LFS,
+            Magic::LE64 | Magic::BE64 | Magic::LE64NS | Magic::BE64NS => Offset::Lfs,
             _ => Offset::Small,
+        }
+    }
+
+    /// Size of file offsets in bits: 32 or 64.
+    #[must_use]
+    pub fn offset_bits(&self) -> u32 {
+        match self.offset() {
+            Offset::Small => 32,
+            Offset::Lfs => 64,
         }
     }
 
@@ -103,17 +110,6 @@ impl Magic {
             self,
             Magic::BE64NS | Magic::LE64NS | Magic::BE32NS | Magic::LE32NS
         )
-    }
-
-    /// Get the default alignment for this [`Magic`]. A flaw in the design of GNU GDBM is that the
-    /// alignment cannot be derived from the database [`Magic`]. We can guess, based on the
-    /// [`Offset`], but this sometimes needs to be overridden.
-    #[must_use]
-    pub fn default_alignment(&self) -> Alignment {
-        match self {
-            Magic::BE64 | Magic::LE64 | Magic::BE64NS | Magic::LE64NS => Alignment::Align64,
-            _ => Alignment::Align32,
-        }
     }
 
     pub(super) fn as_bytes(&self) -> &[u8] {

@@ -1,6 +1,8 @@
 use std::{fmt::Display, fmt::Formatter, io};
 
+/// Errors from database operations.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// Failed to convert a stored key or value into requested type.
     BadData(String),
@@ -22,6 +24,17 @@ pub enum Error {
     Inconsistent,
     /// The database file is locked by another user.
     Locked,
+    /// [`Gdbm::verify`](crate::Gdbm::verify) found an inconsistency.
+    Corrupt {
+        /// What is wrong.
+        description: String,
+    },
+    /// A record being imported with [`ImportMode::Insert`](crate::ImportMode::Insert) has a key
+    /// that is already in the database.
+    KeyExists {
+        /// The key.
+        key: Vec<u8>,
+    },
     /// Bucket element describes a record outside the allocated area of the file.
     BadBucketElement {
         /// Record file offset.
@@ -53,6 +66,15 @@ pub enum Error {
         /// Directory bits.
         dir_bits: u32,
     },
+    /// Bucket element count does not match the number of occupied slots in its table.
+    BadBucketCount {
+        /// Bucket file offset.
+        offset: u64,
+        /// Element count in the bucket header.
+        count: u32,
+        /// Number of occupied slots.
+        occupied: u32,
+    },
     /// Could not use supplied block size and bsexact was specified.
     BadBlockSize {
         /// Requested blocksize.
@@ -67,8 +89,8 @@ pub enum Error {
         /// Directory length in bytes.
         length: u32,
     },
-    /// Attempting write operation on readonly database.
-    WriteToReadonly,
+    /// Write operation on a database opened read-only.
+    ReadOnly,
     /// Block size found in header is impossibly small.
     BadHeaderBlockSize {
         /// Block size from header.
@@ -111,7 +133,12 @@ pub enum Error {
         minimum: u32,
     },
     /// Bucket elements in header inconsistent with bucket size.
-    BadHeaderBucketElems { elems: u32, expected: u32 },
+    BadHeaderBucketElems {
+        /// Bucket elements in header.
+        elems: u32,
+        /// Bucket elements expected from the bucket size.
+        expected: u32,
+    },
     /// Free space lies outside the allocated area of the file.
     BadAvailElem {
         /// Start of the avail block in the file.
@@ -152,7 +179,148 @@ pub enum Error {
 
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter) -> Result<(), std::fmt::Error> {
-        write!(f, "{self:?}")
+        match self {
+            Error::BadData(msg) => write!(f, "stored data cannot be converted: {msg}"),
+            Error::Io(e) => write!(f, "I/O error: {e}"),
+            Error::BadMagic { magic } => {
+                write!(f, "not a GDBM database (magic number {magic:#010x})")
+            }
+            Error::FileTooLarge { size, maximum } => write!(
+                f,
+                "database would grow to {size} bytes, beyond its format's limit of {maximum}"
+            ),
+            Error::Inconsistent => write!(
+                f,
+                "database may be inconsistent after an earlier error; writes are disabled"
+            ),
+            Error::Locked => write!(f, "database is locked by another user"),
+            Error::Corrupt { description } => write!(f, "corrupt database: {description}"),
+            Error::KeyExists { key } => write!(f, "key {key:x?} already exists"),
+            Error::BadBucketElement {
+                data_offset,
+                key_size,
+                data_size,
+                next_block,
+            } => write!(
+                f,
+                "corrupt database: record at {data_offset} ({key_size}+{data_size} bytes) \
+                 extends beyond the end of the database ({next_block})"
+            ),
+            Error::RecordTooLarge { size, maximum } => write!(
+                f,
+                "key and value total {size} bytes, more than the maximum of {maximum}"
+            ),
+            Error::BadBucket {
+                offset,
+                elems,
+                bits,
+                max_elems,
+                dir_bits,
+            } => write!(
+                f,
+                "corrupt database: bucket at {offset} has {elems} elements (maximum \
+                 {max_elems}) and {bits} bits (maximum {dir_bits})"
+            ),
+            Error::BadBucketCount {
+                offset,
+                count,
+                occupied,
+            } => write!(
+                f,
+                "corrupt database: bucket at {offset} has a count of {count} but {occupied} \
+                 occupied slots"
+            ),
+            Error::BadBlockSize { requested, actual } => write!(
+                f,
+                "block size {requested} is not possible; the nearest is {actual}"
+            ),
+            Error::BadDirectory { offset, length } => write!(
+                f,
+                "corrupt database: directory at {offset} ({length} bytes) refers to a \
+                 bucket outside the database"
+            ),
+            Error::ReadOnly => write!(f, "database is open read-only"),
+            Error::BadHeaderBlockSize { size, minimum } => write!(
+                f,
+                "corrupt database header: block size {size} is less than the minimum {minimum}"
+            ),
+            Error::BadHeaderNextBlock {
+                next_block,
+                file_size,
+            } => write!(
+                f,
+                "corrupt database header: end of allocated space {next_block} is before the \
+                 end of the file {file_size}"
+            ),
+            Error::BadHeaderDirectoryOffset {
+                offset,
+                size,
+                file_size,
+            } => write!(
+                f,
+                "corrupt database header: directory at {offset} ({size} bytes) is beyond the \
+                 end of the file {file_size}"
+            ),
+            Error::BadHeaderDirectory {
+                size,
+                bits,
+                minimum_size,
+                expected_bits,
+            } => write!(
+                f,
+                "corrupt database header: directory of {size} bytes and {bits} bits (expected \
+                 at least {minimum_size} bytes and {expected_bits} bits)"
+            ),
+            Error::BadHeaderBucketSize { size, minimum } => write!(
+                f,
+                "corrupt database header: bucket size {size} is less than the minimum {minimum}"
+            ),
+            Error::BadHeaderBucketElems { elems, expected } => write!(
+                f,
+                "corrupt database header: {elems} elements per bucket (expected {expected})"
+            ),
+            Error::BadAvailElem {
+                block_offset,
+                elem,
+                offset,
+                size,
+                next_block,
+            } => write!(
+                f,
+                "corrupt database: free space entry {elem} of the table at {block_offset} \
+                 ({offset}+{size} bytes) is outside the database ({next_block})"
+            ),
+            Error::BadHeaderAvail {
+                elems,
+                size,
+                block_size,
+            } => write!(
+                f,
+                "corrupt database header: free space table of {elems} entries ({size} bytes) \
+                 does not fit block size {block_size}"
+            ),
+            Error::BadAvailCount {
+                block_offset,
+                elems,
+                maximum,
+            } => write!(
+                f,
+                "corrupt database: free space table at {block_offset} has {elems} entries \
+                 (maximum {maximum})"
+            ),
+            Error::BadNumsyncVersion { version } => {
+                write!(f, "unsupported numsync header version {version}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::Io(e) => Some(e),
+            _ => None,
+        }
     }
 }
 

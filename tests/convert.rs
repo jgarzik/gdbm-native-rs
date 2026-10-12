@@ -16,8 +16,7 @@ fn api_convert() {
 
             // open and convert to/from numsync
             OpenOptions::new()
-                .alignment(test.alignment)
-                .write()
+                .write(true)
                 .open(tempfile.path().to_str().unwrap())
                 .map_err(|e| format!("opening: {e}"))
                 .and_then(|mut db| {
@@ -29,7 +28,6 @@ fn api_convert() {
 
             // reopen and ensure we're (non)numsync
             OpenOptions::new()
-                .alignment(test.alignment)
                 .open(tempfile.path().to_str().unwrap())
                 .map_err(|e| format!("opening: {e}"))
                 .and_then(|db| {

@@ -13,7 +13,7 @@ use std::io::{self, Read, Write};
 
 use crate::avail::{self, AvailElem};
 use crate::hashutil::PartialKey;
-use crate::ser::{Alignment, Layout, Offset, read32, read64, write32, write64};
+use crate::ser::{Alignment, Format, Offset, read32, read64, write32, write64};
 
 #[derive(Debug, Copy, Clone)]
 pub struct BucketElement {
@@ -37,10 +37,10 @@ impl Default for BucketElement {
 }
 
 impl BucketElement {
-    pub fn sizeof(layout: Layout) -> u32 {
+    pub fn sizeof(layout: Format) -> u32 {
         match layout.offset {
             Offset::Small => 20,
-            Offset::LFS => 24,
+            Offset::Lfs => 24,
         }
     }
 
@@ -54,14 +54,14 @@ impl BucketElement {
         }
     }
 
-    pub fn from_reader(layout: Layout, reader: &mut impl Read) -> io::Result<Self> {
+    pub fn from_reader(layout: Format, reader: &mut impl Read) -> io::Result<Self> {
         let hash = read32(layout.endian, reader)?;
 
         let key_start = PartialKey::from_reader(reader)?;
 
         let data_ofs = match layout.offset {
             Offset::Small => u64::from(read32(layout.endian, reader)?),
-            Offset::LFS => read64(layout.endian, reader)?,
+            Offset::Lfs => read64(layout.endian, reader)?,
         };
 
         let key_size = read32(layout.endian, reader)?;
@@ -76,14 +76,14 @@ impl BucketElement {
         })
     }
 
-    pub fn serialize(&self, layout: Layout, writer: &mut impl Write) -> io::Result<()> {
+    pub fn serialize(&self, layout: Format, writer: &mut impl Write) -> io::Result<()> {
         write32(layout.endian, writer, self.hash)?;
 
         self.key_start.serialize(writer)?;
 
         match layout.offset {
             Offset::Small => write32(layout.endian, writer, self.data_ofs as u32)?,
-            Offset::LFS => write64(layout.endian, writer, self.data_ofs)?,
+            Offset::Lfs => write64(layout.endian, writer, self.data_ofs)?,
         }
 
         write32(layout.endian, writer, self.key_size)?;
@@ -118,23 +118,18 @@ pub struct Bucket {
 impl Bucket {
     pub const AVAIL: u32 = 6;
 
-    pub fn new(bits: u32, len: usize, avail: Vec<AvailElem>, elements: Vec<BucketElement>) -> Self {
-        elements.into_iter().fold(
-            Self {
-                dirty: true,
-                avail,
-                bits,
-                count: 0,
-                tab: vec![BucketElement::default(); len],
-            },
-            |mut bucket, elem| {
-                bucket.insert(elem);
-                bucket
-            },
-        )
+    // An empty bucket with len slots.
+    pub fn new(bits: u32, len: usize, avail: Vec<AvailElem>) -> Self {
+        Self {
+            dirty: true,
+            avail,
+            bits,
+            count: 0,
+            tab: vec![BucketElement::default(); len],
+        }
     }
 
-    pub fn from_reader(elems: u32, layout: Layout, reader: &mut impl Read) -> io::Result<Self> {
+    pub fn from_reader(elems: u32, layout: Format, reader: &mut impl Read) -> io::Result<Self> {
         // read avail section
         let av_count = read32(layout.endian, reader)?;
 
@@ -180,7 +175,7 @@ impl Bucket {
         })
     }
 
-    pub fn serialize(&self, layout: Layout, writer: &mut impl Write) -> io::Result<()> {
+    pub fn serialize(&self, layout: Format, writer: &mut impl Write) -> io::Result<()> {
         assert!(self.avail.len() as u32 <= Self::AVAIL);
 
         //
@@ -219,7 +214,7 @@ impl Bucket {
         Ok(())
     }
 
-    pub fn sizeof(layout: Layout) -> u32 {
+    pub fn sizeof(layout: Format) -> u32 {
         // 4 bytes each for bits, count and av_count + padding
         Self::AVAIL * AvailElem::sizeof(layout)
             + match layout.alignment {
@@ -228,18 +223,25 @@ impl Bucket {
             }
     }
 
-    // insert an element - we assume there's space
-    pub fn insert(&mut self, element: BucketElement) {
-        self.count += 1;
+    // Number of occupied slots. For a sound bucket this equals count.
+    pub fn occupied(&self) -> u32 {
+        self.tab.iter().filter(|elem| elem.is_occupied()).count() as u32
+    }
 
-        let index = (0..self.tab.len())
-            .map(|index| (index + element.hash as usize) % self.tab.len())
-            .find(|&index| !self.tab[index].is_occupied())
-            .unwrap();
+    // Insert an element at the first free slot from its home slot and return that slot, or None
+    // if every slot is occupied (only possible in a corrupt bucket, as callers split full ones).
+    #[must_use]
+    pub fn insert(&mut self, element: BucketElement) -> Option<usize> {
+        let len = self.tab.len();
+        let index = (0..len)
+            .map(|index| (index + element.hash as usize) % len)
+            .find(|&index| !self.tab[index].is_occupied())?;
 
         self.tab[index] = element;
-
+        self.count += 1;
         self.dirty = true;
+
+        Some(index)
     }
 
     // remove an element - we assume there's an element
@@ -249,7 +251,7 @@ impl Bucket {
 
         // remove element from table
         self.tab[offset] = BucketElement::default();
-        self.count -= 1;
+        self.count = self.count.saturating_sub(1);
 
         let mut last_ofs = offset;
         let mut elem_ofs = (offset + 1) % len;
@@ -271,20 +273,27 @@ impl Bucket {
         elem
     }
 
-    pub fn split(&self) -> (Bucket, Bucket) {
+    // Split into two buckets by the next hash bit. None only if an element does not fit, which
+    // cannot happen: each new bucket has as many slots as this one.
+    pub fn split(&self) -> Option<(Bucket, Bucket)> {
         let mask = 0x80_00_00_00 >> (self.bits + 1);
-        let (elems0, elems1) = self
-            .tab
-            .iter()
-            .copied()
-            .partition::<Vec<_>, _>(|elem| elem.hash & mask == 0);
-
         let (avail0, avail1) = avail::partition_elems(&self.avail);
+        let mut bucket0 = Bucket::new(self.bits + 1, self.tab.len(), avail0);
+        let mut bucket1 = Bucket::new(self.bits + 1, self.tab.len(), avail1);
 
-        (
-            Bucket::new(self.bits + 1, self.tab.len(), avail0, elems0),
-            Bucket::new(self.bits + 1, self.tab.len(), avail1, elems1),
-        )
+        self.tab
+            .iter()
+            .filter(|elem| elem.is_occupied())
+            .try_for_each(|&elem| {
+                if elem.hash & mask == 0 {
+                    bucket0.insert(elem)
+                } else {
+                    bucket1.insert(elem)
+                }
+                .map(|_| ())
+            })?;
+
+        Some((bucket0, bucket1))
     }
 
     pub fn allocate(&mut self, size: u32) -> Option<(u64, u32)> {
@@ -511,7 +520,7 @@ mod test {
             let mut cache = BucketCache::new(
                 1,
                 test.bucket.map(|dirty| {
-                    let mut bucket = Bucket::new(0, 0, vec![], vec![]);
+                    let mut bucket = Bucket::new(0, 0, vec![]);
                     bucket.dirty = dirty;
 
                     (100, bucket)
@@ -519,7 +528,7 @@ mod test {
             );
 
             println!("{cache:?}");
-            let evicted = cache.insert(200, Bucket::new(0, 0, vec![], vec![]));
+            let evicted = cache.insert(200, Bucket::new(0, 0, vec![]));
 
             (evicted.is_some() == test.expected)
                 .then_some(())

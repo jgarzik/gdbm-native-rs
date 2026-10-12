@@ -8,43 +8,88 @@
 // file in the root directory of this project.
 // SPDX-License-Identifier: MIT
 
-//! Rust native implementation of GDBM key-value database.
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+
+//! A pure-Rust implementation of the [GNU GDBM](https://www.gnu.org.ua/software/gdbm/)
+//! key-value database, file-compatible with C GDBM databases and dumps from any platform.
 //!
-//! An efficient disk based key-value store for new applications, while retaining compatibility
-//! with legacy GDBM data files.
-//!
-//! # Examples
+//! # Quick start
 //! ```
-//! use gdbm_native as gdbm;
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! # let dir = tempfile::tempdir()?;
+//! # let path = dir.path().join("users.db");
+//! use gdbm_native::OpenOptions;
 //!
-//! # use tempfile::tempdir;
-//! # fn main() -> Result<(), String> {
-//! #     let tmp_dir = tempdir().map_err(|e| e.to_string())?;
-//! #     let passwords = tmp_dir.path().join("top-level-doc-test");
-//! #     || -> gdbm::Result<()> {
-//! // Create a new database at path
-//! let mut db = gdbm::OpenOptions::new()
-//!     .write()
-//!     .create()
-//!     .open(passwords)?;
+//! // Create the database if needed, and open it for reading and writing.
+//! let mut db = OpenOptions::new().create(true).open(&path)?;
 //!
-//! // Insert key/value pairs
-//! db.insert("286755fad04869ca523320acce0dc6a4", "chal28griffin@example.com")?;
-//! db.insert("4aacf9c858c82716ab0034320bd2efe9", "floribund@gmail.com")?;
-//! db.insert("d577273ff885c3f84dadb8578bb41399", "peterxentwhisle@me.com")?;
+//! db.insert("alice", "alice@example.com")?;
+//! db.insert("bob", "bob@example.com")?;
 //!
-//! // Read the value back. The database has no knowledge of the original type of the value stored
-//! // so we need to add type hints.
-//! let value: Option<String> = db.get("4aacf9c858c82716ab0034320bd2efe9")?;
-//! assert!(value == Some("floribund@gmail.com".to_string()));
-//! #         Ok(())
-//! #     }().map_err(|e| e.to_string())
+//! // Values are untyped bytes; ask for them as the type you stored.
+//! let email: Option<String> = db.get("alice")?;
+//! assert_eq!(email.as_deref(), Some("alice@example.com"));
+//!
+//! for entry in db.iter::<String, String>() {
+//!     let (user, email) = entry?;
+//!     println!("{user}: {email}");
+//! }
+//!
+//! // Write out changes and learn of any error (dropping the database also writes them).
+//! db.close()?;
+//! # Ok(())
 //! # }
 //! ```
+//!
+//! # Compatibility with C GDBM
+//!
+//! C GDBM writes files in the native format of the platform it was built for, and records only
+//! part of that format in the file. gdbm-native reads and writes every variant, whatever the
+//! platform it runs on, and detects what the file does not record:
+//!
+//! | Property | Varies with | Recorded | gdbm-native |
+//! |---|---|---|---|
+//! | Byte order | CPU | yes | either |
+//! | File offset size | 32-bit `off_t` (no large file support) or 64-bit | yes | either; [`Layout`] |
+//! | Struct alignment | 4 bytes on i386, 8 elsewhere | no | detected; [`Layout`] |
+//! | Key hash of bytes >= 0x80 | `char` signedness: signed on x86 and MIPS, unsigned on Linux ARM, PowerPC, RISC-V, s390x | no | detected; [`CharSign`] |
+//! | Numsync header | how the database was created | yes | either; [`Gdbm::set_numsync`] |
+//! | Binary dump length fields | `sizeof(long)` and byte order | no | detected; [`BinDumpFormat`] |
+//!
+//! New databases default to little endian, 64-bit offsets aligned on 8 bytes and a numsync
+//! header, as C GDBM writes on x86-64 and arm64; [`OpenOptions`] selects other formats, e.g.
+//! to create a database for C GDBM on another platform. ASCII dumps
+//! ([`Gdbm::export_ascii`], [`Gdbm::import_ascii`]) are portable between all platforms.
+//!
+//! Like C GDBM, gdbm-native locks the database file (shared for readers, exclusive for a
+//! writer; see [`OpenOptions::lock`]). The test suite exercises databases and dumps written by
+//! C GDBM on x86-64, i386, arm64, armv7, s390x and 32-bit-offset builds, and runs C GDBM and
+//! gdbm-native against the same files.
+//!
+//! # Keys and values
+//!
+//! Keys and values are byte strings. Anything implementing [`ToBytesRef`] can be stored, and
+//! anything implementing [`FromBytes`] can be read back; both are implemented for byte slices
+//! and arrays, `Vec<u8>`, `str` and `String`. Implement them for your own types, choosing an
+//! encoding every program using the database understands.
+//!
+//! # Integrity
+//!
+//! Database files and dumps are treated as untrusted input: corruption is reported as an
+//! [`Error`] rather than a panic or unbounded allocation. [`Gdbm::verify`] checks a database's
+//! use of file space and [`Gdbm::recover`] rebuilds a damaged database from what can still be
+//! read. Writes are not atomic: if one fails part way, the database refuses further writes
+//! ([`Error::Inconsistent`]) until reopened or recovered.
+//!
+//! # Features
+//!
+//! * `diagnostic`: [`Gdbm::show_header`] and [`Gdbm::show_directory`], which print internal
+//!   structures.
 extern crate base64;
 
 use base64::Engine;
-use std::any::Any;
+use std::cell::{Cell, RefCell};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
 mod avail;
@@ -53,6 +98,7 @@ mod bytes;
 #[cfg(test)]
 mod check;
 mod dir;
+mod dump;
 mod error;
 mod hashutil;
 mod header;
@@ -63,21 +109,22 @@ mod ser;
 
 use avail::{AvailBlock, AvailElem};
 use bucket::{Bucket, BucketCache, BucketElement};
-use bytes::{FromBytes, ToBytesRef};
+pub use bytes::{FromBytes, ToBytesRef};
 use dir::{Directory, build_dir_size};
+pub use dump::{BinDumpFormat, DumpInfo, ImportMode};
 pub use error::Error;
 pub use hashutil::CharSign;
 use hashutil::{PartialKey, bucket_dir, hash_key, key_loc};
 use header::Header;
 use import::{ASCIIImportIterator, BinaryImportIterator};
 pub use magic::Magic;
-pub use options::{BlockSize, Create, OpenOptions};
-pub use ser::{Alignment, Endian, Offset};
-use ser::{Layout, write32, write64};
+pub use options::{BlockSize, OpenOptions};
+pub use ser::{Endian, Layout};
+use ser::{Format, Offset};
 use std::fs::File;
 
 /// Our claimed GDBM lib version compatibility. Appears in dump files.
-pub const COMPAT_GDBM_VERSION: &str = "1.23";
+pub const COMPAT_GDBM_VERSION: &str = "1.26";
 
 const IGNORE_SMALL: usize = 4;
 
@@ -88,31 +135,6 @@ pub const DEFAULT_CACHESIZE: usize = 4 * 1024 * 1024;
 /// The crate Result type.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Mode to use when exporting a binary dump. It affects the number of bytes used to store
-/// length metadata within the dump. There is no indication of this mode stored in a dump file
-/// so the same mode must be used when restoring the dumped data. For this reason it is preferable
-/// to use the ASCII dump format.
-#[derive(Copy, Clone, Debug)]
-pub enum ExportBinMode {
-    /// Use 32 bits to store lengths if the database has 32bit alignment, otherwise use 64 bits.
-    ExpNative,
-    /// Store lengths as 32bit values.
-    Exp32,
-    /// Store lengths as 64bit values.
-    Exp64,
-}
-
-impl ExportBinMode {
-    // alignment determining the size of length fields in the dump
-    fn alignment(self, native: Alignment) -> Alignment {
-        match self {
-            ExportBinMode::ExpNative => native,
-            ExportBinMode::Exp32 => Alignment::Align32,
-            ExportBinMode::Exp64 => Alignment::Align64,
-        }
-    }
-}
-
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 enum WriteState {
     #[default]
@@ -121,23 +143,16 @@ enum WriteState {
     Inconsistent,
 }
 
-/// Struct used as type parameter to open a database in read-only mode.
+// state of a database opened for writing
 #[derive(Copy, Clone, Debug, Default)]
-pub struct ReadOnly;
-/// Struct used as type parameter to open a database in read-write mode.
-#[derive(Copy, Clone, Debug, Default)]
-pub struct ReadWrite {
+struct WriteMode {
     sync: bool,
     state: WriteState,
 }
 
-trait CacheBucket {
-    fn cache_bucket(&mut self, offset: u64, bucket: Bucket) -> Result<()>;
-}
-
 // Write a bucket padded to the header's bucket size, which may exceed the serialized size of a
 // bucket (C GDBM sets bucket size to the block size).
-fn write_bucket(f: &mut File, header: &Header, bucket: &Bucket, offset: u64) -> io::Result<()> {
+fn write_bucket(mut f: &File, header: &Header, bucket: &Bucket, offset: u64) -> io::Result<()> {
     let mut buffer = Vec::with_capacity(header.bucket_sz as usize);
     bucket.serialize(header.layout, &mut buffer)?;
     buffer.resize(buffer.len().max(header.bucket_sz as usize), 0);
@@ -184,60 +199,109 @@ fn fs_block_size(f: &File) -> io::Result<u32> {
     }
 }
 
-// read and return file data stored at (ofs,total_size)
-// todo:  use Read+Seek traits rather than File
-fn read_ofs(f: &mut std::fs::File, ofs: u64, total_size: usize) -> io::Result<Vec<u8>> {
-    let mut data: Vec<u8> = vec![0; total_size];
+// Read and return the len bytes of file data at ofs. Lengths come from the file, which may
+// claim far more than it holds, so read incrementally rather than allocating len up front: a
+// short read fails with UnexpectedEof having allocated no more than the data actually present.
+fn read_ofs(f: &File, ofs: u64, len: u64) -> io::Result<Vec<u8>> {
+    // initial allocation; larger records grow the buffer as their data arrives
+    const INITIAL_CAPACITY: u64 = 64 * 1024;
 
+    let mut f = f;
     f.seek(SeekFrom::Start(ofs))?;
-    f.read_exact(&mut data)?;
+    let mut data = Vec::with_capacity(len.min(INITIAL_CAPACITY) as usize);
+    f.take(len).read_to_end(&mut data)?;
+
+    if (data.len() as u64) < len {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!("record of {len} bytes at offset {ofs} extends past end of file"),
+        ));
+    }
 
     Ok(data)
 }
 
-// #[derive(Debug)]
-/// GDBM database type.
-pub struct Gdbm<R: 'static> {
+/// A GDBM database, opened with [`OpenOptions`].
+pub struct Gdbm {
     f: std::fs::File,
     header: Header,
     dir: Directory,
-    bucket_cache: BucketCache,
-    char_sign: CharSign,
+    // RefCell so that reads can take &self
+    bucket_cache: RefCell<BucketCache>,
+    // None until known: see CharSign
+    char_sign: Cell<Option<CharSign>>,
 
-    read_write: R,
+    // None if opened read-only
+    read_write: Option<WriteMode>,
+    // None for temporary databases
+    pub(crate) path: Option<std::path::PathBuf>,
 }
 
-// cache_bucket for ReadOnly variant ignores (never receives) dirty displaced buckets.
-impl CacheBucket for Gdbm<ReadOnly> {
-    fn cache_bucket(&mut self, offset: u64, bucket: Bucket) -> Result<()> {
-        let _ = self.bucket_cache.insert(offset, bucket);
-
-        Ok(())
-    }
+/// Summary of a consistent database, returned by [`Gdbm::verify`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct VerifyReport {
+    /// Number of distinct buckets.
+    pub buckets: usize,
+    /// Number of records (entries).
+    pub records: usize,
+    /// Number of free space extents.
+    pub free_extents: usize,
+    /// Total free space in bytes.
+    pub free_bytes: u64,
 }
 
-// cache_bucket for ReadWrite variant needs to write dirty displaced buckets.
-impl CacheBucket for Gdbm<ReadWrite> {
-    fn cache_bucket(&mut self, offset: u64, bucket: Bucket) -> Result<()> {
-        if let Some((evicted_offset, evicted_bucket)) = self.bucket_cache.insert(offset, bucket) {
-            self.write_bucket(&evicted_bucket, evicted_offset)?;
+/// Outcome of [`Gdbm::recover`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RecoverReport {
+    /// Records copied to the rebuilt database.
+    pub recovered_keys: usize,
+    /// Records that could not be read.
+    pub failed_keys: usize,
+    /// Records skipped because their key had already been recovered.
+    pub duplicate_keys: usize,
+    /// Buckets that could not be read.
+    pub failed_buckets: usize,
+    /// Where the original database file was copied, if a backup was requested.
+    pub backup: Option<std::path::PathBuf>,
+}
+
+impl Gdbm {
+    // Cache a bucket, writing any dirty bucket it displaces (only possible when writable).
+    fn cache_bucket(&self, offset: u64, bucket: Bucket) -> Result<()> {
+        let evicted = self.bucket_cache.borrow_mut().insert(offset, bucket);
+        if let Some((evicted_offset, evicted_bucket)) = evicted {
+            write_bucket(&self.f, &self.header, &evicted_bucket, evicted_offset)?;
         }
 
         Ok(())
     }
-}
 
-#[allow(private_bounds)]
-impl<R> Gdbm<R>
-where
-    Gdbm<R>: CacheBucket,
-    R: Default,
-{
-    fn open<W>(mut f: File, open_options: &OpenOptions<W>) -> Result<Gdbm<R>> {
+    // Write state, for internal use by write operations, which check_writable() first.
+    fn rw(&mut self) -> &mut WriteMode {
+        self.read_write
+            .as_mut()
+            .expect("write operation on a read-only database")
+    }
+
+    fn check_writable(&self) -> Result<()> {
+        self.read_write
+            .is_some()
+            .then_some(())
+            .ok_or(Error::ReadOnly)
+    }
+
+    /// Whether the database was opened for writing.
+    pub fn is_writable(&self) -> bool {
+        self.read_write.is_some()
+    }
+
+    fn open(mut f: File, open_options: &OpenOptions, writable: bool) -> Result<Gdbm> {
         let metadata = f.metadata()?;
 
         f.seek(SeekFrom::Start(0))?;
-        let header = Header::from_reader(open_options.alignment, metadata.len(), &mut f)?;
+        let header = Header::from_reader(metadata.len(), &mut f)?;
 
         f.seek(SeekFrom::Start(header.dir_ofs))?;
         let dir = Directory::from_reader(header.layout, header.dir_sz, &mut f)?;
@@ -267,23 +331,50 @@ where
             f,
             header,
             dir,
-            bucket_cache,
-            char_sign: open_options.char_sign,
-            read_write: R::default(),
+            bucket_cache: RefCell::new(bucket_cache),
+            char_sign: Cell::new(open_options.char_sign),
+            path: None,
+            read_write: writable.then_some(WriteMode {
+                sync: open_options.sync,
+                state: WriteState::Clean,
+            }),
         })
     }
 
+    // The header C GDBM's gdbm_dump writes, less the user and group names, which C GDBM also
+    // omits when it cannot look them up.
     fn export_ascii_header(
+        &self,
         outf: &mut impl Write,
         pathname: Option<&std::path::Path>,
     ) -> io::Result<()> {
-        // TODO: add ctime() to "created by" output line
-        writeln!(outf, "# GDBM dump file created by {COMPAT_GDBM_VERSION}")?;
+        writeln!(
+            outf,
+            "# GDBM dump file created by gdbm-native {} (GDBM {COMPAT_GDBM_VERSION} format)",
+            env!("CARGO_PKG_VERSION")
+        )?;
         writeln!(outf, "#:version=1.1")?;
         if let Some(pathname) = pathname {
             writeln!(outf, "#:file={}", pathname.to_string_lossy())?;
         }
-        writeln!(outf, "#:format=standard")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = self.f.metadata()?;
+            writeln!(
+                outf,
+                "#:uid={},gid={},mode={:03o}",
+                metadata.uid(),
+                metadata.gid(),
+                metadata.mode() & 0o777
+            )?;
+        }
+        let format = if self.header.magic.is_numsync() {
+            "numsync"
+        } else {
+            "standard"
+        };
+        writeln!(outf, "#:format={format}")?;
         writeln!(outf, "# End of header")?;
         Ok(())
     }
@@ -293,8 +384,9 @@ where
 
         writeln!(outf, "#:len={}", bindata.len())?;
 
+        // C GDBM's gdbm_dump writes no data line for zero-length data, but its gdbm_load (1.23
+        // to at least 1.26) then fails with "Malformed data"; an empty line loads everywhere.
         let b64 = base64::prelude::BASE64_STANDARD.encode(bindata);
-
         if b64.is_empty() {
             writeln!(outf)?;
         }
@@ -303,7 +395,7 @@ where
             .try_for_each(|line| outf.write_all(line).and_then(|()| writeln!(outf)))
     }
 
-    fn export_ascii_records(&mut self, outf: &mut impl Write) -> Result<usize> {
+    fn export_ascii_records(&self, outf: &mut impl Write) -> Result<usize> {
         self.iter().try_fold(0, |count, kv| {
             kv.and_then(|(key, value)| {
                 Self::export_ascii_datum(outf, key)
@@ -322,8 +414,10 @@ where
 
     /// Dumps the database in ASCII format.
     ///
-    /// Dumps the database in ASCII format to the supplied [`io::Write`]. If a filename is
-    /// provided it will be used to set the `#:file=<filename>` header line.
+    /// Dumps the database in ASCII format to the supplied [`io::Write`], in the format of C GDBM's
+    /// `gdbm_dump`, readable by C GDBM's `gdbm_load` on any platform. If a filename is provided
+    /// it will be used to set the `#:file=<filename>` header line. On Unix the header also records
+    /// the owner and permissions of the database file.
     ///
     /// # Examples
     /// ```
@@ -332,7 +426,7 @@ where
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path).unwrap();
     /// let mut buffer = Vec::new();
     /// db.export_ascii(&mut buffer, None::<&str>)?;
     /// println!("{}", std::str::from_utf8(&buffer).unwrap());
@@ -340,12 +434,15 @@ where
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
+    ///
+    /// # Errors
+    /// Fails if a record cannot be read or `outf` cannot be written.
     pub fn export_ascii<P: AsRef<std::path::Path> + ?Sized>(
-        &mut self,
+        &self,
         outf: &mut impl Write,
         pathname: Option<&P>,
     ) -> Result<()> {
-        Gdbm::export_ascii_header(outf, pathname.as_ref().map(std::convert::AsRef::as_ref))
+        self.export_ascii_header(outf, pathname.as_ref().map(std::convert::AsRef::as_ref))
             .map_err(Error::Io)
             .and_then(|()| self.export_ascii_records(outf))
             .and_then(|n_written| Gdbm::export_ascii_footer(outf, n_written).map_err(Error::Io))
@@ -356,32 +453,29 @@ where
             outf,
             "!\r\n! GDBM FLAT FILE DUMP -- THIS IS NOT A TEXT FILE\r\n"
         )?;
-        write!(outf, "! {COMPAT_GDBM_VERSION}\r\n!\r\n")?;
+        write!(
+            outf,
+            "! gdbm-native {} (GDBM {COMPAT_GDBM_VERSION} format)\r\n!\r\n",
+            env!("CARGO_PKG_VERSION")
+        )?;
         Ok(())
     }
 
+    // record sizes are at most i32::MAX (see record_size()), so lengths fit C's 32 bits
     fn export_bin_datum(
         outf: &mut impl Write,
-        alignment: Alignment,
+        format: BinDumpFormat,
         bindata: &[u8],
     ) -> io::Result<()> {
-        // write metadata:  big-endian datum size, 32b or 64b
-        match alignment {
-            Alignment::Align32 => write32(Endian::Big, outf, bindata.len() as u32)?,
-            Alignment::Align64 => write64(Endian::Big, outf, bindata.len() as u64)?,
-        }
-
-        // write datum
-        outf.write_all(bindata)?;
-
-        Ok(())
+        format.write_len(outf, bindata.len() as u32)?;
+        outf.write_all(bindata)
     }
 
-    fn export_bin_records(&mut self, outf: &mut impl Write, alignment: Alignment) -> Result<()> {
+    fn export_bin_records(&self, outf: &mut impl Write, format: BinDumpFormat) -> Result<()> {
         self.iter::<Vec<_>, Vec<_>>().try_for_each(|kv| {
             kv.and_then(|(key, value)| {
-                Self::export_bin_datum(outf, alignment, &key)
-                    .and_then(|()| Self::export_bin_datum(outf, alignment, &value))
+                Self::export_bin_datum(outf, format, &key)
+                    .and_then(|()| Self::export_bin_datum(outf, format, &value))
                     .map_err(Error::Io)
             })
         })
@@ -389,45 +483,53 @@ where
 
     /// Dumps the database in binary format.
     ///
-    /// Dumps the database in binary format to the supplied [`io::Write`]. The binary encoding stores
-    /// key and value lengths as big endian integers, and [`mode`](ExportBinMode) can be used to
-    /// select whether these are stored as 4 or 8 byte values.
+    /// Dumps the database in binary ("flat file") format to the supplied [`io::Write`], in the
+    /// format of C GDBM's `gdbm_export`. The layout of its length fields depends on the platform
+    /// of the C GDBM that is to read it; see [`BinDumpFormat`] (`BinDumpFormat::host()` matches
+    /// the local platform).
     ///
-    /// Note: The binary format is more conpact than the ASCII equivalent, but decoding requires
-    /// knowing the `mode` used to export, and so ASCII dumps are preferred.
+    /// Note: The binary format is more compact than the ASCII equivalent, but platform specific,
+    /// and so ASCII dumps are preferred.
     ///
     /// # Examples
     /// ```
     /// # use tempfile::tempdir;
-    /// use gdbm_native::ExportBinMode;
+    /// use gdbm_native::BinDumpFormat;
     /// # fn main() -> Result<(), String> {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path).unwrap();
     /// let mut buffer = Vec::new();
-    /// db.export_bin(&mut buffer, ExportBinMode::Exp32)?;
+    /// db.export_bin(&mut buffer, BinDumpFormat::host())?;
     /// println!("{buffer:?}");
     /// #         Ok(())
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
-    pub fn export_bin(&mut self, outf: &mut impl Write, mode: ExportBinMode) -> Result<()> {
-        let alignment = mode.alignment(self.header.layout.alignment);
-
+    ///
+    /// # Errors
+    /// Fails if a record cannot be read or `outf` cannot be written.
+    pub fn export_bin(&self, outf: &mut impl Write, format: BinDumpFormat) -> Result<()> {
         Gdbm::export_bin_header(outf)
             .map_err(Error::Io)
-            .and_then(|()| self.export_bin_records(outf, alignment))
+            .and_then(|()| self.export_bin_records(outf, format))
     }
 
     // read bucket into bucket cache.
-    fn cache_load_bucket(&mut self, bucket_dir: usize) -> Result<&Bucket> {
+    // Load the bucket for directory entry bucket_dir into the cache, make it current, and apply f
+    // to it. The bucket is only borrowed for the duration of f, so the cache stays usable.
+    fn with_bucket<T>(&self, bucket_dir: usize, f: impl FnOnce(&Bucket) -> T) -> Result<T> {
         let offset = self.dir.dir[bucket_dir];
 
-        if !self.bucket_cache.contains(offset) {
-            self.f.seek(SeekFrom::Start(offset))?;
-            let bucket =
-                Bucket::from_reader(self.header.bucket_elems, self.header.layout, &mut self.f)?;
+        if !self.bucket_cache.borrow().contains(offset) {
+            // Read the bucket's bytes in one go: bucket_elems derives from the header's
+            // unbounded bucket size, and read_ofs() allocates only what the file holds.
+            let layout = self.header.layout;
+            let size = u64::from(Bucket::sizeof(layout))
+                + u64::from(self.header.bucket_elems) * u64::from(BucketElement::sizeof(layout));
+            let data = read_ofs(&self.f, offset, size)?;
+            let bucket = Bucket::from_reader(self.header.bucket_elems, layout, &mut &data[..])?;
 
             if bucket.count > self.header.bucket_elems || bucket.bits > self.header.dir_bits {
                 return Err(Error::BadBucket {
@@ -436,6 +538,15 @@ where
                     bits: bucket.bits,
                     max_elems: self.header.bucket_elems,
                     dir_bits: self.header.dir_bits,
+                });
+            }
+
+            // Inserting relies on a bucket with count < bucket_elems having a free slot.
+            if bucket.occupied() != bucket.count {
+                return Err(Error::BadBucketCount {
+                    offset,
+                    count: bucket.count,
+                    occupied: bucket.occupied(),
                 });
             }
 
@@ -449,9 +560,9 @@ where
             self.cache_bucket(offset, bucket)?;
         }
 
-        self.bucket_cache.set_current(offset);
+        self.bucket_cache.borrow_mut().set_current(offset);
 
-        Ok(self.bucket_cache.current_bucket().unwrap())
+        Ok(f(self.bucket_cache.borrow().current_bucket().unwrap()))
     }
 
     // since one bucket dir entry may duplicate another,
@@ -472,10 +583,193 @@ where
         bucket_dir
     }
 
-    /// Gets the number of key-value pairs in the database.
+    /// Block size of the database file.
+    pub fn block_size(&self) -> u32 {
+        self.header.block_sz
+    }
+
+    /// Size of a hash bucket in the database file.
+    pub fn bucket_size(&self) -> u32 {
+        self.header.bucket_sz
+    }
+
+    /// Number of bits of key hash that select a bucket: the directory has `2^dir_depth()`
+    /// entries.
+    pub fn dir_depth(&self) -> u32 {
+        self.header.dir_bits
+    }
+
+    /// Number of distinct hash buckets, like C GDBM's `gdbm_bucket_count`.
+    pub fn bucket_count(&self) -> usize {
+        self.dir
+            .dir
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+    }
+
+    /// Whether the database has a numsync header.
+    pub fn is_numsync(&self) -> bool {
+        self.header.magic.is_numsync()
+    }
+
+    /// The numsync counter, incremented on every sync, if the database has a numsync header.
+    pub fn numsync(&self) -> Option<u32> {
+        self.header.numsync
+    }
+
+    /// The path the database was opened from; `None` for temporary databases.
+    pub fn path(&self) -> Option<&std::path::Path> {
+        self.path.as_deref()
+    }
+
+    /// Check the consistency of the database's use of file space, like C GDBM's
+    /// `gdbm_avail_verify` but covering every structure: the header, directory, buckets,
+    /// records and free space must all lie within the allocated file space and must not
+    /// overlap.
     ///
-    /// Note: This is an expensive operation as it involves loading all the database metadata in
-    /// order to calculate the number of entries.
+    /// # Errors
+    /// [`Error::Corrupt`] describing the first inconsistency found, or an I/O error.
+    pub fn verify(&self) -> Result<VerifyReport> {
+        let corrupt = |description: String| Error::Corrupt { description };
+        let header = &self.header;
+        let mut report = VerifyReport::default();
+        let mut extents: Vec<(u64, u64, String)> = vec![
+            (0, u64::from(header.block_sz), "header".into()),
+            (header.dir_ofs, u64::from(header.dir_sz), "directory".into()),
+        ];
+        let mut free = |extents: &mut Vec<_>, elem: &AvailElem, name: String| {
+            report.free_extents += 1;
+            report.free_bytes += u64::from(elem.sz);
+            extents.push((elem.addr, u64::from(elem.sz), name));
+        };
+
+        for elem in &header.avail.elems {
+            free(&mut extents, elem, "header free space".into());
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        for index in 0..self.dir.dir.len() {
+            let offset = self.dir.dir[index];
+            if !seen.insert(offset) {
+                continue;
+            }
+            let (elems, avail, count) = self.with_bucket(index, |bucket| {
+                (
+                    bucket
+                        .tab
+                        .iter()
+                        .filter(|elem| elem.is_occupied())
+                        .copied()
+                        .collect::<Vec<_>>(),
+                    bucket.avail.clone(),
+                    bucket.count as usize,
+                )
+            })?;
+            extents.push((
+                offset,
+                u64::from(header.bucket_sz),
+                format!("bucket at {offset}"),
+            ));
+            for elem in elems {
+                extents.push((
+                    elem.data_ofs,
+                    u64::from(elem.key_size) + u64::from(elem.data_size),
+                    format!("record in bucket at {offset}"),
+                ));
+            }
+            report.records += count;
+            for elem in &avail {
+                free(
+                    &mut extents,
+                    elem,
+                    format!("free space in bucket at {offset}"),
+                );
+            }
+        }
+        report.buckets = seen.len();
+
+        let stack_block_size = AvailBlock::stack_block_size(header.layout, header.avail.sz);
+        let mut next = header.avail.next_block;
+        let mut blocks = std::collections::HashSet::new();
+        while next != 0 {
+            if !blocks.insert(next) {
+                return Err(corrupt(format!("avail stack loops at {next}")));
+            }
+            let mut f = &self.f;
+            f.seek(SeekFrom::Start(next))?;
+            let capacity = AvailBlock::stack_block_capacity(header.layout, header.avail.sz);
+            let block = AvailBlock::from_reader(header.layout, next, capacity, &mut f)?;
+            block.validate(
+                next,
+                capacity,
+                u64::from(header.block_sz),
+                header.next_block,
+            )?;
+            extents.push((
+                next,
+                u64::from(stack_block_size),
+                format!("avail block at {next}"),
+            ));
+            for elem in &block.elems {
+                free(
+                    &mut extents,
+                    elem,
+                    format!("free space in avail block at {next}"),
+                );
+            }
+            next = block.next_block;
+        }
+
+        extents.sort();
+        for pair in extents.windows(2) {
+            let ((a_ofs, a_len, a_name), (b_ofs, _, b_name)) = (&pair[0], &pair[1]);
+            if a_ofs.saturating_add(*a_len) > *b_ofs {
+                return Err(corrupt(format!(
+                    "{a_name} ({a_ofs}+{a_len}) overlaps {b_name} ({b_ofs})"
+                )));
+            }
+        }
+        if let Some((ofs, len, name)) = extents.last()
+            && ofs.saturating_add(*len) > header.next_block
+        {
+            return Err(corrupt(format!(
+                "{name} ({ofs}+{len}) is beyond the end of the database ({})",
+                header.next_block
+            )));
+        }
+
+        Ok(report)
+    }
+
+    /// Whether the database has no entries. Unlike [`len`](Gdbm::len), this stops at the first
+    /// entry found.
+    ///
+    /// # Errors
+    /// Fails if a bucket cannot be read.
+    pub fn is_empty(&self) -> Result<bool> {
+        let mut cur_dir: usize = 0;
+        while cur_dir < self.dir.dir.len() {
+            if self.with_bucket(cur_dir, |bucket| bucket.count > 0)? {
+                return Ok(false);
+            }
+            cur_dir = self.next_bucket_dir(cur_dir);
+        }
+
+        Ok(true)
+    }
+
+    /// Write out any changes and close the database, reporting any error. Dropping a `Gdbm`
+    /// also writes out changes, but cannot report errors.
+    ///
+    /// # Errors
+    /// Fails if changes cannot be written.
+    pub fn close(mut self) -> Result<()> {
+        self.sync()
+    }
+
+    /// Number of entries in the database. This reads every bucket; use
+    /// [`is_empty`](Gdbm::is_empty) to test for an empty database.
     ///
     /// # Examples
     /// ```
@@ -484,19 +778,21 @@ where
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path).unwrap();
     /// let count = db.len()?;
     /// #         Ok(())
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
-    #[allow(clippy::len_without_is_empty)]
-    pub fn len(&mut self) -> Result<usize> {
+    ///
+    /// # Errors
+    /// Fails if a bucket cannot be read.
+    pub fn len(&self) -> Result<usize> {
         let mut len: usize = 0;
         let mut cur_dir: usize = 0;
         let dir_max_elem = self.dir.dir.len();
         while cur_dir < dir_max_elem {
-            len += self.cache_load_bucket(cur_dir)?.count as usize;
+            len += self.with_bucket(cur_dir, |bucket| bucket.count as usize)?;
             cur_dir = self.next_bucket_dir(cur_dir);
         }
 
@@ -512,7 +808,7 @@ where
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path).unwrap();
     /// #         let spam = |_| ();
     /// for address in db.values::<String>() {
     ///     let address = address?;
@@ -522,8 +818,8 @@ where
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
-    pub fn values<V: FromBytes>(&mut self) -> impl std::iter::Iterator<Item = Result<V>> + '_ {
-        GDBMIterator::<R>::new(self, KeyOrValue::Value)
+    pub fn values<V: FromBytes>(&self) -> impl std::iter::Iterator<Item = Result<V>> + '_ {
+        GDBMIterator::new(self, KeyOrValue::Value)
             .map(|data| data.and_then(|(_, value)| V::from_bytes(&value)))
     }
 
@@ -536,7 +832,7 @@ where
     /// #     let tmp_dir = tempdir().map_err(|e| e.to_string())?;
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path)?;
     /// let mut longest = None::<String>;
     ///
     /// for key in db.keys::<String>() {
@@ -552,8 +848,8 @@ where
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
-    pub fn keys<K: FromBytes>(&mut self) -> impl std::iter::Iterator<Item = Result<K>> + '_ {
-        GDBMIterator::<R>::new(self, KeyOrValue::Key)
+    pub fn keys<K: FromBytes>(&self) -> impl std::iter::Iterator<Item = Result<K>> + '_ {
+        GDBMIterator::new(self, KeyOrValue::Key)
             .map(|data| data.and_then(|(key, _)| K::from_bytes(&key)))
     }
 
@@ -565,19 +861,19 @@ where
     /// #     let tmp_dir = tempdir().map_err(|e| e.to_string())?;
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
-    /// for kv in db.iter::<String, u32>() {
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path)?;
+    /// for kv in db.iter::<String, [u8; 4]>() {
     ///     let (button, count) = kv?;
-    ///     println!("button <{button}> was clicked {count} times")
+    ///     println!("button <{button}> was clicked {} times", u32::from_be_bytes(count))
     /// }
     /// #         Ok(())
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
     pub fn iter<K: FromBytes, V: FromBytes>(
-        &mut self,
+        &self,
     ) -> impl std::iter::Iterator<Item = Result<(K, V)>> + '_ {
-        GDBMIterator::<R>::new(self, KeyOrValue::Both).map(|data| {
+        GDBMIterator::new(self, KeyOrValue::Both).map(|data| {
             data.and_then(|(key, value)| {
                 K::from_bytes(&key).and_then(|k| V::from_bytes(&value).map(|v| (k, v)))
             })
@@ -592,7 +888,7 @@ where
     /// # fn main() -> Result<(), String> {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
-    /// #     let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// #     let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path).unwrap();
     /// #     db.insert("fred", "dibnah");
     /// #     let username = "fred";
     /// if db.contains_key(username).unwrap() {
@@ -602,33 +898,116 @@ where
     /// }
     /// # }
     /// ```
-    pub fn contains_key<K: ToBytesRef + ?Sized>(&mut self, key: &K) -> Result<bool> {
+    ///
+    /// # Errors
+    /// Fails if the database cannot be read or is corrupt.
+    pub fn contains_key<K: ToBytesRef + ?Sized>(&self, key: &K) -> Result<bool> {
         self.int_get(key.to_bytes_ref().as_ref())
             .map(|result| result.is_some())
     }
 
-    // retrieve record data, and element offset in bucket, for given key
-    fn int_get(&mut self, key: &[u8]) -> Result<Option<(usize, Vec<u8>)>> {
-        let (key_hash, bucket_dir, elem_ofs) = key_loc(
-            self.char_sign,
-            self.header.dir_bits,
-            self.header.bucket_elems,
-            key,
-        );
-        let key_start = PartialKey::new(key);
+    // Hash key as the C GDBM that wrote this database would. Keys of bytes < 0x80 hash the same
+    // whatever the signedness of C's char; other keys need it, so it is determined on first use.
+    fn hash(&self, key: &[u8]) -> u32 {
+        let char_sign = if key.is_ascii() {
+            CharSign::Signed
+        } else {
+            self.resolve_char_sign(Some(key))
+        };
+        hash_key(char_sign, key)
+    }
 
-        let bucket = self.cache_load_bucket(bucket_dir)?;
+    // The char signedness of this database: as set or detected earlier, else detected now
+    // (looking first where key would be stored, if given), falling back to Signed.
+    fn resolve_char_sign(&self, key: Option<&[u8]>) -> CharSign {
+        if let Some(char_sign) = self.char_sign.get() {
+            return char_sign;
+        }
+        let char_sign = self.detect_char_sign(key).unwrap_or_default();
+        self.char_sign.set(Some(char_sign));
+        char_sign
+    }
 
-        let bucket_entries = (0..bucket.tab.len())
-            .map(|index| (index + elem_ofs as usize) % bucket.tab.len())
-            .map(|offset| (offset, bucket.tab[offset]))
-            .take_while(|(_, elem)| elem.is_occupied())
-            .filter(|(_, elem)| {
-                elem.hash == key_hash
-                    && elem.key_size == key.len() as u32
-                    && elem.key_start == key_start
+    // Find a stored key with a byte >= 0x80, and see which char signedness reproduces its stored
+    // hash. None if the database has no such key. Unreadable buckets and records are skipped, so
+    // that corruption elsewhere does not stop lookups or recover().
+    //
+    // Scanning every bucket can be slow, so when resolving for a key, first look in the bucket(s)
+    // that key maps to under each signedness (at most two): a key being looked up is likely to
+    // share its bucket with similar keys. Only if neither decides are all other buckets scanned.
+    fn detect_char_sign(&self, key: Option<&[u8]>) -> Option<CharSign> {
+        let mut seen = std::collections::HashSet::new();
+        let likely = key.into_iter().flat_map(|key| {
+            [CharSign::Signed, CharSign::Unsigned]
+                .map(|char_sign| bucket_dir(self.header.dir_bits, hash_key(char_sign, key)))
+        });
+        likely
+            .chain(0..self.dir.dir.len())
+            .filter(|&index| seen.insert(self.dir.dir[index]))
+            .find_map(|index| self.bucket_char_sign(index))
+    }
+
+    // The char signedness that the stored hash of a key with a byte >= 0x80 in the bucket for
+    // directory entry index shows, if any. None if the bucket cannot be read.
+    fn bucket_char_sign(&self, index: usize) -> Option<CharSign> {
+        let elems = self
+            .with_bucket(index, |bucket| {
+                bucket
+                    .tab
+                    .iter()
+                    .filter(|elem| elem.is_occupied())
+                    .copied()
+                    .collect::<Vec<_>>()
             })
-            .collect::<Vec<_>>();
+            .ok()?;
+        elems.into_iter().find_map(|elem| {
+            // keys of up to 4 bytes are entirely in the bucket
+            if elem.key_size <= PartialKey::SIZEOF
+                && elem.key_start.is_ascii(elem.key_size as usize)
+            {
+                return None;
+            }
+            let key = valid_element(elem, self.header.next_block)
+                .and_then(|elem| Ok(read_ofs(&self.f, elem.data_ofs, u64::from(elem.key_size))?))
+                .ok()?;
+            if key.is_ascii() {
+                return None;
+            }
+            match (
+                hash_key(CharSign::Signed, &key) == elem.hash,
+                hash_key(CharSign::Unsigned, &key) == elem.hash,
+            ) {
+                (true, false) => Some(CharSign::Signed),
+                (false, true) => Some(CharSign::Unsigned),
+                _ => None,
+            }
+        })
+    }
+
+    /// The signedness of `char` this database's keys are hashed with, if known yet: set by
+    /// [`OpenOptions::char_sign`], or detected the first time a key with a byte >= 0x80 is used.
+    /// See [`CharSign`].
+    pub fn char_sign(&self) -> Option<CharSign> {
+        self.char_sign.get()
+    }
+
+    // retrieve record data, and element offset in bucket, for given key
+    fn int_get(&self, key: &[u8]) -> Result<Option<(usize, Vec<u8>)>> {
+        let key_hash = self.hash(key);
+        let (bucket_dir, elem_ofs) =
+            key_loc(self.header.dir_bits, self.header.bucket_elems, key_hash);
+        let bucket_entries = self.with_bucket(bucket_dir, |bucket| {
+            (0..bucket.tab.len())
+                .map(|index| (index + elem_ofs as usize) % bucket.tab.len())
+                .map(|offset| (offset, bucket.tab[offset]))
+                .take_while(|(_, elem)| elem.is_occupied())
+                .filter(|(_, elem)| {
+                    elem.hash == key_hash
+                        && elem.key_size == key.len() as u32
+                        && elem.key_start.matches(key)
+                })
+                .collect::<Vec<_>>()
+        })?;
 
         let next_block = self.header.next_block;
         let data_entries = bucket_entries
@@ -636,9 +1015,9 @@ where
             .map(|(offset, elem)| {
                 let elem = valid_element(elem, next_block)?;
                 read_ofs(
-                    &mut self.f,
+                    &self.f,
                     elem.data_ofs,
-                    elem.key_size as usize + elem.data_size as usize,
+                    u64::from(elem.key_size) + u64::from(elem.data_size),
                 )
                 .map(|data| (offset, data))
                 .map_err(Error::Io)
@@ -663,7 +1042,7 @@ where
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path)?;
     /// #     let display = |_: Vec<u8>| ();
     /// #     let image_name = "";
     /// if let Some(image) = db.get(image_name)? {
@@ -673,7 +1052,11 @@ where
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
-    pub fn get<K: ToBytesRef + ?Sized, V: FromBytes>(&mut self, key: &K) -> Result<Option<V>> {
+    ///
+    /// # Errors
+    /// Fails if the database cannot be read or is corrupt, or with [`Error::BadData`] if the value
+    /// cannot be converted to `V`.
+    pub fn get<K: ToBytesRef + ?Sized, V: FromBytes>(&self, key: &K) -> Result<Option<V>> {
         match self.int_get(key.to_bytes_ref().as_ref())? {
             None => Ok(None),
             Some(data) => V::from_bytes(&data.1).map(|v| Some(v)),
@@ -688,7 +1071,7 @@ where
     /// # fn main() {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
-    /// #     let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// #     let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path).unwrap();
     /// println!("database magic: {:?}", db.magic());
     /// # }
     /// ```
@@ -696,7 +1079,7 @@ where
         self.header.magic
     }
 
-    /// Get the database alignment.
+    /// The C struct [`Layout`] of the database file.
     ///
     /// # Examples
     /// ```
@@ -704,18 +1087,26 @@ where
     /// # fn main() {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
-    /// #     let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
-    /// println!("database alignment: {:?}", db.alignment());
+    /// #     let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path).unwrap();
+    /// println!("database layout: {:?}", db.layout());
     /// # }
     /// ```
-    pub fn alignment(&self) -> Alignment {
-        self.header.layout.alignment
+    pub fn layout(&self) -> Layout {
+        self.header.layout.layout()
+    }
+
+    /// The byte order of the database file.
+    pub fn endian(&self) -> Endian {
+        self.header.layout.endian
     }
 
     #[cfg(feature = "diagnostic")]
     /// Show diagnostic information about the database header.
     ///
     /// Only available when the `diagnostic` feature is enabled.
+    ///
+    /// # Errors
+    /// Fails if `w` cannot be written.
     pub fn show_header(&self, w: &mut impl Write) -> io::Result<()> {
         let (dir_sz, dir_bits) = build_dir_size(self.header.layout.offset, self.header.block_sz);
 
@@ -738,6 +1129,9 @@ where
     /// Show diagnostic information about the database directory.
     ///
     /// Only available when the `diagnostic` feature is enabled.
+    ///
+    /// # Errors
+    /// Fails if `w` cannot be written.
     pub fn show_directory(&self, w: &mut impl Write) -> io::Result<()> {
         writeln!(w, "size {}", self.header.dir_sz)?;
         writeln!(w, "bits {}", self.header.dir_bits)?;
@@ -750,25 +1144,18 @@ where
     }
 }
 
-impl Gdbm<ReadWrite> {
-    fn create(
-        f: File,
-        open_options: &OpenOptions<options::Write<Create>>,
-    ) -> Result<Gdbm<ReadWrite>> {
-        let layout = Layout {
-            offset: open_options.write.create.offset.unwrap_or(Offset::LFS),
-            alignment: open_options.alignment.unwrap_or(Alignment::Align64),
-            endian: open_options.write.create.endian.unwrap_or(Endian::Little),
-        };
+impl Gdbm {
+    fn create(f: File, open_options: &OpenOptions) -> Result<Gdbm> {
+        let layout = Format::new(open_options.layout, open_options.endian);
 
-        let (block_size, dir_bits) = match open_options.write.create.block_size {
+        let (block_size, dir_bits) = match open_options.block_size {
             BlockSize::Roughly(size) | BlockSize::Exactly(size) => {
                 build_dir_size(layout.offset, size)
             }
             BlockSize::Filesystem => build_dir_size(layout.offset, fs_block_size(&f)?),
         };
 
-        if let BlockSize::Exactly(size) = open_options.write.create.block_size
+        if let BlockSize::Exactly(size) = open_options.block_size
             && block_size != size
         {
             return Err(Error::BadBlockSize {
@@ -777,13 +1164,8 @@ impl Gdbm<ReadWrite> {
             });
         }
 
-        let header = Header::new(
-            block_size,
-            layout,
-            dir_bits,
-            !open_options.write.create.no_numsync,
-        );
-        let bucket = Bucket::new(0, header.bucket_elems as usize, vec![], vec![]);
+        let header = Header::new(block_size, layout, dir_bits, open_options.numsync);
+        let bucket = Bucket::new(0, header.bucket_elems as usize, vec![]);
         let bucket_offset = header.next_block - u64::from(block_size);
         let dir = Directory::new(vec![bucket_offset; 1 << header.dir_bits]);
 
@@ -800,15 +1182,16 @@ impl Gdbm<ReadWrite> {
             f,
             header,
             dir,
-            bucket_cache,
-            char_sign: open_options.char_sign,
-            read_write: ReadWrite {
-                sync: open_options.write.sync,
+            bucket_cache: RefCell::new(bucket_cache),
+            char_sign: Cell::new(open_options.char_sign),
+            path: None,
+            read_write: Some(WriteMode {
+                sync: open_options.sync,
                 state: WriteState::Dirty,
-            },
+            }),
         };
 
-        if db.read_write.sync {
+        if db.rw().sync {
             db.sync()?;
         }
 
@@ -832,19 +1215,22 @@ impl Gdbm<ReadWrite> {
     /// # fn main() {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
-    /// #     let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// #     let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path).unwrap();
     /// // Turn on sync mode.
     /// db.set_sync(true);
     /// # }
     /// ```
     pub fn set_sync(&mut self, sync: bool) {
-        self.read_write.sync = sync;
+        if let Some(rw) = self.read_write.as_mut() {
+            rw.sync = sync;
+        }
     }
 
     /// Imports entries from an ASCII dump into the database.
     ///
-    /// Adds all entries from a dump created with [`export_ascii`](Gdbm::export_ascii) to the
-    /// database. Values are overwritten for keys that already exist in the database.
+    /// Adds all entries from a dump created with [`export_ascii`](Gdbm::export_ascii) or C GDBM's
+    /// `gdbm_dump` to the database, storing them as `mode` says when their key already exists.
+    /// Returns the number of records imported and the dump's header information.
     ///
     /// # Examples
     /// ```
@@ -854,33 +1240,56 @@ impl Gdbm<ReadWrite> {
     /// #     let path = tmp_dir.path().join("test");
     /// #     let new_path = tmp_dir.path().join("test1");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut old_db = gdbm_native::OpenOptions::new().write().create().open(path)?;
-    /// use gdbm_native::OpenOptions;
+    /// #         let mut old_db = gdbm_native::OpenOptions::new().write(true).create(true).open(path)?;
+    /// use gdbm_native::{ImportMode, OpenOptions};
     ///
     /// let mut buf = Vec::new();
     /// old_db.export_ascii(&mut buf, None::<&str>)?;
     ///
-    /// let mut new_db = OpenOptions::new().write().create().open(new_path)?;
-    /// new_db.import_ascii(&mut buf.as_slice())?;
+    /// let mut new_db = OpenOptions::new().write(true).create(true).open(new_path)?;
+    /// let info = new_db.import_ascii(&mut buf.as_slice(), ImportMode::Replace)?;
+    /// println!("imported {} records", info.count);
     /// #         Ok(())
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
-    pub fn import_ascii(&mut self, reader: &mut impl Read) -> Result<()> {
-        ASCIIImportIterator::new(reader)
-            .map_err(Error::Io)
-            .and_then(|mut lines| {
-                lines.try_for_each(|l| {
-                    let (key, value) = l.map_err(Error::Io)?;
-                    self.insert(&key, &value).map(|_| ())
-                })
-            })
+    ///
+    /// # Errors
+    /// Fails if the database is read-only, the dump is malformed, a key already exists with
+    /// [`ImportMode::Insert`], or a record cannot be stored.
+    pub fn import_ascii(&mut self, reader: &mut impl Read, mode: ImportMode) -> Result<DumpInfo> {
+        self.check_writable()?;
+        let mut records = ASCIIImportIterator::new(reader)?;
+        let mut info = DumpInfo::from_header(&records.header);
+        info.count = self.import_records(&mut records, mode)?;
+        Ok(info)
+    }
+
+    fn import_records(
+        &mut self,
+        records: &mut impl Iterator<Item = io::Result<(Vec<u8>, Vec<u8>)>>,
+        mode: ImportMode,
+    ) -> Result<usize> {
+        records.try_fold(0, |count, record| {
+            let (key, value) = record?;
+            match mode {
+                ImportMode::Replace => self.insert(&key, &value).map(|_| ()),
+                ImportMode::Insert => match self.try_insert(&key, &value)? {
+                    None => Ok(()),
+                    Some(_) => Err(Error::KeyExists { key }),
+                },
+            }
+            .map(|()| count + 1)
+        })
     }
 
     /// Imports entries from a binary dump into the database.
     ///
-    /// Adds all entries from a dump created with [`export_bin`](Gdbm::export_bin) to the database.
-    /// Values are overwritten for keys that already exist in the database.
+    /// Adds all entries from a dump created with [`export_bin`](Gdbm::export_bin) or C GDBM's
+    /// `gdbm_export` to the database, storing them as `mode` says when their key already exists.
+    /// `format` gives the layout of the dump's length fields; `None` detects it from the first
+    /// 64 KiB of records, as described for [`BinDumpFormat`]. Returns the number of records
+    /// imported.
     ///
     /// # Examples
     /// ```
@@ -890,29 +1299,32 @@ impl Gdbm<ReadWrite> {
     /// #     let path = tmp_dir.path().join("test");
     /// #     let new_path = tmp_dir.path().join("test1");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut old_db = gdbm_native::OpenOptions::new().write().create().open(path)?;
-    /// use gdbm_native::{OpenOptions, ExportBinMode};
+    /// #         let mut old_db = gdbm_native::OpenOptions::new().write(true).create(true).open(path)?;
+    /// use gdbm_native::{BinDumpFormat, ImportMode, OpenOptions};
     ///
     /// let mut buf = Vec::new();
-    /// old_db.export_bin(&mut buf, ExportBinMode::Exp32)?;
+    /// old_db.export_bin(&mut buf, BinDumpFormat::Long32)?;
     ///
-    /// let mut new_db = OpenOptions::new().write().create().open(new_path)?;
-    /// new_db.import_bin(&mut buf.as_slice(), ExportBinMode::Exp32)?;
+    /// let mut new_db = OpenOptions::new().write(true).create(true).open(new_path)?;
+    /// new_db.import_bin(&mut buf.as_slice(), None, ImportMode::Replace)?;
     /// #         Ok(())
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
-    pub fn import_bin(&mut self, reader: &mut impl Read, mode: ExportBinMode) -> Result<()> {
-        let alignment = mode.alignment(self.header.layout.alignment);
-
-        BinaryImportIterator::new(alignment, reader)
-            .map_err(Error::Io)
-            .and_then(|mut lines| {
-                lines.try_for_each(|l| {
-                    let (key, value) = l.map_err(Error::Io)?;
-                    self.insert(&key, &value).map(|_| ())
-                })
-            })
+    ///
+    /// # Errors
+    /// Fails if the database is read-only, the dump is malformed, `format` is `None` and no
+    /// format is consistent with the dump, a key already exists with [`ImportMode::Insert`], or a
+    /// record cannot be stored.
+    pub fn import_bin(
+        &mut self,
+        reader: &mut impl Read,
+        format: Option<BinDumpFormat>,
+        mode: ImportMode,
+    ) -> Result<usize> {
+        self.check_writable()?;
+        let mut records = BinaryImportIterator::new(format, reader)?;
+        self.import_records(&mut records, mode)
     }
 
     // virtually allocate N blocks of data, at end of db file (no I/O)
@@ -923,7 +1335,7 @@ impl Gdbm<ReadWrite> {
         // C GDBM's off_t is signed, so 32-bit offset databases are limited to 2GiB
         let maximum = match self.header.layout.offset {
             Offset::Small => i32::MAX as u64,
-            Offset::LFS => i64::MAX as u64,
+            Offset::Lfs => i64::MAX as u64,
         };
         let next_block = offset
             .checked_add(u64::from(length))
@@ -977,10 +1389,11 @@ impl Gdbm<ReadWrite> {
         let size = AvailBlock::stack_block_size(layout, self.header.avail.sz);
 
         self.f.seek(SeekFrom::Start(offset))?;
-        let block = AvailBlock::from_reader(layout, &mut self.f)?;
+        let capacity = AvailBlock::stack_block_capacity(layout, self.header.avail.sz);
+        let block = AvailBlock::from_reader(layout, offset, capacity, &mut self.f)?;
         block.validate(
             offset,
-            AvailBlock::stack_block_capacity(layout, self.header.avail.sz),
+            capacity,
             u64::from(self.header.block_sz),
             self.header.next_block,
         )?;
@@ -1014,6 +1427,7 @@ impl Gdbm<ReadWrite> {
         if sz < self.header.block_sz
             && let Some(bucket) = self
                 .bucket_cache
+                .get_mut()
                 .current_bucket_mut()
                 .filter(|bucket| (bucket.avail.len() as u32) < Bucket::AVAIL)
         {
@@ -1031,18 +1445,17 @@ impl Gdbm<ReadWrite> {
     }
 
     fn write_bucket(&mut self, bucket: &Bucket, offset: u64) -> io::Result<()> {
-        write_bucket(&mut self.f, &self.header, bucket, offset)
+        write_bucket(&self.f, &self.header, bucket, offset)
     }
 
     // write out any cached, not-yet-written metadata and data to storage
     fn write_buckets(&mut self) -> io::Result<()> {
         self.bucket_cache
+            .get_mut()
             .dirty_list()
             .iter()
-            .try_for_each(|(offset, bucket)| {
-                write_bucket(&mut self.f, &self.header, bucket, *offset)
-            })
-            .map(|()| self.bucket_cache.clear_dirty())
+            .try_for_each(|(offset, bucket)| write_bucket(&self.f, &self.header, bucket, *offset))
+            .map(|()| self.bucket_cache.get_mut().clear_dirty())
     }
 
     // write out any cached, not-yet-written metadata and data to storage
@@ -1085,13 +1498,13 @@ impl Gdbm<ReadWrite> {
 
     // write out any cached, not-yet-written metadata and data to storage
     fn write_dirty(&mut self) -> io::Result<()> {
-        self.read_write.state = WriteState::Inconsistent;
+        self.rw().state = WriteState::Inconsistent;
 
         self.write_buckets()?;
         self.write_dir()?;
         self.write_header()?;
 
-        self.read_write.state = WriteState::Clean;
+        self.rw().state = WriteState::Clean;
 
         Ok(())
     }
@@ -1105,7 +1518,7 @@ impl Gdbm<ReadWrite> {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     std::panic::catch_unwind(|| {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path).unwrap();
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path).unwrap();
     /// // Ensure all data is saved ...
     /// db.sync();
     ///
@@ -1114,8 +1527,16 @@ impl Gdbm<ReadWrite> {
     /// #     });
     /// # }
     /// ```
+    ///
+    /// # Errors
+    /// Fails with [`Error::Inconsistent`] after an earlier failed write, or if writing the file
+    /// fails.
     pub fn sync(&mut self) -> Result<()> {
-        match self.read_write.state {
+        // nothing to write if read-only
+        let Some(rw) = self.read_write else {
+            return Ok(());
+        };
+        match rw.state {
             WriteState::Clean => Ok(()),
             WriteState::Inconsistent => Err(Error::Inconsistent),
             WriteState::Dirty => {
@@ -1134,16 +1555,17 @@ impl Gdbm<ReadWrite> {
             return Ok(None);
         }
 
-        if self.read_write.state == WriteState::Inconsistent {
+        if self.rw().state == WriteState::Inconsistent {
             return Err(Error::Inconsistent);
         }
 
-        self.read_write.state = WriteState::Inconsistent;
+        self.rw().state = WriteState::Inconsistent;
 
         let (elem_ofs, data) = get_opt.unwrap();
 
         let elem = self
             .bucket_cache
+            .get_mut()
             .current_bucket_mut()
             .unwrap()
             .remove(elem_ofs);
@@ -1151,7 +1573,7 @@ impl Gdbm<ReadWrite> {
         // release record bytes to available-space pool
         self.free_record(elem.data_ofs, elem.key_size + elem.data_size)?;
 
-        self.read_write.state = WriteState::Dirty;
+        self.rw().state = WriteState::Dirty;
 
         Ok(Some(data))
     }
@@ -1168,7 +1590,7 @@ impl Gdbm<ReadWrite> {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path)?;
     /// match db.remove("sylvian")? {
     ///     Some(old) => println!("removed \"{:?}\" from the database.", std::str::from_utf8(&old)),
     ///     None => println!("\"sylvian\" wasn't in the database."),
@@ -1177,10 +1599,16 @@ impl Gdbm<ReadWrite> {
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
+    ///
+    /// # Errors
+    /// Fails if the database is read-only ([`Error::ReadOnly`]) or inconsistent after an earlier
+    /// failed write ([`Error::Inconsistent`]), if the record is too large, or if reading or writing
+    /// the file fails.
     pub fn remove<K: ToBytesRef + ?Sized>(&mut self, key: &K) -> Result<Option<Vec<u8>>> {
+        self.check_writable()?;
         self.int_remove(key.to_bytes_ref().as_ref())
             .and_then(|old_value| {
-                if old_value.is_some() && self.read_write.sync {
+                if old_value.is_some() && self.rw().sync {
                     self.sync()?;
                 }
 
@@ -1192,6 +1620,7 @@ impl Gdbm<ReadWrite> {
     fn allocate_record(&mut self, size: u32) -> Result<u64> {
         let (offset, length) = if let Some(block) = self
             .bucket_cache
+            .get_mut()
             .current_bucket_mut()
             .and_then(|bucket| bucket.allocate(size))
         {
@@ -1216,13 +1645,14 @@ impl Gdbm<ReadWrite> {
     }
 
     fn int_insert(&mut self, key: &[u8], data: &[u8]) -> Result<()> {
-        if self.read_write.state == WriteState::Inconsistent {
+        if self.rw().state == WriteState::Inconsistent {
             return Err(Error::Inconsistent);
         }
 
         let size = record_size(key.len(), data.len())?;
+        let hash = self.hash(key);
 
-        self.read_write.state = WriteState::Inconsistent;
+        self.rw().state = WriteState::Inconsistent;
 
         let offset = self.allocate_record(size)?;
 
@@ -1231,20 +1661,28 @@ impl Gdbm<ReadWrite> {
             .and_then(|_| self.f.write_all(key))
             .and_then(|()| self.f.write_all(data))?;
 
-        let bucket_elem = BucketElement::new(hash_key(self.char_sign, key), key, data, offset);
-        self.cache_load_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash))?;
+        let bucket_elem = BucketElement::new(hash, key, data, offset);
+        self.with_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash), |_| ())?;
 
-        while self.bucket_cache.current_bucket().unwrap().count == self.header.bucket_elems {
+        while self.bucket_cache.get_mut().current_bucket().unwrap().count
+            == self.header.bucket_elems
+        {
             self.split_bucket()?;
-            self.cache_load_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash))?;
+            self.with_bucket(bucket_dir(self.header.dir_bits, bucket_elem.hash), |_| ())?;
         }
 
-        self.bucket_cache
-            .current_bucket_mut()
-            .unwrap()
-            .insert(bucket_elem);
+        let cache = self.bucket_cache.get_mut();
+        let offset = cache.current_bucket_offset().unwrap();
+        let bucket = cache.current_bucket_mut().unwrap();
+        bucket
+            .insert(bucket_elem)
+            .ok_or_else(|| Error::BadBucketCount {
+                offset,
+                count: bucket.count,
+                occupied: bucket.occupied(),
+            })?;
 
-        self.read_write.state = WriteState::Dirty;
+        self.rw().state = WriteState::Dirty;
 
         Ok(())
     }
@@ -1260,17 +1698,23 @@ impl Gdbm<ReadWrite> {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path)?;
     /// db.insert("marmite", "dog")?;
     /// #         Ok(())
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
+    ///
+    /// # Errors
+    /// Fails if the database is read-only ([`Error::ReadOnly`]) or inconsistent after an earlier
+    /// failed write ([`Error::Inconsistent`]), if the record is too large, or if reading or writing
+    /// the file fails.
     pub fn insert<V: ToBytesRef + ?Sized, K: ToBytesRef + ?Sized>(
         &mut self,
         key: &K,
         value: &V,
     ) -> Result<Option<Vec<u8>>> {
+        self.check_writable()?;
         let key = key.to_bytes_ref();
         self.int_remove(key.as_ref())
             .and_then(|oldvalue| {
@@ -1278,7 +1722,7 @@ impl Gdbm<ReadWrite> {
                     .map(|()| oldvalue)
             })
             .and_then(|oldvalue| {
-                if self.read_write.sync {
+                if self.rw().sync {
                     self.sync()?;
                 }
 
@@ -1298,7 +1742,7 @@ impl Gdbm<ReadWrite> {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path)?;
     /// match db.try_insert("marmite", "cat")? {
     ///     Some(v) => {
     ///         println!("marmite exists and is a {}", std::str::from_utf8(&v).unwrap())
@@ -1309,18 +1753,24 @@ impl Gdbm<ReadWrite> {
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
+    ///
+    /// # Errors
+    /// Fails if the database is read-only ([`Error::ReadOnly`]) or inconsistent after an earlier
+    /// failed write ([`Error::Inconsistent`]), if the record is too large, or if reading or writing
+    /// the file fails.
     pub fn try_insert<K: ToBytesRef + ?Sized, V: ToBytesRef + ?Sized>(
         &mut self,
         key: &K,
         value: &V,
     ) -> Result<Option<Vec<u8>>> {
+        self.check_writable()?;
         self.get(key).and_then(|olddata| match olddata {
             Some(_) => Ok(olddata),
             _ => self
                 .int_insert(key.to_bytes_ref().as_ref(), value.to_bytes_ref().as_ref())
                 .map(|()| None)
                 .and_then(|result| {
-                    if self.read_write.sync {
+                    if self.rw().sync {
                         self.sync()?;
                     }
 
@@ -1330,7 +1780,7 @@ impl Gdbm<ReadWrite> {
     }
 
     fn split_bucket(&mut self) -> Result<()> {
-        if self.bucket_cache.current_bucket().unwrap().bits == self.header.dir_bits {
+        if self.bucket_cache.get_mut().current_bucket().unwrap().bits == self.header.dir_bits {
             self.extend_directory()?;
         }
 
@@ -1344,14 +1794,24 @@ impl Gdbm<ReadWrite> {
             offset
         };
 
-        let bucket = self.bucket_cache.current_bucket().unwrap();
-        let cur_bucket_offset = self.bucket_cache.current_bucket_offset().unwrap();
-        let (bucket0, bucket1) = bucket.split();
+        let cache = self.bucket_cache.get_mut();
+        let cur_bucket_offset = cache.current_bucket_offset().unwrap();
+        let bucket = cache.current_bucket().unwrap();
+        let (bucket0, bucket1) = bucket.split().ok_or_else(|| Error::BadBucketCount {
+            offset: cur_bucket_offset,
+            count: bucket.count,
+            occupied: bucket.occupied(),
+        })?;
         let bits = bucket0.bits;
 
-        let _ = self.bucket_cache.insert(cur_bucket_offset, bucket0);
-        if let Some((evicted_offset, evicted_bucket)) =
-            self.bucket_cache.insert(new_bucket_offset, bucket1)
+        let _ = self
+            .bucket_cache
+            .get_mut()
+            .insert(cur_bucket_offset, bucket0);
+        if let Some((evicted_offset, evicted_bucket)) = self
+            .bucket_cache
+            .get_mut()
+            .insert(new_bucket_offset, bucket1)
         {
             self.write_bucket(&evicted_bucket, evicted_offset)?;
         }
@@ -1401,7 +1861,7 @@ impl Gdbm<ReadWrite> {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path)?;
     /// // Turn on numsync for this database.
     /// db.set_numsync(true);
     /// assert!(db.magic().is_numsync());
@@ -1409,8 +1869,12 @@ impl Gdbm<ReadWrite> {
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
+    ///
+    /// # Errors
+    /// Fails if the database is read-only or inconsistent, or if writing the file fails.
     pub fn set_numsync(&mut self, numsync: bool) -> Result<()> {
-        if self.read_write.state == WriteState::Inconsistent {
+        self.check_writable()?;
+        if self.rw().state == WriteState::Inconsistent {
             return Err(Error::Inconsistent);
         }
 
@@ -1418,14 +1882,14 @@ impl Gdbm<ReadWrite> {
             return Ok(());
         }
 
-        self.read_write.state = WriteState::Inconsistent;
+        self.rw().state = WriteState::Inconsistent;
 
         self.header
             .convert_numsync(numsync)
             .into_iter()
             .try_for_each(|(offset, length)| self.free_record(offset, length))?;
 
-        self.read_write.state = WriteState::Dirty;
+        self.rw().state = WriteState::Dirty;
 
         Ok(())
     }
@@ -1443,69 +1907,189 @@ impl Gdbm<ReadWrite> {
     /// #     let tmp_dir = tempdir().unwrap();
     /// #     let path = tmp_dir.path().join("test");
     /// #     || -> gdbm_native::Result<()> {
-    /// #         let mut db = gdbm_native::OpenOptions::new().write().create().open(path)?;
+    /// #         let mut db = gdbm_native::OpenOptions::new().write(true).create(true).open(path)?;
     /// let result = db.compact();
     /// #         result
     /// #     }().map_err(|e| e.to_string())
     /// # }
     /// ```
+    ///
+    /// # Errors
+    /// Fails if the database is read-only, or cannot be read or rebuilt.
     pub fn compact(&mut self) -> Result<()> {
-        let mut tmpdb = {
-            let magic = self.magic();
-            OpenOptions::new()
-                .char_sign(self.char_sign)
-                .write()
-                .create()
-                .alignment(Some(self.header.layout.alignment))
-                .endian(Some(magic.endian()))
-                .offset(Some(magic.offset()))
-                .numsync(magic.is_numsync())
-                .block_size(BlockSize::Exactly(self.header.block_sz))
-                .tempfile()
-        }?;
+        self.check_writable()?;
+        let mut tmpdb = self.new_like()?;
+        self.iter::<Vec<u8>, Vec<u8>>().try_for_each(|entry| {
+            let (key, value) = entry?;
+            tmpdb.insert(&key, &value).map(|_| ())
+        })?;
+        self.replace_with(tmpdb)
+    }
 
+    // An empty temporary database with the same format as self.
+    fn new_like(&self) -> Result<Gdbm> {
+        let char_sign = self.resolve_char_sign(None);
+        let magic = self.magic();
+        let mut tmpdb = OpenOptions::new()
+            .char_sign(char_sign)
+            .layout(self.layout())
+            .endian(magic.endian())
+            .numsync(magic.is_numsync())
+            .block_size(BlockSize::Exactly(self.header.block_sz))
+            .tempfile()?;
         tmpdb.header.numsync = self.header.numsync;
+        Ok(tmpdb)
+    }
 
-        self.iter::<Vec<u8>, Vec<u8>>()
-            .try_for_each(|entry| {
-                let (key, value) = entry?;
-                tmpdb.insert(&key, &value).map(|_| ())
-            })
-            .and_then(|()| tmpdb.sync())?;
-
+    // Replace the contents of self with those of tmpdb.
+    fn replace_with(&mut self, mut tmpdb: Gdbm) -> Result<()> {
+        tmpdb.sync()?;
         tmpdb.f.seek(SeekFrom::Start(0))?;
+
+        // Until the new contents are copied and reloaded, the in-memory header, directory and
+        // bucket cache do not match the file: refuse writes, and sync (or Drop) writing them.
+        self.rw().state = WriteState::Inconsistent;
+
         self.f.seek(SeekFrom::Start(0))?;
         std::io::copy(&mut tmpdb.f, &mut self.f)?;
         self.f.set_len(tmpdb.header.next_block)?;
 
         self.f.seek(SeekFrom::Start(0))?;
-        self.header = Header::from_reader(
-            Some(self.header.layout.alignment),
-            tmpdb.header.next_block,
-            &mut self.f,
-        )?;
+        self.header = Header::from_reader(tmpdb.header.next_block, &mut self.f)?;
 
         self.f.seek(SeekFrom::Start(self.header.dir_ofs))?;
         self.dir = Directory::from_reader(self.header.layout, self.header.dir_sz, &mut self.f)?;
 
-        self.bucket_cache = BucketCache::new(self.bucket_cache.cachesize, None);
+        self.bucket_cache = RefCell::new(BucketCache::new(
+            self.bucket_cache.get_mut().cachesize,
+            None,
+        ));
+        // the file now holds a consistent, synced database
+        self.rw().state = WriteState::Clean;
 
         Ok(())
     }
-}
 
-impl<R> Drop for Gdbm<R> {
-    fn drop(&mut self) {
-        let db: &mut dyn Any = self as &mut dyn Any;
-        if let Some(db) = db.downcast_mut::<Gdbm<ReadWrite>>() {
-            let _ = db.sync();
+    /// Rebuild the database from whatever records can still be read, like C GDBM's
+    /// `gdbm_recover`. Unreadable buckets and records are skipped and counted. With `backup`, the
+    /// database file is first copied to an unused `<path>.bak`, `<path>.bak.1`, ... file.
+    ///
+    /// This also clears the [`Error::Inconsistent`] state left by a failed write.
+    ///
+    /// # Errors
+    /// Fails if the database is read-only, `backup` is requested for a temporary database, or
+    /// the backup or rebuilt database cannot be written.
+    pub fn recover(&mut self, backup: bool) -> Result<RecoverReport> {
+        self.check_writable()?;
+        let mut report = RecoverReport::default();
+
+        if backup {
+            report.backup = Some(self.backup()?);
         }
+
+        let mut tmpdb = self.new_like()?;
+        let mut seen = std::collections::HashSet::new();
+        for index in 0..self.dir.dir.len() {
+            if !seen.insert(self.dir.dir[index]) {
+                continue;
+            }
+            let Ok(elems) = self.with_bucket(index, |bucket| {
+                bucket
+                    .tab
+                    .iter()
+                    .filter(|elem| elem.is_occupied())
+                    .copied()
+                    .collect::<Vec<_>>()
+            }) else {
+                report.failed_buckets += 1;
+                continue;
+            };
+            for elem in elems {
+                let record = valid_element(elem, self.header.next_block).and_then(|elem| {
+                    Ok(read_ofs(
+                        &self.f,
+                        elem.data_ofs,
+                        u64::from(elem.key_size) + u64::from(elem.data_size),
+                    )?)
+                });
+                let Ok(record) = record else {
+                    report.failed_keys += 1;
+                    continue;
+                };
+                let (key, value) = record.split_at(elem.key_size as usize);
+                match tmpdb.try_insert(key, value)? {
+                    None => report.recovered_keys += 1,
+                    Some(_) => report.duplicate_keys += 1,
+                }
+            }
+        }
+
+        self.replace_with(tmpdb)?;
+        Ok(report)
+    }
+
+    // Copy the database file to an unused <path>.bak[.N] and return its name.
+    fn backup(&mut self) -> Result<std::path::PathBuf> {
+        let path = self.path.clone().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "temporary databases cannot be backed up",
+            )
+        })?;
+        for n in 0.. {
+            let mut name = path.clone().into_os_string();
+            name.push(if n == 0 {
+                ".bak".to_string()
+            } else {
+                format!(".bak.{n}")
+            });
+            let backup = std::path::PathBuf::from(name);
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            // no more accessible than the database itself
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+                options.mode(self.f.metadata()?.permissions().mode() & 0o777);
+            }
+            match options.open(&backup) {
+                Ok(mut out) => {
+                    self.f.seek(SeekFrom::Start(0))?;
+                    std::io::copy(&mut self.f, &mut out)?;
+                    out.sync_all()?;
+                    return Ok(backup);
+                }
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => (),
+                Err(e) => return Err(e.into()),
+            }
+        }
+        unreachable!()
     }
 }
 
-struct GDBMIterator<'a, R: 'static> {
+impl Drop for Gdbm {
+    // Best effort: use close() to learn of errors writing out the database.
+    fn drop(&mut self) {
+        let _ = self.sync();
+    }
+}
+
+impl std::fmt::Debug for Gdbm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Gdbm")
+            .field("layout", &self.layout())
+            .field("endian", &self.endian())
+            .field("numsync", &self.header.magic.is_numsync())
+            .field("block_size", &self.header.block_sz)
+            .field("char_sign", &self.char_sign())
+            .field("writable", &self.is_writable())
+            .finish_non_exhaustive()
+    }
+}
+
+struct GDBMIterator<'a> {
     key_or_value: KeyOrValue,
-    db: &'a mut Gdbm<R>,
+    db: &'a Gdbm,
     slot: Option<Result<Slot>>,
 }
 
@@ -1521,12 +2105,8 @@ struct Slot {
     element: usize,
 }
 
-impl<'a, R> GDBMIterator<'a, R>
-where
-    Gdbm<R>: CacheBucket,
-    R: Default + 'static,
-{
-    fn next_slot(db: &Gdbm<R>, slot: &Slot) -> Option<Slot> {
+impl<'a> GDBMIterator<'a> {
+    fn next_slot(db: &Gdbm, slot: &Slot) -> Option<Slot> {
         match slot {
             Slot { bucket, element } if element + 1 < db.header.bucket_elems as usize => {
                 Some(Slot {
@@ -1546,12 +2126,12 @@ where
         }
     }
 
-    fn next_occupied_slot(db: &mut Gdbm<R>, slot: &Slot) -> Option<Result<Slot>> {
+    fn next_occupied_slot(db: &Gdbm, slot: &Slot) -> Option<Result<Slot>> {
         let mut next_slot = Self::next_slot(db, slot);
         while let Some(slot) = next_slot {
-            let is_occupied = db
-                .cache_load_bucket(slot.bucket)
-                .map(|bucket| bucket.tab.get(slot.element).unwrap().is_occupied());
+            let is_occupied = db.with_bucket(slot.bucket, |bucket| {
+                bucket.tab.get(slot.element).unwrap().is_occupied()
+            });
             match is_occupied {
                 Ok(false) => (),
                 Ok(true) => return Some(Ok(slot)),
@@ -1563,20 +2143,15 @@ where
         None
     }
 
-    fn new(db: &'a mut Gdbm<R>, key_or_value: KeyOrValue) -> GDBMIterator<'a, R> {
+    fn new(db: &'a Gdbm, key_or_value: KeyOrValue) -> GDBMIterator<'a> {
         let slot = {
             let slot = Slot {
                 bucket: 0,
                 element: 0,
             };
-            match db.cache_load_bucket(0) {
-                Ok(bucket) => {
-                    if bucket.tab.first().unwrap().is_occupied() {
-                        Some(Ok(slot))
-                    } else {
-                        Self::next_occupied_slot(db, &slot)
-                    }
-                }
+            match db.with_bucket(0, |bucket| bucket.tab.first().unwrap().is_occupied()) {
+                Ok(true) => Some(Ok(slot)),
+                Ok(false) => Self::next_occupied_slot(db, &slot),
                 Err(e) => Some(Err(e)),
             }
         };
@@ -1588,11 +2163,7 @@ where
     }
 }
 
-impl<R> Iterator for GDBMIterator<'_, R>
-where
-    Gdbm<R>: CacheBucket,
-    R: Default + 'static,
-{
+impl Iterator for GDBMIterator<'_> {
     type Item = Result<(Vec<u8>, Vec<u8>)>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1604,23 +2175,23 @@ where
                 let next_block = self.db.header.next_block;
                 let data = self
                     .db
-                    .cache_load_bucket(slot.bucket)
-                    .and_then(|bucket| valid_element(bucket.tab[slot.element], next_block))
-                    .map(|e| (e.data_ofs, e.key_size as usize, e.data_size as usize))
+                    .with_bucket(slot.bucket, |bucket| bucket.tab[slot.element])
+                    .and_then(|elem| valid_element(elem, next_block))
+                    .map(|e| (e.data_ofs, u64::from(e.key_size), u64::from(e.data_size)))
                     .and_then(
                         |(offset, key_length, data_length)| match self.key_or_value {
-                            KeyOrValue::Key => read_ofs(&mut self.db.f, offset, key_length)
+                            KeyOrValue::Key => read_ofs(&self.db.f, offset, key_length)
                                 .map(|data| (data, vec![]))
                                 .map_err(Error::Io),
                             KeyOrValue::Value => {
-                                read_ofs(&mut self.db.f, offset + key_length as u64, data_length)
+                                read_ofs(&self.db.f, offset + key_length, data_length)
                                     .map(|data| (vec![], data))
                                     .map_err(Error::Io)
                             }
                             KeyOrValue::Both => {
-                                read_ofs(&mut self.db.f, offset, key_length + data_length)
+                                read_ofs(&self.db.f, offset, key_length + data_length)
                                     .map(|data| {
-                                        let (key, value) = data.split_at(key_length);
+                                        let (key, value) = data.split_at(key_length as usize);
                                         (key.to_vec(), value.to_vec())
                                     })
                                     .map_err(Error::Io)
