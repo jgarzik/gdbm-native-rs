@@ -1,5 +1,6 @@
 #!/bin/bash
-# Seed fuzz/corpus/{open,import_ascii,import_bin} with the C GDBM fixtures from tests/data.
+# Seed fuzz/corpus/{open,import_ascii,import_bin} with the small C GDBM fixtures from tests/data
+# (empty databases and the per-platform mixed.* files; the larger legacy fixtures slow fuzzing).
 # Per-platform files share names (mixed.db, mixed.txt, ...), so they are prefixed with the
 # platform directory name (e.g. arm64-mixed.db). Safe to re-run; runnable from anywhere.
 set -eu
@@ -10,7 +11,9 @@ corpus="$root/fuzz/corpus"
 
 mkdir -p "$corpus/open" "$corpus/import_ascii" "$corpus/import_bin"
 
-cp -f "$data"/*.db.* "$corpus/open/"
+# drop large seeds copied by earlier versions of this script
+rm -f "$corpus/open"/basic.db.* "$corpus/open"/hash.db.* "$corpus/open"/avail.db.*
+cp -f "$data"/empty.db.* "$corpus/open/"
 
 for dir in "$data"/*/; do
 	plat=$(basename "$dir")
