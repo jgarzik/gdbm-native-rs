@@ -26,6 +26,16 @@ impl Lcg {
     }
 }
 
+// As in the fuzz target: C GDBM allows records, buckets and blocks of up to i32::MAX bytes, and
+// writes at a corrupt header's huge next_block grow the file sparsely, making such sizes real and
+// reading them back costly. Skip writes when the bucket or block size alone exceeds this, and
+// stop once the file has grown beyond it.
+const MAX_GROWN_LEN: u64 = 64 * 1024 * 1024;
+
+fn grown_too_large(path: &std::path::Path) -> bool {
+    std::fs::metadata(path).map_or(true, |m| m.len() > MAX_GROWN_LEN)
+}
+
 // The operations of the fuzz target; errors are fine.
 fn exercise(path: &std::path::Path) {
     if let Ok(db) = OpenOptions::new().open(path) {
@@ -41,16 +51,29 @@ fn exercise(path: &std::path::Path) {
             let _ = db.get::<_, Vec<u8>>(key.as_slice());
         }
         let _ = db.get::<_, Vec<u8>>("cl\u{e9} 7 \u{20ac}");
+        let sizes_too_large = u64::from(db.block_size().max(db.bucket_size())) > MAX_GROWN_LEN;
         drop(db);
+        if sizes_too_large {
+            return;
+        }
 
         if let Ok(mut db) = OpenOptions::new().write(true).open(path) {
             for i in 0..10u8 {
                 let _ = db.insert(&[i, 0xe9], &vec![i; usize::from(i) * 60]);
+                if grown_too_large(path) {
+                    return;
+                }
             }
             for key in keys.iter().take(5) {
                 let _ = db.remove(key.as_slice());
+                if grown_too_large(path) {
+                    return;
+                }
             }
             let _ = db.sync();
+            if grown_too_large(path) {
+                return;
+            }
             let _ = db.recover(false);
             let _ = db.verify();
         }

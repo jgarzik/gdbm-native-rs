@@ -17,6 +17,8 @@ use tempfile::tempdir;
 // header fields at fixed offsets, buckets of a 112-byte header and 24-byte elements.
 const DIR_OFS: usize = 8;
 const DIR_SZ: usize = 16;
+const BUCKET_SZ: usize = 24;
+const BUCKET_ELEMS_FIELD: usize = 28;
 const NEXT_BLOCK: usize = 32;
 const BUCKET_COUNT: usize = 108;
 const BUCKET_ELEMS: usize = 112;
@@ -185,6 +187,24 @@ fn oversized_record_size_is_rejected() {
     assert!(matches!(
         db.get::<_, Vec<u8>>("k"),
         Err(Error::BadBucketElement { .. })
+    ));
+}
+
+#[test]
+// Bug: header bucket sizes above i32::MAX (negative in C GDBM's int, which rejects them) were
+// accepted, letting a bucket read or write claim gigabytes.
+fn oversized_bucket_size_is_rejected() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("db");
+    create(&path, false).close().unwrap();
+
+    let bucket_sz = 0x8000_0000u32;
+    let elems = (bucket_sz - BUCKET_ELEMS as u32) / ELEM_SIZE as u32;
+    patch(&path, BUCKET_SZ, &bucket_sz.to_le_bytes());
+    patch(&path, BUCKET_ELEMS_FIELD, &elems.to_le_bytes());
+    assert!(matches!(
+        OpenOptions::new().open(&path),
+        Err(Error::BadHeaderBucketSize { .. })
     ));
 }
 
